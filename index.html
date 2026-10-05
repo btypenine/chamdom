@@ -1,0 +1,940 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#121417">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="참돔파닥파닥">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>참돔파닥파닥</title>
+<style>
+:root{--bg:#121417;--card:#1d2026;--line:#2b2f37;--tx:#e8eaed;--sub:#9aa0a6;--blue:#8ab4f8;--g:#81c995;--y:#fdd663;--r:#f28b82}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:-apple-system,'Noto Sans KR',Roboto,sans-serif;-webkit-tap-highlight-color:transparent}
+header{position:sticky;top:0;z-index:5;background:var(--bg);padding:16px 16px 10px;border-bottom:1px solid var(--line)}
+h1{margin:0;font-size:20px}
+.sub{color:var(--sub);font-size:12px}
+.row{display:flex;align-items:center;gap:8px}
+button{background:var(--blue);color:#0b1b33;border:0;border-radius:20px;padding:8px 14px;font-weight:700;font-size:13px}
+button:disabled{opacity:.45}
+.bar{height:8px;background:var(--line);border-radius:5px;overflow:hidden;margin-top:8px}
+.bar i{display:block;height:100%;border-radius:5px;transition:width .3s}
+main{padding:6px 16px 40px}
+h2{font-size:14px;color:var(--sub);margin:18px 2px 8px;font-weight:600}
+.card{background:var(--card);border-radius:14px;padding:14px;margin:8px 0}
+.card.fav{outline:1px solid #8ab4f855}
+.rk{font-size:20px;font-weight:800;min-width:30px;color:var(--blue)}
+.nm{font-size:16px;font-weight:700}
+.tk{color:var(--sub);font-size:12px;margin-left:4px}
+.sc{margin-left:auto;text-align:right}
+.sc b{font-size:22px;display:block;line-height:1}
+.chg{font-size:11px;color:var(--sub)}
+.up{color:var(--g)}.dn{color:var(--r)}
+.star{background:none;color:var(--sub);font-size:20px;padding:0 4px}
+.star.on{color:var(--y)}
+.tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;margin-top:4px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px}
+.m{background:#262a31;border-radius:8px;padding:6px 8px}
+.m b{display:block;font-size:14px}
+.m span{font-size:10px;color:var(--sub)}
+.warn{color:var(--y);font-size:11px;margin-top:6px}
+.err{background:#3a1d1d;border:1px solid var(--r);border-radius:12px;padding:12px;margin:10px 0;font-size:13px}
+.note{font-size:11px;color:var(--sub);line-height:1.6;margin-top:20px}
+/* 종목 선택 스크롤 바 */
+.chips{display:flex;gap:8px;overflow-x:auto;padding:10px 0 4px;scroll-snap-type:x proximity;scrollbar-width:thin}
+.chips::-webkit-scrollbar{height:4px}.chips::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}
+.chip{flex:0 0 auto;scroll-snap-align:start;background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:14px;padding:8px 12px;text-align:left;font-weight:600;min-width:92px}
+.chip small{display:block;color:var(--sub);font-size:10px;font-weight:500}
+.chip .s{font-size:18px;font-weight:800;line-height:1.2}
+.chip.sel{border-color:var(--blue);background:#1f2b3d}
+/* 분석 */
+.kv{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px}
+.kv:last-child{border:0}.kv span{color:var(--sub)}
+.rangebar{position:relative;height:26px;margin:14px 4px 6px}
+.rangebar .ln{position:absolute;top:12px;left:0;right:0;height:2px;background:var(--line)}
+.rangebar .bx{position:absolute;top:6px;height:14px;background:#8ab4f833;border:1px solid var(--blue);border-radius:4px}
+.rangebar .now{position:absolute;top:0;width:2px;height:26px;background:var(--y)}
+.rlab{display:flex;justify-content:space-between;font-size:11px;color:var(--sub)}
+.st{border:1px solid var(--line)}
+.st.best{border-color:var(--g);background:#1b2a22}
+.st.off{opacity:.5}
+.badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;background:var(--g);color:#0d2416;margin-left:6px}
+.badge.gray{background:var(--line);color:var(--sub)}
+.plan{font-size:13px;line-height:1.7;margin-top:8px}
+.plan b{color:var(--tx)}
+.why{font-size:12px;color:var(--sub);line-height:1.6;margin-top:6px}
+.verdict{font-size:15px;line-height:1.6}
+.sw{background:var(--line);color:var(--sub);min-width:84px}
+.sw.on{background:var(--g);color:#0d2416}
+.pm{width:40px;height:40px;border-radius:50%;padding:0;font-size:20px;background:var(--line);color:var(--tx)}
+input[type=number]{background:#262a31;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px;font-size:15px;margin:0 6px;min-width:0}
+input[type=range]{accent-color:var(--g);margin:0 8px;height:28px}
+/* 헤더 아이콘 버튼 */
+.ib{position:relative;flex:0 0 auto;width:42px;height:42px;padding:0;border-radius:14px;display:flex;align-items:center;justify-content:center;
+  background:#1f232a;color:#cfd3da;border:1px solid #2e333c;box-shadow:inset 0 1px 0 #ffffff0d;transition:transform .15s,background .2s}
+.ib:active{transform:scale(.92)}
+.ib svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.ib.ref{background:linear-gradient(145deg,#9cc2ff,#5d8df5);color:#0b1b33;border:0;box-shadow:0 4px 14px #5d8df555,inset 0 1px 0 #ffffff55}
+.ib.ref:disabled{opacity:1}
+.ib.ref:disabled svg{animation:rot 1s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+.ib .dot{position:absolute;top:7px;right:8px;width:8px;height:8px;border-radius:50%;background:#ff5a4e;box-shadow:0 0 0 2px #1f232a;display:none}
+.ib .dot.on{display:block}
+#histBtn.ring svg{animation:ring 1.2s ease-in-out infinite;transform-origin:50% 10%}
+@keyframes ring{0%,60%,100%{transform:rotate(0)}10%{transform:rotate(16deg)}20%{transform:rotate(-14deg)}30%{transform:rotate(10deg)}40%{transform:rotate(-8deg)}50%{transform:rotate(4deg)}}
+#histBtn+#helpBtn,#helpBtn+#btn{margin-left:8px}
+/* 로고: 파닥파닥 헤엄치는 참돔 */
+h1.logo{display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:21px;letter-spacing:-.5px}
+.fish{width:46px;height:30px;overflow:visible;animation:swim 1.6s ease-in-out infinite;filter:drop-shadow(0 2px 6px #ff5a4e55)}
+.fish *{transform-box:view-box}
+.fish .tail{transform-origin:17px 21px;animation:flap .26s ease-in-out infinite alternate}
+.fish .drops circle{fill:#8fd8ff;opacity:0;animation:drop 1.6s ease-out infinite}
+.fish .drops circle:nth-child(2){animation-delay:.25s}.fish .drops circle:nth-child(3){animation-delay:.5s}
+@keyframes flap{from{transform:rotate(-24deg) scaleX(.85)}to{transform:rotate(22deg) scaleX(1.05)}}
+@keyframes swim{0%,100%{transform:translateY(1px) rotate(-6deg)}25%{transform:translateY(-3px) rotate(4deg)}50%{transform:translateY(0) rotate(-2deg)}75%{transform:translateY(-4px) rotate(8deg)}}
+@keyframes drop{0%{opacity:0;transform:translate(0,0)}15%{opacity:.9}100%{opacity:0;transform:translate(-9px,-7px)}}
+.ttl{display:inline-flex;align-items:baseline}
+.ttl .t1{background:linear-gradient(90deg,#ff6b5e,#ff9a7c);-webkit-background-clip:text;background-clip:text;color:transparent;font-weight:900}
+.ttl .t2{display:inline-flex;margin-left:2px}
+.ttl .t2 i{font-style:normal;font-weight:900;display:inline-block;
+  background:linear-gradient(90deg,#ffb199,#ffd36e,#ff7a6b,#ffb199);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;
+  animation:hop 1.4s ease-in-out infinite,shine 3s linear infinite;animation-delay:var(--d),0s}
+@keyframes hop{0%,60%,100%{transform:translateY(0) rotate(0)}20%{transform:translateY(-4px) rotate(-6deg)}40%{transform:translateY(0) rotate(4deg)}}
+@keyframes shine{to{background-position:300% 0}}
+@media (prefers-reduced-motion:reduce){.fish,.fish *,.ttl i,.ib svg{animation:none!important}}
+.help{position:fixed;inset:0;z-index:20;background:var(--bg);overflow-y:auto;padding:16px 16px 40px;display:none}
+.help.show{display:block}
+.help h3{font-size:16px;margin:22px 0 8px}
+.help .step{display:flex;gap:10px;background:var(--card);border-radius:12px;padding:12px;margin:8px 0;font-size:14px;line-height:1.6}
+.help .step .n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--blue);color:#0b1b33;font-weight:800;display:flex;align-items:center;justify-content:center}
+.help .step small{color:var(--sub);font-size:12px}
+.hrow{display:flex;gap:10px;align-items:center;background:var(--card);border-radius:12px;padding:12px;margin:8px 0}
+.hrow .ic{font-size:24px}
+.hrow .t{font-size:11px;color:var(--sub)}
+.hrow .g{margin-left:auto;text-align:right;font-weight:800;font-size:16px}
+.hday{font-size:12px;color:var(--sub);margin:16px 2px 4px}
+.help .ex{background:#262a31;border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.7;margin:8px 0}
+/* 테두리 경고등: 탑승(무지개 회전) / 하차(점멸) */
+@property --ang{syntax:'<angle>';inherits:false;initial-value:0deg}
+.edge{position:fixed;inset:0;z-index:30;pointer-events:none;display:none}
+.edge.rainbow,.edge.tp,.edge.sl{display:block}
+.edge.rainbow{padding:11px;border-radius:18px;
+  background:conic-gradient(from var(--ang),#ff3b3b,#ff9f1a,#ffe14d,#4cd964,#2fd3ff,#4f6bff,#b84dff,#ff3b3b);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;
+  mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);
+  animation:spin 1.6s linear infinite;filter:drop-shadow(0 0 10px #fff8)}
+@keyframes spin{to{--ang:360deg}}
+.edge.tp{border:12px solid #ffd54a;border-radius:18px;box-shadow:inset 0 0 40px #ffd54a,0 0 30px #ffd54a;animation:blink .45s steps(1) infinite}
+.edge.sl{border:12px solid #ff3b3b;border-radius:18px;box-shadow:inset 0 0 40px #ff3b3b,0 0 30px #ff3b3b;animation:blink .45s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.sig{position:fixed;left:12px;right:12px;bottom:18px;z-index:31;display:none;align-items:center;gap:10px;padding:14px 16px;border-radius:16px;
+  background:#1d2026f2;border:1px solid var(--line);box-shadow:0 8px 30px #000a;font-size:14px;line-height:1.5}
+.sig.show{display:flex}
+.sig{bottom:24px}
+.modal{position:fixed;inset:0;z-index:40;background:#000b;display:none;align-items:center;justify-content:center;padding:24px}
+.modal.show{display:flex}
+.modal .box{background:var(--card);border-radius:20px;padding:24px 20px;width:100%;max-width:360px;text-align:center;border:2px solid var(--line)}
+.modal .ic{font-size:46px;line-height:1}
+.modal h2{font-size:21px;color:var(--tx);margin:12px 0 6px}
+.modal p{font-size:14px;color:var(--sub);line-height:1.6;margin:0 0 18px}
+.modal button{width:100%;padding:14px;font-size:16px;border-radius:14px}
+.sig b{font-size:16px}
+/* 아이폰 노치·홈바 영역 */
+header{padding-top:calc(16px + env(safe-area-inset-top))}
+.help{padding-top:calc(16px + env(safe-area-inset-top));padding-bottom:calc(40px + env(safe-area-inset-bottom))}
+.sig{bottom:calc(24px + env(safe-area-inset-bottom))}
+main{padding-bottom:calc(40px + env(safe-area-inset-bottom))}
+</style>
+</head>
+<body>
+<header>
+  <div class="row"><h1 class="logo"><svg class="fish" viewBox="0 0 66 42" aria-hidden="true">
+  <defs>
+    <linearGradient id="fb" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff5a4e"/><stop offset=".55" stop-color="#ff8a7a"/><stop offset="1" stop-color="#ffd0c4"/></linearGradient>
+    <linearGradient id="ft" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#e8443a"/><stop offset="1" stop-color="#ff7a6b"/></linearGradient>
+  </defs>
+  <g class="drops"><circle cx="8" cy="9" r="1.6"/><circle cx="5" cy="21" r="1.2"/><circle cx="9" cy="33" r="1.4"/></g>
+  <g class="tail"><path d="M17 21 L3 7 Q9 21 3 35 Z" fill="url(#ft)"/></g>
+  <path d="M27 10 C32 2 42 2 48 9 Z" fill="#e8443a"/>
+  <path d="M33 31 C36 37 41 37 43 32 Z" fill="#e8443a"/>
+  <path d="M15 21 C21 7 45 4 60 18 C62 20 62 22 60 24 C45 37 21 35 15 21 Z" fill="url(#fb)"/>
+  <path d="M46 12 Q41 21 46 30" fill="none" stroke="#c9372e" stroke-width="1.4" stroke-linecap="round" opacity=".7"/>
+  <g fill="#5fd0ff" opacity=".9"><circle cx="27" cy="15" r="1.1"/><circle cx="33" cy="12.5" r="1"/><circle cx="31" cy="19" r="1.1"/><circle cx="38" cy="16" r="1"/><circle cx="24" cy="21" r=".9"/></g>
+  <circle cx="53" cy="18" r="3" fill="#fff"/><circle cx="53.8" cy="18" r="1.6" fill="#1b1b1b"/>
+  <path d="M60.5 22.5 q-2 1 -3.5 0" fill="none" stroke="#8a2420" stroke-width="1.2" stroke-linecap="round"/>
+</svg><span class="ttl"><span class="t1">참돔</span><span class="t2"><i style="--d:0.00s">파</i><i style="--d:0.09s">닥</i><i style="--d:0.18s">파</i><i style="--d:0.27s">닥</i></span></span></h1><button id="histBtn" class="ib" style="margin-left:auto" title="알림 내역" aria-label="알림 내역"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span class="dot" id="hdot"></span></button><button id="helpBtn" class="ib" title="사용법" aria-label="사용법"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></button><button id="btn" class="ib ref" title="새로고침" aria-label="새로고침"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button></div>
+  <div class="sub" id="upd">업비트 최근 5년 거래대금 상위 20종목</div>
+  <div id="prog" style="display:none"><div class="sub" id="ptxt"></div><div class="bar"><i id="pbar" style="width:0;background:var(--blue)"></i></div></div>
+  <div class="chips" id="chips"></div>
+</header>
+<div class="help" id="hist">
+  <div class="row"><h1>🔔 알림 내역</h1><button id="histClose" style="margin-left:auto">닫기</button></div>
+  <div class="sub" style="margin-top:4px">탑승 권고 · 익절 · 손절 알림이 온 기록이에요. 줄을 누르면 그 종목으로 가요.</div>
+  <div class="chips" id="hfil" style="padding-top:12px"></div>
+  <div class="card" id="hsum"></div>
+  <div id="hlist"></div>
+  <div style="text-align:center;margin-top:24px"><button id="histClear" style="background:var(--line);color:var(--sub)">내역 모두 지우기</button></div>
+</div>
+<div class="help" id="help">
+  <div class="row"><h1>❓ 사용법</h1><button id="helpClose" style="margin-left:auto">닫기</button></div>
+  <div class="sub" style="margin-top:4px">처음이라면 위에서부터 차례로 읽어보세요. 3분이면 돼요.</div>
+
+  <div id="iosHelp" style="display:none">
+  <h3>📱 아이폰에서 앱처럼 쓰기</h3>
+  <div class="step"><div class="n">1</div><div><b>사파리</b>로 이 주소를 연 다음, 아래 가운데 <b>공유 버튼(□↑)</b>을 눌러요.</div></div>
+  <div class="step"><div class="n">2</div><div><b>「홈 화면에 추가」</b> → 오른쪽 위 <b>추가</b>. 홈 화면에 🐟 아이콘이 생겨요.</div></div>
+  <div class="step"><div class="n">3</div><div>앞으로는 <b>홈 화면 아이콘</b>으로 여세요. 그래야 알림을 받을 수 있어요(iOS 16.4 이상).<br><small>⚠ 아이폰은 앱을 <b>열어둔 동안에만</b> 30초마다 감시해요. 화면을 끄거나 다른 앱으로 오래 가 있으면 감시가 멈춰요. 볼륨 버튼 조절은 아이폰에선 안 돼요.</small></div></div>
+  </div>
+  <h3>📊 1. 종목 고르기</h3>
+  <div class="step"><div class="n">1</div><div>맨 위 <b>가로 막대</b>를 손가락으로 옆으로 밀어 종목을 골라요.<br><small>큰 숫자 = 규칙성 점수(0~100). 높을수록 오르내림이 일정해서 짧게 사고팔기 좋아요.<br>🟢 70점 이상 좋음 · 🟡 40~69 보통 · 🔴 40 미만 들쭉날쭉</small></div></div>
+  <div class="step"><div class="n">2</div><div>점수 카드의 <b>☆</b>를 누르면 ⭐ 관심 종목이 되어 막대 맨 앞에 나와요.</div></div>
+  <div class="step"><div class="n">3</div><div>오른쪽 위 파란 <b>🔄 새로고침</b> 버튼을 누르면 최신 시세로 다시 계산해요.<br><small>처음 한 번은 5년치 시세를 받느라 5~10분 걸려요. 다음부터는 금방 끝나요.</small></div></div>
+
+  <h3>🔍 2. 분석 보기</h3>
+  <div class="step"><div class="n">4</div><div>종목을 고르면 아래에 분석이 나와요.<br>
+    <small>· <b>추세</b>: 상승 / 하락 / 횡보<br>· <b>RSI</b>: 70 이상 과열(많이 오름), 35 미만 과매도(많이 빠짐)<br>· <b>지지/저항</b>: 최근 20일 동안 가장 낮았던 값 / 높았던 값<br>· <b>7일 예상 범위</b>: 노란 선이 지금 가격, 파란 칸이 일주일 뒤 가격이 들어올 가능성이 높은 구간</small></div></div>
+  <div class="step"><div class="n">5</div><div><b>🧭 일주일 전략 추천</b>에서 <span class="badge">추천</span> 표시가 붙은 전략을 보세요.<br>
+    <small>과거 5년 동안 매일 같은 방법으로 7일씩 투자했다고 가정해서 성적이 가장 좋았던 걸 골라요. 매수가·손절가·목표가가 원 단위로 나와요.<br>“관망”이 나오면 이번 주는 쉬어가는 게 낫다는 뜻이에요.</small></div></div>
+
+  <h3>🔔 3. 알림 받기 (앱을 닫아도 와요)</h3>
+  <div class="step"><div class="n">6</div><div>종목을 고르고 <b>🔔 실시간 알림</b> 칸에서 <b>「감시 안 함」</b>을 눌러 <b>「감시 중」</b>으로 바꿔요.<br><small>처음엔 “알림 허용” 창이 떠요 → <b>허용</b>. 「배터리 제한 해제」 버튼이 보이면 그것도 눌러주세요(안 그러면 휴대폰이 감시를 멈출 수 있어요).</small></div></div>
+  <div class="step"><div class="n">7</div><div><b>목표 수익</b>을 정해요. 막대를 밀거나 −/＋ 를 누르거나, <b>휴대폰 볼륨 버튼</b>으로 0.05%씩 올리고 내려요.<br><small>수수료를 뺀 순수익이에요. 0.2%로 정하면 실제로는 약 0.3% 올라야 알림이 와요.</small></div></div>
+  <div class="step"><div class="n">8</div><div><b>손절</b> 칸에 몇 % 떨어지면 알려줄지 적어요. (예: 1)</div></div>
+  <div class="step"><div class="n">9</div><div><b>테스트 알림 보내기</b>로 알림이 잘 오는지 확인하면 끝!</div></div>
+
+  <h3>📬 알림은 이렇게 와요</h3>
+  <div class="ex">🐟 <b>매수 타이밍</b> — 오르는 흐름이고, 최근 비슷한 흐름 10번 중 6번 이상 목표 수익까지 갔을 때<br>
+    💰 <b>목표 수익 도달</b> — 매수 타이밍 때 가격보다 목표만큼 올랐을 때 → 팔 때예요<br>
+    🛑 <b>손절선 도달</b> — 정한 %만큼 떨어졌을 때 → 더 큰 손실 막기</div>
+  <div class="ex">앱을 열어두면 화면 테두리로도 알려줘요<br>
+    🌈 <b>무지개빛이 빙글빙글</b> 돌면 → <b>탑승 권고</b>(살 때)<br>
+    💛 <b>노란빛 깜빡깜빡</b> → <b>하차</b>(목표 수익, 팔 때) · ❤️ <b>빨간빛 깜빡깜빡</b> → <b>하차</b>(손절)<br>
+    <small>아래 안내창은 「확인」을 누르면 사라져요(테두리 조명은 시점 동안 유지).<br>신호가 오면 앱 안에 확인창이 떠요 → 「확인」을 누르면 그 종목 화면으로 이동해요.<br>테두리 조명은 그 종목 화면에서, 탑승·하차 시점이 이어지는 동안 계속 켜져 있어요. (탑승: 신호 가격 근처에 있는 동안 · 하차: 목표가 위/손절가 아래에 있는 동안)</small></div>
+  <div class="ex"><b>예시</b> · 목표 0.2%, 손절 1%, 리플 1,000원에서 매수 타이밍 알림<br>
+    → 약 1,003원 되면 💰 알림 · 990원 되면 🛑 알림</div>
+  <div class="step"><div class="n">💡</div><div>실제로 산 가격이 알림 가격과 다르면 <b>📡 감시 현황</b>에서 <b>매수가 수정</b>을 눌러 고쳐요. 이미 갖고 있는 코인도 매수가를 넣으면 바로 익절·손절 감시가 시작돼요.</div></div>
+
+  <div class="step"><div class="n">🔔</div><div>맨 위 <b>🔔 종 모양 버튼</b>을 누르면 지금까지 온 탑승·익절·손절 알림을 날짜별로 볼 수 있어요. 알림대로 사고팔았다면 얼마나 벌었을지(익절 비율·누적 수익)도 보여줘요.</div></div>
+
+  <h3>⚠ 꼭 알아두세요</h3>
+  <div class="ex">· 앱 안에 있을 때 볼륨 버튼은 목표 수익 조절용이라 소리 크기는 안 바뀌어요<br>
+    · 같은 종목 매수 알림은 30분에 한 번까지만 와요<br>
+    · 휴대폰을 껐다 켜면 앱을 한 번 열어주세요 (감시가 다시 시작돼요)<br>
+    · 감시 중엔 알림창에 “감시 중”이 계속 떠 있고 배터리를 조금 더 써요<br>
+    · 모든 분석과 알림은 과거 흐름을 바탕으로 한 <b>참고용</b>이에요. 수익을 보장하지 않아요.</div>
+  <div style="text-align:center;margin-top:20px"><button id="helpClose2">알겠어요, 시작할게요</button></div>
+</div>
+<div class="edge" id="edge"></div><div class="sig" id="sig"><div id="sigTxt" style="flex:1"></div><button id="sigOk">확인</button></div>
+<div class="modal" id="modal"><div class="box" id="mbox"><div class="ic" id="mic"></div><h2 id="mtitle"></h2><p id="mtext"></p><button id="mok">확인 · 종목 보기</button></div></div>
+<main>
+  <div id="err"></div>
+  <div id="detail"><div class="card sub">처음 실행이라 5년치 시세를 받는 중이에요. 5~10분 정도 걸리고, 다음부터는 새로 생긴 날짜만 받아서 금방 끝나요.</div></div>
+  <div class="note">
+    · 위 막대를 옆으로 넘겨 종목을 고르세요. 숫자는 규칙성 점수예요 (⭐ 관심 종목은 맨 앞)<br>
+    · 점수 = 하루 진폭의 일정함 + 변동성의 안정성 + 급등락 빈도 + 박스권 성향을 종합 (높을수록 규칙적)<br>
+    · 🟢 70점 이상 · 🟡 40~69점 · 🔴 40점 미만 / 순위 변동은 직전 새로고침 대비<br>
+    · 일주일 전략은 과거 5년 동안 매일 같은 규칙으로 7일씩 투자했다고 가정한 모의 결과(수수료 0.05%×2 반영)로 고른 거예요. 과거 결과가 미래 수익을 보장하지 않으며, 투자 권유가 아닌 참고용 분석이에요.
+  </div>
+</main>
+<script>
+const API = 'https://api.upbit.com/v1', YEARS = 5, TOP_N = 20, DAY = 86400000;
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* ---------- 네트워크 (앱에서는 안드로이드 쪽에서 요청, 브라우저에서는 fetch) ---------- */
+let reqId = 0; const pending = {};
+window.__nativeDone = (id, res) => { const p = pending[id]; delete pending[id]; if (p) p(JSON.parse(res)); };
+function rawGet(url) {
+  if (window.Android) return new Promise(res => { const id = 'r' + (++reqId); pending[id] = res; Android.get(id, url); });
+  return fetch(url).then(async r => ({status: r.status, body: await r.text()})).catch(e => ({status: 0, body: String(e)}));
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let lastReq = 0;
+async function get(url) {
+  let last = '';
+  for (let a = 0; a < 8; a++) {
+    const wait = lastReq + 110 - Date.now(); if (wait > 0) await sleep(wait);
+    lastReq = Date.now();
+    const r = await rawGet(url);
+    if (r.status === 200) return JSON.parse(r.body);
+    last = 'HTTP ' + r.status + ' ' + String(r.body).slice(0, 120);
+    if (r.status === 429 || r.status === 0) { await sleep(1000 * (a + 1)); continue; }
+    throw new Error(last);
+  }
+  throw new Error('접속 실패: ' + last);
+}
+
+/* ---------- 저장소 ---------- */
+// 앱(안드로이드): 휴대폰 파일 / 웹(아이폰): 작은 값은 localStorage, 5년치 시세는 IndexedDB(용량 큼)
+const BIG = new Map(); let idb = null;
+const isBig = k => !window.Android && k.startsWith('c_');
+const store = {
+  save(k, v) {
+    if (isBig(k)) { BIG.set(k, v); if (idb) try { idb.transaction('kv', 'readwrite').objectStore('kv').put(v, k); } catch (e) {} return; }
+    const s = JSON.stringify(v); if (window.Android) Android.save(k, s); else try { localStorage.setItem(k, s); } catch (e) {}
+  },
+  load(k) {
+    if (isBig(k)) return BIG.has(k) ? BIG.get(k) : null;
+    let s = ''; if (window.Android) s = Android.load(k); else try { s = localStorage.getItem(k) || ''; } catch (e) {}
+    try { return s ? JSON.parse(s) : null; } catch (e) { return null; }
+  }
+};
+function idbOpen() {   // 웹에서 시작할 때 저장된 시세를 메모리로 불러옴
+  return new Promise(res => {
+    if (window.Android || !window.indexedDB) return res();
+    const rq = indexedDB.open('chamdom', 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+    rq.onerror = () => res();
+    rq.onsuccess = () => {
+      idb = rq.result;
+      const os = idb.transaction('kv').objectStore('kv'), cur = os.openCursor();
+      cur.onsuccess = () => { const c = cur.result; if (c) { BIG.set(c.key, c.value); c.continue(); } else res(); };
+      cur.onerror = () => res();
+    };
+  });
+}
+
+/* ---------- 시세 (캐시 + 새 날짜만 추가) ---------- */
+const toRow = c => [Date.parse(c.candle_date_time_utc + 'Z'), c.opening_price, c.high_price, c.low_price, c.trade_price, c.candle_acc_trade_price];
+async function candles(market, since) {
+  const cached = store.load('c_' + market);
+  let rows = cached ? cached.rows : [], fetched = [];
+  if (cached && Date.now() - cached.at < 10 * 60 * 1000) return rows;
+  const need = rows.length ? Math.ceil((Date.now() - rows[rows.length - 1][0]) / DAY) + 2 : 999;
+  if (rows.length && need < 200) {
+    fetched = (await get(`${API}/candles/days?market=${market}&count=${need}`)).map(toRow);
+  } else {
+    rows = []; let to = null;
+    while (true) {
+      let u = `${API}/candles/days?market=${market}&count=200`;
+      if (to) u += '&to=' + encodeURIComponent(to);
+      const b = await get(u);
+      if (!b.length) break;
+      fetched.push(...b.map(toRow));
+      const old = b[b.length - 1].candle_date_time_utc;
+      if (b.length < 200 || Date.parse(old + 'Z') <= since) break;
+      to = old.replace('T', ' ');
+    }
+  }
+  const m = new Map(rows.map(r => [r[0], r]));
+  fetched.forEach(r => m.set(r[0], r));            // 오늘 캔들은 최신 값으로 덮어씀
+  rows = [...m.values()].filter(r => r[0] >= since).sort((a, b) => a[0] - b[0]);
+  store.save('c_' + market, {at: Date.now(), rows});
+  return rows;
+}
+
+/* ---------- 지표 계산 ---------- */
+const mean = a => a.reduce((s, x) => s + x, 0) / a.length;
+const std = (a, dd = 1) => { const m = mean(a); return Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / (a.length - dd)); };
+function hurst(lp) {
+  const n = lp.length, maxL = Math.min(100, Math.floor(n / 4)), xs = [], ys = [];
+  for (let l = 2; l < maxL; l++) {
+    const d = []; for (let i = l; i < n; i++) d.push(lp[i] - lp[i - l]);
+    const t = std(d, 0); if (t > 0) { xs.push(Math.log(l)); ys.push(Math.log(t)); }
+  }
+  if (xs.length < 5) return NaN;
+  const mx = mean(xs), my = mean(ys); let num = 0, den = 0;
+  xs.forEach((x, i) => { num += (x - mx) * (ys[i] - my); den += (x - mx) ** 2; });
+  return num / den;
+}
+function metrics(rows) {
+  const d = rows.filter(r => r[1] > 0 && r[4] > 0), c = d.map(r => r[4]), lp = c.map(Math.log), r = [];
+  for (let i = 1; i < lp.length; i++) r.push(lp[i] - lp[i - 1]);
+  const rng = d.map(x => (x[2] - x[3]) / x[1]), v30 = [];
+  for (let i = 29; i < r.length; i++) v30.push(std(r.slice(i - 29, i + 1)));
+  const sd = std(r); let peak = -Infinity, mdd = 0;
+  c.forEach(x => { peak = Math.max(peak, x); mdd = Math.min(mdd, x / peak - 1); });
+  return {years: d.length / 365, amp: mean(rng) * 100, ampcv: std(rng) / mean(rng), volvol: std(v30) / mean(v30),
+          jump: r.filter(x => Math.abs(x) > 3 * sd).length / r.length * 100, hurst: hurst(lp), mdd: mdd * 100,
+          price: c[c.length - 1], chg30: c.length > 30 ? (c[c.length - 1] / c[c.length - 31] - 1) * 100 : NaN};
+}
+function rankAvg(vals) {
+  const v = vals.map(x => Number.isFinite(x) ? x : Infinity);
+  const idx = v.map((x, i) => [x, i]).sort((a, b) => a[0] - b[0]), rk = new Array(v.length);
+  for (let i = 0; i < idx.length;) {
+    let j = i; while (j + 1 < idx.length && idx[j + 1][0] === idx[i][0]) j++;
+    for (let k = i; k <= j; k++) rk[idx[k][1]] = (i + j) / 2 + 1;
+    i = j + 1;
+  }
+  return rk;
+}
+function score(list) {
+  const keys = ['ampcv', 'volvol', 'jump', 'hurst'], n = list.length;
+  const ranks = keys.map(k => rankAvg(list.map(x => x[k])));
+  list.forEach((x, i) => { const avg = mean(ranks.map(r => r[i])); x.score = 100 * (n - avg) / (n - 1); });
+  return list.sort((a, b) => b.score - a.score);
+}
+
+/* ---------- 일주일 전략 분석 ---------- */
+const FEE = 0.001, H = 7;   // 업비트 원화마켓 수수료 0.05% × 매수·매도
+const quant = (a, q) => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y), p = (s.length - 1) * q, i = Math.floor(p); return s[i] + (s[Math.min(i + 1, s.length - 1)] - s[i]) * (p - i); };
+function sma(a, n) { const o = new Array(a.length).fill(NaN); let s = 0; a.forEach((x, i) => { s += x; if (i >= n) s -= a[i - n]; if (i >= n - 1) o[i] = s / n; }); return o; }
+function rsiArr(c, n = 14) {
+  const o = new Array(c.length).fill(NaN); let g = 0, l = 0;
+  for (let i = 1; i < c.length; i++) {
+    const d = c[i] - c[i - 1], up = Math.max(d, 0), dn = Math.max(-d, 0);
+    if (i <= n) { g += up / n; l += dn / n; if (i === n) o[i] = l ? 100 - 100 / (1 + g / l) : 100; }
+    else { g = (g * (n - 1) + up) / n; l = (l * (n - 1) + dn) / n; o[i] = l ? 100 - 100 / (1 + g / l) : 100; }
+  }
+  return o;
+}
+function stats(rs) {
+  if (rs.length < 10) return null;
+  return {n: rs.length, win: rs.filter(x => x > 0).length / rs.length * 100, avg: mean(rs) * 100, med: quant(rs, .5) * 100, worst: quant(rs, .05) * 100};
+}
+/* 손절·익절이 있는 7일 보유 */
+function tradeSL(d, t, stop, target) {
+  for (let k = t + 1; k <= t + H; k++) {
+    if (d[k][3] <= stop) return stop / d[t][4] - 1 - FEE;       // 같은 날이면 손절이 먼저 났다고 가정(보수적)
+    if (d[k][2] >= target) return target / d[t][4] - 1 - FEE;
+  }
+  return d[t + H][4] / d[t][4] - 1 - FEE;
+}
+/* 7일 그리드 매매 추정 (일봉 기준 근사) */
+const GRID_N = 10;
+function gridWidth(atr) { return Math.min(.3, Math.max(.03, atr * 2.5)); }
+function tradeGrid(d, t, atr) {
+  const c0 = d[t][4], w = gridWidth(atr), L = c0 * (1 - w), U = c0 * (1 + w), step = (U - L) / GRID_N, sf = step / c0;
+  let trips = 0;
+  const clip = v => Math.min(U, Math.max(L, v));
+  for (let k = t + 1; k <= t + H; k++) {   // 하루 동안 왔다 갔다 한 거리(한 방향으로 간 거리 제외)만 왕복으로 셈
+    const span = clip(d[k][2]) - clip(d[k][3]), net = Math.abs(clip(d[k][4]) - clip(d[k][1]));
+    if (span - net > 0) trips += Math.floor((span - net) / step);
+  }
+  const P = d[t + H][4], hi = Math.max(...d.slice(t + 1, t + H + 1).map(r => r[2]));
+  let inv = 0;
+  for (let i = 0; i < GRID_N; i++) {
+    const x = L + step * i;
+    if (x < c0) inv += P < x ? P / x - 1 : 0;                   // 아래 칸: 내려오면 사서 들고 있음
+    else inv += hi >= x + step ? (x + step) / c0 - 1 : P / c0 - 1; // 위 칸: 처음에 산 코인, 칸 위에 닿으면 팔림
+  }
+  return inv / GRID_N + trips * (sf - FEE) / GRID_N;
+}
+function analyze(rows) {
+  const d = rows.filter(r => r[1] > 0 && r[4] > 0), n = d.length;
+  if (n < 120) return null;
+  const c = d.map(r => r[4]), m20 = sma(c, 20), m60 = sma(c, 60), rsi = rsiArr(c);
+  const rng = d.map(r => (r[2] - r[3]) / r[4]), atrA = sma(rng, 14), avgRng = mean(rng);
+  const res = {hold: [], trend: [], dip: [], grid: []}, fw = {close: [], hi: [], lo: []};
+  for (let t = 60; t + H < n; t++) {
+    const a = atrA[t], cc = c[t];
+    const fwd = d.slice(t + 1, t + H + 1);
+    fw.close.push(c[t + H] / cc - 1);
+    fw.hi.push(Math.max(...fwd.map(r => r[2])) / cc - 1);
+    fw.lo.push(Math.min(...fwd.map(r => r[3])) / cc - 1);
+    res.hold.push(c[t + H] / cc - 1 - FEE);
+    if (cc > m20[t] && m20[t] > m60[t] && rsi[t] < 70) res.trend.push(tradeSL(d, t, cc * (1 - 2 * a), cc * (1 + 3 * a)));
+    if (rsi[t] < 35) res.dip.push(tradeSL(d, t, cc * (1 - 2 * a), cc * (1 + 2 * a)));
+    res.grid.push(tradeGrid(d, t, a));
+  }
+  const i = n - 1, now = c[i], atr = atrA[i];
+  const vr = Math.min(2, Math.max(.5, atr / avgRng));        // 요즘 변동성이 평소보다 크면 예상 범위도 넓힘
+  const q = (arr, p) => quant(arr, p) * vr;
+  const last20 = d.slice(-20);
+  return {
+    now, atr, vr, rsi: rsi[i], m20: m20[i], m60: m60[i],
+    sup: Math.min(...last20.map(r => r[3])), res: Math.max(...last20.map(r => r[2])),
+    chg7: n > 7 ? (c[i] / c[i - 7] - 1) * 100 : NaN,
+    range: {lo: q(fw.lo, .2), hi: q(fw.hi, .8), c10: q(fw.close, .1), c50: quant(fw.close, .5), c90: q(fw.close, .9), up: fw.close.filter(x => x > 0).length / fw.close.length * 100},
+    bt: {hold: stats(res.hold), trend: stats(res.trend), dip: stats(res.dip), grid: stats(res.grid)},
+    cond: {trend: now > m20[i] && m20[i] > m60[i] && rsi[i] < 70, dip: rsi[i] < 35, down: now < m20[i] && m20[i] < m60[i]}
+  };
+}
+const won = p => fmtP(p) + '원';
+const pct = (x, dg = 1) => (x >= 0 ? '+' : '') + x.toFixed(dg) + '%';
+function strategies(x, A) {
+  const s = [], {now, atr} = A;
+  const w = gridWidth(atr), L = now * (1 - w), U = now * (1 + w), stepPct = 2 * w / GRID_N * 100;
+  s.push({key: 'grid', name: '📶 그리드 매매 (박스권 왕복)', ok: stepPct > .3,
+    off: '칸 간격이 너무 좁아 수수료를 빼면 남는 게 없어요',
+    plan: `<b>${won(L)} ~ ${won(U)}</b> 구간을 ${GRID_N}칸(칸마다 ${stepPct.toFixed(2)}%)으로 나눠, 내려오면 한 칸씩 사고 올라가면 한 칸씩 팔아요. 투자금의 절반은 시작할 때 코인으로 사두고, 나머지는 현금으로 대기합니다.<br>한 칸 왕복할 때 수수료 빼고 약 <b>${(stepPct - FEE * 100).toFixed(2)}%</b> 남아요. 하단 아래로 내려가면 손실이 커지니 ${won(L * .97)} 밑으로 깨지면 정리하세요.`,
+    why: x.hurst < 0.45 ? '허스트 지수가 낮아 오르내림을 반복하는 박스권 성향이 있어요.' : x.hurst > 0.55 ? '추세 성향이 강해 한쪽으로 쭉 가면 그리드가 불리할 수 있어요.' : '뚜렷한 방향성이 없는 종목이에요.'});
+  s.push({key: 'trend', name: '📈 추세 따라가기', ok: A.cond.trend,
+    off: '지금은 상승 추세 조건(현재가 > 20일선 > 60일선, RSI 70 미만)이 아니에요',
+    plan: `지금 <b>${won(now)}</b> 근처에서 매수 → 손절 <b>${won(now * (1 - 2 * atr))}</b> (−${(2 * atr * 100).toFixed(1)}%), 익절 <b>${won(now * (1 + 3 * atr))}</b> (+${(3 * atr * 100).toFixed(1)}%). 7일 안에 둘 다 안 닿으면 7일째 종가에 정리.`,
+    why: '상승 추세가 이어지는 동안만 들어가고, 하루 평균 진폭의 2배를 손절선으로 둬요.'});
+  s.push({key: 'dip', name: '🪃 눌림목 반등 매수', ok: A.cond.dip,
+    off: `RSI가 35 미만으로 과하게 빠졌을 때만 쓰는 전략이에요 (지금 RSI ${A.rsi.toFixed(0)})`,
+    plan: `지금 <b>${won(now)}</b> 근처에서 매수 → 손절 <b>${won(now * (1 - 2 * atr))}</b>, 반등 목표 <b>${won(now * (1 + 2 * atr))}</b>. 7일 안에 안 닿으면 정리.`,
+    why: '단기간에 많이 빠진 뒤 되돌림을 노려요. 하락장에서는 더 빠질 수 있어 손절을 꼭 지켜야 해요.'});
+  s.push({key: 'hold', name: '🧺 사서 7일 보유', ok: true, off: '',
+    plan: `지금 <b>${won(now)}</b>에 사서 7일 뒤 정리. 손절·익절 없이 시장 흐름을 그대로 따라가요.`,
+    why: '다른 전략과 비교하기 위한 기준선이에요.'});
+  s.forEach(t => { t.bt = A.bt[t.key]; t.ok = t.ok && !!t.bt; });
+  const scoreOf = t => t.bt.avg + 0.1 * t.bt.worst;            // 평균 수익 위주, 크게 잃는 경우를 조금 감점
+  const cand = s.filter(t => t.ok).sort((a, b) => scoreOf(b) - scoreOf(a));
+  const best = cand.length && cand[0].bt.avg > 0 ? cand[0] : null;
+  return {list: [...cand, ...s.filter(t => !t.ok)], best};
+}
+function btLine(b) {
+  if (!b) return '<div class="why">과거에 이 조건이 나온 날이 적어 모의 결과가 없어요</div>';
+  return `<div class="grid">
+    <div class="m"><b class="${b.avg >= 0 ? 'up' : 'dn'}">${pct(b.avg, 2)}</b><span>7일 평균 수익</span></div>
+    <div class="m"><b>${b.win.toFixed(0)}%</b><span>수익 낸 비율</span></div>
+    <div class="m"><b class="dn">${pct(b.worst)}</b><span>나쁜 경우(하위 5%)</span></div>
+  </div><div class="why">과거 5년 중 이 조건이 나온 ${b.n}일 기준 모의 결과</div>`;
+}
+
+/* ---------- 화면 ---------- */
+let favs = store.load('fav') || ['KRW-NEAR'];
+let shown = null, sel = store.load('sel');
+const col = s => s >= 70 ? 'var(--g)' : s >= 40 ? 'var(--y)' : 'var(--r)';
+const fmtP = p => p >= 1000 ? Math.round(p).toLocaleString() : p >= 100 ? p.toFixed(1) : p.toPrecision(4);
+function card(x, i, prev) {
+  const p = prev && prev[x.market];
+  let chg = '<span class="chg">NEW</span>';
+  if (p) {
+    const d = p.rank - (i + 1), ds = x.score - p.score;
+    chg = `<span class="chg ${d > 0 ? 'up' : d < 0 ? 'dn' : ''}">${d > 0 ? '▲' + d : d < 0 ? '▼' + (-d) : '−'}</span>`
+        + ` <span class="chg">${ds >= 0 ? '+' : ''}${ds.toFixed(1)}점</span>`;
+  }
+  let tag = ['중립 · 뚜렷한 성향 없음', '#3a3d44'];
+  if (x.hurst < 0.45) tag = ['박스권 · 그리드 유리', '#1e3a5f']; else if (x.hurst > 0.55) tag = ['추세 · 추세추종 유리', '#4a2f1a'];
+  const fav = favs.includes(x.market);
+  let warn = '';
+  if (x.amp < 2) warn += '<div class="warn">⚠ 하루 진폭이 작아 수수료 빼면 남는 게 적어요</div>';
+  if (x.years < 4.5) warn += `<div class="warn">⚠ 상장 ${x.years.toFixed(1)}년치 데이터만 있어요</div>`;
+  const c30 = Number.isFinite(x.chg30) ? `<b class="${x.chg30 >= 0 ? 'up' : 'dn'}">${x.chg30 >= 0 ? '+' : ''}${x.chg30.toFixed(1)}%</b>` : '<b>−</b>';
+  return `<div class="card ${fav ? 'fav' : ''}">
+    <div class="row"><div class="rk">${i + 1}</div>
+      <div><span class="nm">${esc(x.name)}</span><span class="tk">${esc(x.market.slice(4))}</span><br>
+      <span class="tag" style="background:${tag[1]}">${tag[0]}</span></div>
+      <div class="sc"><b style="color:${col(x.score)}">${x.score.toFixed(0)}</b>${chg}</div>
+      <button class="star ${fav ? 'on' : ''}" data-m="${esc(x.market)}">${fav ? '★' : '☆'}</button></div>
+    <div class="bar"><i style="width:${x.score.toFixed(0)}%;background:${col(x.score)}"></i></div>
+    <div class="grid">
+      <div class="m"><b>${fmtP(x.price)}</b><span>현재가(원)</span></div>
+      <div class="m">${c30}<span>30일 등락</span></div>
+      <div class="m"><b>${x.amp.toFixed(1)}%</b><span>평균 하루 진폭</span></div>
+      <div class="m"><b>${x.jump.toFixed(1)}%</b><span>급등락 일 비율</span></div>
+      <div class="m"><b>${x.mdd.toFixed(0)}%</b><span>최대 낙폭</span></div>
+      <div class="m"><b>${x.hurst.toFixed(2)}</b><span>허스트 지수</span></div>
+    </div>${warn}</div>`;
+}
+function chips(list) {
+  const order = list.map((x, i) => [x, i]).sort((a, b) => favs.includes(b[0].market) - favs.includes(a[0].market));
+  $('chips').innerHTML = order.map(([x, i]) => `<button class="chip ${x.market === sel ? 'sel' : ''}" data-sel="${esc(x.market)}">
+      <small>${i + 1}위 ${favs.includes(x.market) ? '⭐' : ''}</small>${esc(x.name)}<div class="s" style="color:${col(x.score)}">${x.score.toFixed(0)}<small style="display:inline"> 점</small></div></button>`).join('');
+  const c = $('chips').querySelector('.sel'); if (c) c.scrollIntoView({inline: 'center', block: 'nearest'});
+}
+function analysisHtml(x) {
+  const cached = store.load('c_' + x.market);
+  const A = cached && analyze(cached.rows);
+  if (!A) return '<div class="card sub">이 종목은 분석할 시세가 부족해요. 새로고침 후 다시 시도해 주세요.</div>';
+  const {now, range: R} = A;
+  const trendTxt = A.cond.trend ? '<span class="up">상승 추세</span>' : A.cond.down ? '<span class="dn">하락 추세</span>' : '횡보 / 방향 탐색';
+  const rsiTxt = A.rsi >= 70 ? ' (과열)' : A.rsi < 35 ? ' (과매도)' : '';
+  const lo = now * (1 + R.lo), hi = now * (1 + R.hi), span = hi - lo || 1;
+  const S = strategies(x, A);
+  const verdict = S.best
+    ? `이번 주는 <b>${S.best.name}</b>이 가장 유리해 보여요. 과거 같은 조건에서 7일 평균 <b class="up">${pct(S.best.bt.avg, 2)}</b>, ${S.best.bt.win.toFixed(0)}% 확률로 수익이 났어요.`
+    : '지금 쓸 수 있는 전략들이 과거에 평균적으로 손실이었어요. 이번 주는 <b>관망(현금 보유)</b>을 추천해요.';
+  return `<h2>📊 ${esc(x.name)} 분석</h2>
+  <div class="card">
+    <div class="kv"><span>현재가</span><b>${won(now)}</b></div>
+    <div class="kv"><span>최근 7일 등락</span><b class="${A.chg7 >= 0 ? 'up' : 'dn'}">${Number.isFinite(A.chg7) ? pct(A.chg7) : '−'}</b></div>
+    <div class="kv"><span>추세 (20일선 ${won(A.m20)} · 60일선 ${won(A.m60)})</span><b>${trendTxt}</b></div>
+    <div class="kv"><span>RSI(14)</span><b>${A.rsi.toFixed(0)}${rsiTxt}</b></div>
+    <div class="kv"><span>요즘 하루 진폭 (14일 평균)</span><b>${(A.atr * 100).toFixed(1)}% · 평소의 ${A.vr.toFixed(1)}배</b></div>
+    <div class="kv"><span>최근 20일 지지 / 저항</span><b>${won(A.sup)} / ${won(A.res)}</b></div>
+  </div>
+  <h2>🔮 앞으로 7일 예상 범위</h2>
+  <div class="card">
+    <div class="rangebar"><div class="ln"></div>
+      <div class="bx" style="left:${((now * (1 + R.c10) - lo) / span * 100).toFixed(1)}%;width:${((R.c90 - R.c10) * now / span * 100).toFixed(1)}%"></div>
+      <div class="now" style="left:${((now - lo) / span * 100).toFixed(1)}%"></div></div>
+    <div class="rlab"><span>${won(lo)}<br>저점 ${pct(R.lo * 100)}</span><span style="text-align:right">${won(hi)}<br>고점 ${pct(R.hi * 100)}</span></div>
+    <div class="why">노란 선 = 현재가 · 파란 칸 = 7일 뒤 종가가 80% 확률로 들어올 범위 (${won(now * (1 + R.c10))} ~ ${won(now * (1 + R.c90))})<br>
+    과거 5년 동안 7일 뒤 오른 비율 ${R.up.toFixed(0)}% · 요즘 변동성을 반영해 범위를 조정했어요</div>
+  </div>
+  <h2>🧭 일주일 투자 전략 추천</h2>
+  <div class="card"><div class="verdict">${verdict}</div></div>
+  ${S.list.map(t => `<div class="card st ${t === S.best ? 'best' : ''} ${t.ok ? '' : 'off'}">
+    <div class="row"><b>${t.name}</b>${t === S.best ? '<span class="badge">추천</span>' : t.ok ? '' : '<span class="badge gray">조건 미충족</span>'}</div>
+    ${t.ok ? `<div class="plan">${t.plan}</div>` : `<div class="why">${t.off}</div>`}
+    <div class="why">${t.why}</div>${btLine(t.bt)}</div>`).join('')}`;
+}
+function render(res) {
+  if (!res) return;
+  shown = res;
+  const {list, prev, at} = res;
+  if (!list.some(x => x.market === sel)) sel = (list.find(x => favs.includes(x.market)) || list[0]).market;
+  $('upd').textContent = '마지막 갱신 ' + new Date(at).toLocaleString('ko-KR') + ' · 거래대금 상위 ' + list.length + '종목';
+  chips(list);
+  const i = list.findIndex(x => x.market === sel), x = list[i];
+  $('detail').innerHTML = card(x, i, prev) + '<div id="alert"></div>' + analysisHtml(x);
+  renderAlert();
+  if (typeof updateEdge === 'function') updateEdge();
+}
+
+/* ---------- 아이폰(웹앱)용 알림 엔진: 안드로이드 서비스와 같은 규칙, 앱을 열어둔 동안 30초마다 ---------- */
+if (!window.Android) (function () {
+  const FEE_W = 0.001, COOL = 30 * 60 * 1000;
+  const L = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
+  const S = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+  const f = p => p >= 1000 ? Math.round(p).toLocaleString() : p >= 100 ? p.toFixed(1) : p.toPrecision(4);
+  const pc = x => (x >= 0 ? '+' : '') + x.toFixed(2) + '%';
+  const ema = (a, n) => { const k = 2 / (n + 1), o = []; a.forEach((x, i) => o.push(i ? x * k + o[i - 1] * (1 - k) : x)); return o; };
+  function rsiW(c, n = 14) {
+    const o = c.map(() => NaN); let g = 0, l = 0;
+    for (let i = 1; i < c.length; i++) {
+      const d = c[i] - c[i - 1], up = Math.max(d, 0), dn = Math.max(-d, 0);
+      if (i <= n) { g += up / n; l += dn / n; } else { g = (g * (n - 1) + up) / n; l = (l * (n - 1) + dn) / n; }
+      if (i >= n) o[i] = l === 0 ? 100 : 100 - 100 / (1 + g / l);
+    }
+    return o;
+  }
+  async function notify(title, body, m) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    try {
+      const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration();
+      if (reg) await reg.showNotification(title, {body, icon: 'icon-192.png', badge: 'icon-192.png', tag: m || 'chamdom', data: {m}, vibrate: [300, 150, 300]});
+      else new Notification(title, {body, icon: 'icon-192.png'});
+    } catch (e) {}
+  }
+  function addHist(e) { const h = L('w_hist') || []; h.push(Object.assign(e, {at: Date.now()})); S('w_hist', h.slice(-500)); }
+  let busy = false;
+  async function tick() {
+    const cfg = L('w_cfg') || {}; if (!cfg.on || busy) return; busy = true;
+    try {
+      const target = (cfg.target || 0.2) / 100, stop = (cfg.stop || 1) / 100, up = target + FEE_W;
+      const look = Math.min(48, Math.max(12, Math.round(12 * (target * 100) / 0.5)));
+      const st = L('w_state') || {};
+      for (const m of cfg.markets || []) {
+        const name = (cfg.names || {})[m] || m.slice(4), s = st[m] || {mode: 'watch'};
+        try {
+          const arr = (await get(`${API}/candles/minutes/5?market=${m}&count=200`)).reverse();
+          const n = arr.length; if (n < 60) continue;
+          const h = arr.map(x => x.high_price), l = arr.map(x => x.low_price), cl = arr.map(x => x.trade_price);
+          const price = cl[n - 1], e9 = ema(cl, 9), e21 = ema(cl, 21), r = rsiW(cl);
+          const cond = t => e9[t] > e21[t] && cl[t] > e9[t] && r[t] >= 45 && r[t] <= 70 && cl[t] > cl[t - 3];
+          let wins = 0, samples = 0;
+          for (let t = 30; t < n - 1 - look; t++) {
+            if (!cond(t)) continue; samples++;
+            const tp = cl[t] * (1 + up), sl = cl[t] * (1 - stop);
+            for (let k = t + 1; k <= t + look; k++) { if (l[k] <= sl) break; if (h[k] >= tp) { wins++; break; } }
+          }
+          const hit = samples ? wins / samples : 0, now = Date.now(), buyNow = cond(n - 1) && samples >= 8 && hit >= 0.6;
+          Object.assign(s, {price, hit, samples, cond: cond(n - 1), checked: now, buyNow}); delete s.error;
+          if (s.mode === 'hold') {
+            const entry = s.entry || price, gain = price / entry - 1 - FEE_W; s.gain = gain;
+            if (price >= entry * (1 + up)) {
+              notify(`💰 ${name} 목표 수익 도달!`, `현재가 ${f(price)}원 · 기준가 ${f(entry)}원 대비 수수료 빼고 ${pc(gain * 100)}`, m);
+              addHist({m, name, type: 'tp', price, entry, gain, since: s.entryAt || 0});
+              Object.assign(s, {exitType: 'tp', exitLevel: entry * (1 + up), mode: 'watch', lastResult: '익절 ' + pc(gain * 100), lastSignal: now, alert: 'tp', alertAt: now}); delete s.fromSignal;
+            } else if (price <= entry * (1 - stop)) {
+              notify(`🛑 ${name} 손절선 도달`, `현재가 ${f(price)}원 · 기준가 ${f(entry)}원 대비 ${pc(gain * 100)}`, m);
+              addHist({m, name, type: 'sl', price, entry, gain, since: s.entryAt || 0});
+              Object.assign(s, {exitType: 'sl', exitLevel: entry * (1 - stop), mode: 'watch', lastResult: '손절 ' + pc(gain * 100), lastSignal: now, alert: 'sl', alertAt: now}); delete s.fromSignal;
+            }
+          } else if (buyNow && now - (s.lastSignal || 0) > COOL) {
+            Object.assign(s, {mode: 'hold', entry: price, entryAt: now, lastSignal: now, gain: -FEE_W, alert: 'buy', alertAt: now, fromSignal: true}); delete s.exitType;
+            addHist({m, name, type: 'buy', price, hit, samples, target: cfg.target || 0.2, stop: cfg.stop || 1});
+            notify(`🐟 ${name} 매수 타이밍`, `현재가 ${f(price)}원 · 비슷한 흐름 ${samples}번 중 ${Math.round(hit * 100)}%가 목표에 닿았어요`, m);
+          }
+          const ex = s.exitType, lv = s.exitLevel || 0;
+          const sellNow = s.mode === 'watch' && ((ex === 'tp' && price >= lv) || (ex === 'sl' && price <= lv));
+          const boardNow = buyNow || (s.mode === 'hold' && s.fromSignal && price <= (s.entry || 0) * (1 + FEE_W));
+          s.sellNow = sellNow; s.boardNow = boardNow && !sellNow;
+        } catch (e) { s.error = String(e.message || e); }
+        st[m] = s;
+      }
+      S('w_state', st);
+    } finally { busy = false; }
+  }
+  const pend = new URLSearchParams(location.search).get('m') || '';
+  window.WebBridge = {
+    alertConfig: () => JSON.stringify(L('w_cfg') || {}),
+    alertState: () => JSON.stringify(L('w_state') || {}),
+    setAlertConfig: j => { S('w_cfg', JSON.parse(j)); setTimeout(tick, 100); },
+    setEntry: (m, p) => {
+      const st = L('w_state') || {}, s = st[m] || {};
+      if (p > 0) Object.assign(s, {mode: 'hold', entry: p, entryAt: Date.now()}); else { s.mode = 'watch'; delete s.entry; }
+      ['alert', 'fromSignal', 'exitType'].forEach(k => delete s[k]); s.boardNow = s.sellNow = false;
+      st[m] = s; S('w_state', st);
+    },
+    ackAlert: m => { const st = L('w_state') || {}; if (st[m]) delete st[m].alert; S('w_state', st); },
+    alertHistory: () => JSON.stringify(L('w_hist') || []),
+    clearHistory: () => S('w_hist', []),
+    notifPermission: () => !('Notification' in window) || Notification.permission === 'granted',
+    requestNotif: () => { if ('Notification' in window) Notification.requestPermission().then(() => typeof renderAlert === 'function' && renderAlert()); },
+    batteryOk: () => true, requestBattery: () => {},
+    testNotify: () => notify('🐟 참돔파닥파닥 테스트 알림', '알림이 잘 와요! 매수·익절·손절 때 이렇게 알려드릴게요.'),
+    takePendingMarket: () => pend,
+    web: true
+  };
+  setInterval(tick, 30000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+  setTimeout(tick, 3000);
+  // 알림을 누르면 그 종목으로
+  if (navigator.serviceWorker) navigator.serviceWorker.addEventListener('message', e => { if (e.data && e.data.open && window.openMarket) window.openMarket(e.data.open); });
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+})();
+
+/* ---------- 실시간 알림 (앱이 꺼져 있어도 휴대폰에서 계속 감시) ---------- */
+const BR = window.Android || window.WebBridge, IS_WEB = !window.Android;
+const NATIVE = !!(BR && BR.alertConfig);
+const T_MIN = 0.1, T_MAX = 3, T_STEP = 0.05;
+let acfg = Object.assign({on: false, markets: [], names: {}, target: 0.2, stop: 1.0},
+  (() => { try { return NATIVE ? JSON.parse(BR.alertConfig() || '{}') : (store.load('acfg') || {}); } catch (e) { return {}; } })());
+const ast = () => { try { return NATIVE ? JSON.parse(BR.alertState() || '{}') : {}; } catch (e) { return {}; } };
+const clampT = v => Math.round(Math.min(T_MAX, Math.max(T_MIN, v)) / T_STEP) * T_STEP;
+function saveCfg() {
+  acfg.target = +clampT(acfg.target).toFixed(2);
+  if (NATIVE) BR.setAlertConfig(JSON.stringify(acfg)); else store.save('acfg', acfg);
+}
+function setTargetUI() {
+  const v = acfg.target.toFixed(2);
+  if ($('tval')) $('tval').textContent = '+' + v + '%';
+  if ($('trange')) $('trange').value = v;
+}
+window.onVolumeKey = d => { acfg.target = clampT(acfg.target + d * T_STEP); saveCfg(); setTargetUI(); };
+function statusHtml() {
+  if (!NATIVE) return '<div class="why">⚠ 알림은 휴대폰 앱에서만 동작해요</div>';
+  const S = ast();
+  if (!acfg.markets.length) return '<div class="why">감시 중인 종목이 없어요. 위에서 “이 종목 감시”를 켜세요.</div>';
+  return acfg.markets.map(m => {
+    const s = S[m] || {}, nm = esc(acfg.names[m] || m.slice(4));
+    const t = s.checked ? new Date(s.checked).toLocaleTimeString('ko-KR', {hour: '2-digit', minute: '2-digit'}) : '−';
+    let line;
+    if (s.mode === 'hold') {
+      const g = (s.gain || 0) * 100;
+      line = `<b>보유 중</b> · 기준가 ${won(s.entry)} → 현재 ${s.price ? won(s.price) : '−'} <b class="${g >= 0 ? 'up' : 'dn'}">${pct(g, 2)}</b><br>
+        익절 ${won(s.entry * (1 + acfg.target / 100 + FEE))} · 손절 ${won(s.entry * (1 - acfg.stop / 100))}
+        <div class="row" style="margin-top:6px"><input id="ent_${esc(m)}" type="number" inputmode="decimal" placeholder="실제 매수가" style="flex:1">
+        <button data-act="entry" data-m="${esc(m)}">매수가 수정</button><button data-act="clear" data-m="${esc(m)}" style="background:var(--line);color:var(--tx)">보유 해제</button></div>`;
+    } else {
+      line = `<b>매수 타이밍 기다리는 중</b>${s.price ? ' · 현재 ' + won(s.price) : ''}<br>
+        ${s.samples ? `최근 비슷한 흐름 ${s.samples}번 중 ${Math.round(s.hit * 100)}% 목표 도달 · ${s.cond ? '<span class="up">상승 흐름</span>' : '흐름 약함'}` : '확인 대기'}
+        <div class="row" style="margin-top:6px"><input id="ent_${esc(m)}" type="number" inputmode="decimal" placeholder="이미 샀다면 매수가 입력" style="flex:1">
+        <button data-act="entry" data-m="${esc(m)}">보유로 전환</button></div>`;
+    }
+    return `<div class="kv" style="display:block"><div class="row"><b>${nm}</b><span class="sub" style="margin-left:auto">${t} 확인${s.lastResult ? ' · 지난번 ' + esc(s.lastResult) : ''}</span></div>
+      <div class="why" style="color:var(--tx)">${line}</div>${s.error ? `<div class="warn">⚠ ${esc(s.error).slice(0, 80)}</div>` : ''}</div>`;
+  }).join('');
+}
+function renderAlert() {
+  const box = $('alert'); if (!box || !shown) return;
+  const x = shown.list.find(y => y.market === sel); if (!x) return;
+  const watching = acfg.markets.includes(sel);
+  const perm = NATIVE && !BR.notifPermission(), batt = NATIVE && !BR.batteryOk();
+  box.innerHTML = `<h2>🔔 실시간 알림</h2><div class="card">
+    <div class="row"><div><b>알림 전체</b><div class="sub">${IS_WEB ? '앱을 열어둔 동안 30초마다 확인해요' : '앱을 닫아도 30초마다 확인해요'}</div></div>
+      <button data-act="power" class="sw ${acfg.on ? 'on' : ''}" style="margin-left:auto">${acfg.on ? '켜짐' : '꺼짐'}</button></div>
+    <div class="row" style="margin-top:12px"><div><b>${esc(x.name)} 감시</b><div class="sub">감시 종목 ${acfg.markets.length}개</div></div>
+      <button data-act="watch" class="sw ${watching ? 'on' : ''}" style="margin-left:auto">${watching ? '감시 중' : '감시 안 함'}</button></div>
+    <div style="margin-top:16px"><div class="row"><b>목표 수익</b><span class="sub">수수료 빼고</span>
+      <span id="tval" style="margin-left:auto;font-size:26px;font-weight:800;color:var(--g)">+${acfg.target.toFixed(2)}%</span></div>
+      <div class="row" style="margin-top:6px"><button data-act="tdn" class="pm">−</button>
+        <input id="trange" type="range" min="${T_MIN}" max="${T_MAX}" step="${T_STEP}" value="${acfg.target}" style="flex:1">
+        <button data-act="tup" class="pm">+</button></div>
+      ${IS_WEB ? '' : '<div class="sub">🔊 휴대폰 볼륨 버튼(+/−)으로도 0.05%씩 조절돼요</div>'}</div>
+    <div class="row" style="margin-top:14px"><b>손절</b><span class="sub">기준가 대비</span>
+      <span style="margin-left:auto" class="dn">−</span><input id="stopin" type="number" inputmode="decimal" min="0.1" max="30" step="0.1" value="${acfg.stop}" style="width:80px;text-align:right"><b>%</b></div>
+    <div class="why" style="margin-top:12px">① 상승 흐름에서, 최근 비슷한 흐름이 60% 이상 목표 수익에 닿았던 때 → <b>매수 타이밍</b> 알림<br>
+      ② 그 가격(또는 직접 입력한 매수가) 기준으로 목표 수익 도달 → <b>익절</b> 알림 · 손절선 도달 → <b>손절</b> 알림</div>
+    ${perm ? '<div class="row warn" style="margin-top:10px">⚠ 알림 권한이 꺼져 있어요 <button data-act="perm" style="margin-left:auto">권한 허용</button></div>' : ''}
+    ${batt ? '<div class="row warn" style="margin-top:10px">⚠ 배터리 절약 때문에 감시가 멈출 수 있어요 <button data-act="batt" style="margin-left:auto">제한 해제</button></div>' : ''}
+    ${NATIVE ? '<div style="margin-top:10px"><button data-act="test" style="background:var(--line);color:var(--tx)">테스트 알림 보내기</button></div>' : ''}
+  </div><h2>📡 감시 현황</h2><div class="card" id="astat">${statusHtml()}</div>`;
+}
+setInterval(() => { const a = $('astat'); if (a && !a.contains(document.activeElement)) a.innerHTML = statusHtml(); }, 5000);
+document.addEventListener('input', e => {
+  if (e.target.id === 'trange') { acfg.target = +e.target.value; setTargetUI(); }
+});
+document.addEventListener('change', e => {
+  if (e.target.id === 'trange') saveCfg();
+  if (e.target.id === 'stopin') { const v = parseFloat(e.target.value); if (v > 0) { acfg.stop = Math.min(30, v); saveCfg(); renderAlert(); } }
+});
+document.addEventListener('click', e => {
+  const a = e.target.closest('[data-act]'); if (!a) return;
+  const act = a.dataset.act;
+  if (act === 'power') { acfg.on = !acfg.on; if (acfg.on && NATIVE && !BR.notifPermission()) BR.requestNotif(); if (acfg.on && !acfg.markets.length) { acfg.markets.push(sel); } }
+  if (act === 'watch') {
+    const x = shown.list.find(y => y.market === sel);
+    if (acfg.markets.includes(sel)) acfg.markets = acfg.markets.filter(m => m !== sel);
+    else { acfg.markets.push(sel); acfg.names[sel] = x ? x.name : sel; if (!acfg.on) { acfg.on = true; if (NATIVE && !BR.notifPermission()) BR.requestNotif(); } }
+  }
+  if (sel && shown) { const x = shown.list.find(y => y.market === sel); if (x) acfg.names[sel] = x.name; }
+  if (act === 'tup' || act === 'tdn') { acfg.target = clampT(acfg.target + (act === 'tup' ? T_STEP : -T_STEP)); saveCfg(); setTargetUI(); return; }
+  if (act === 'entry' && NATIVE) { const v = parseFloat(($('ent_' + a.dataset.m) || {}).value); if (v > 0) BR.setEntry(a.dataset.m, v); }
+  if (act === 'clear' && NATIVE) BR.setEntry(a.dataset.m, 0);
+  if (act === 'perm' && NATIVE) BR.requestNotif();
+  if (act === 'batt' && NATIVE) BR.requestBattery();
+  if (act === 'test' && NATIVE) { if (!BR.notifPermission()) BR.requestNotif(); else BR.testNotify(); return; }
+  saveCfg(); renderAlert();
+});
+document.addEventListener('visibilitychange', () => { if (!document.hidden) renderAlert(); });
+
+document.addEventListener('click', e => {
+  const c = e.target.closest('.chip');
+  if (c) { sel = c.dataset.sel; store.save('sel', sel); render(shown); window.scrollTo({top: 0}); return; }
+  const b = e.target.closest('.star'); if (!b) return;
+  const m = b.dataset.m;
+  favs = favs.includes(m) ? favs.filter(x => x !== m) : [...favs, m];
+  store.save('fav', favs); render(shown);
+});
+function progress(i, n, name) {
+  $('prog').style.display = 'block';
+  $('ptxt').textContent = `시세 받는 중 ${i}/${n} · ${name}`;
+  $('pbar').style.width = (i / n * 100).toFixed(0) + '%';
+}
+
+/* ---------- 실행 ---------- */
+let running = false;
+async function run() {
+  if (running) return; running = true; $('btn').disabled = true; $('err').innerHTML = '';
+  try {
+    const since = Date.now() - YEARS * 365 * DAY;
+    const mk = (await get(API + '/market/all?isDetails=false')).filter(m => m.market.startsWith('KRW-'));
+    const totals = []; let fails = 0, lastErr = '';
+    for (let i = 0; i < mk.length; i++) {
+      progress(i + 1, mk.length, mk[i].korean_name);
+      try {
+        const rows = await candles(mk[i].market, since);
+        if (rows.length > 60) totals.push({market: mk[i].market, name: mk[i].korean_name, value: rows.reduce((s, r) => s + r[5], 0), rows});
+      } catch (e) {
+        fails++; lastErr = e.message;
+        if (fails >= 10 && !totals.length) throw new Error('업비트 시세를 받지 못했어요: ' + lastErr);
+      }
+    }
+    if (!totals.length) throw new Error('받은 시세가 없어요');
+    totals.sort((a, b) => b.value - a.value);
+    const list = score(totals.slice(0, TOP_N).map(t => ({market: t.market, name: t.name, value: t.value, ...metrics(t.rows)})));
+    const old = store.load('result');
+    const prev = old ? Object.fromEntries(old.list.map((x, i) => [x.market, {rank: i + 1, score: x.score}])) : null;
+    const res = {at: Date.now(), list, prev};
+    store.save('result', res);
+    render(res);
+    if (fails) $('err').innerHTML = `<div class="err">${fails}개 종목은 받지 못하고 건너뛰었어요 (${esc(lastErr)})</div>`;
+  } catch (e) {
+    $('err').innerHTML = `<div class="err">❌ ${esc(e.message)}<br><span class="sub">인터넷 연결을 확인하고 새로고침을 눌러주세요.</span></div>`;
+  } finally {
+    running = false; $('btn').disabled = false; $('prog').style.display = 'none';
+  }
+}
+$('btn').onclick = run;
+
+/* ---------- 신호 팝업 + 테두리 조명 ---------- */
+// 팝업: 새 신호가 오면 앱 안에서 확인창 → 확인 누르면 그 종목 화면으로
+// 테두리: 그 종목 화면에서, 탑승 시점(🌈 회전)·하차 시점(💛/❤️ 점멸)이 이어지는 동안 계속 켜짐
+const POP_MAX_AGE = 60 * 60 * 1000;
+let seen = store.load('seenAlerts') || {}, popM = null;
+window.openMarket = m => {
+  if (!shown || !shown.list.some(x => x.market === m)) return;
+  if ($('help').classList.contains('show')) showHelp(false);
+  closeHist();
+  sel = m; store.save('sel', sel); render(shown); window.scrollTo({top: 0});
+};
+function popup() {
+  if (popM || !NATIVE) return;
+  const S = ast(), now = Date.now();
+  const cand = acfg.markets.map(m => [m, S[m]]).filter(([m, s]) => s && s.alert && s.alertAt > (seen[m] || 0) && now - s.alertAt < POP_MAX_AGE)
+    .sort((x, y) => (x[1].alert === 'buy') - (y[1].alert === 'buy') || y[1].alertAt - x[1].alertAt);   // 하차 신호 먼저
+  if (!cand.length) return;
+  const [m, s] = cand[0], nm = esc(acfg.names[m] || m.slice(4));
+  popM = [m, s.alertAt];
+  const T = {buy: ['🌈', `${nm} 탑승 권고`, `${won(s.entry || s.price)} 근처, 매수 타이밍이에요.<br>목표 +${acfg.target.toFixed(2)}% · 손절 −${acfg.stop}%`, 'var(--blue)'],
+             tp: ['💰', `${nm} 하차! 목표 수익 도달`, `${esc(s.lastResult || '')}<br>지금 매도하면 목표 수익이에요.`, 'var(--y)'],
+             sl: ['🛑', `${nm} 하차! 손절선 도달`, `${esc(s.lastResult || '')}<br>더 큰 손실을 막으려면 매도하세요.`, 'var(--r)']}[s.alert];
+  $('mic').textContent = T[0]; $('mtitle').innerHTML = T[1]; $('mtext').innerHTML = T[2];
+  $('mok').style.background = T[3]; $('mbox').style.borderColor = T[3];
+  $('modal').classList.add('show');
+}
+$('mok').onclick = () => {
+  const [m, at] = popM; popM = null;
+  seen[m] = at; store.save('seenAlerts', seen);
+  if (NATIVE && BR.ackAlert) BR.ackAlert(m);
+  $('modal').classList.remove('show');
+  window.openMarket(m);
+  updateEdge(); setTimeout(popup, 300);       // 다른 종목 신호가 남아 있으면 이어서
+};
+function updateEdge() {
+  const s = (ast())[sel], on = s && acfg.markets.includes(sel) && !$('hist').classList.contains('show') && !$('help').classList.contains('show');
+  const mode = on && s.sellNow ? (s.exitType === 'sl' ? 'sl' : 'tp') : on && s.boardNow ? 'rainbow' : '';
+  $('edge').className = 'edge' + (mode ? ' ' + mode : '');
+  const nm = on ? esc(acfg.names[sel] || sel.slice(4)) : '';
+  $('sigTxt').innerHTML = mode === 'rainbow' ? `<b>🌈 ${nm} 탑승 권고 시점</b><br>신호 가격 ${won(s.entry || s.price)} 근처예요`
+    : mode === 'tp' ? `<b>💰 ${nm} 하차 시점 (목표 수익)</b><br>현재 ${won(s.price)} · 목표가 ${won(s.exitLevel)} 이상`
+    : mode === 'sl' ? `<b>🛑 ${nm} 하차 시점 (손절)</b><br>현재 ${won(s.price)} · 손절가 ${won(s.exitLevel)} 이하` : '';
+  const key = mode ? [sel, mode, s.entryAt || s.alertAt || s.exitLevel].join('|') : '';
+  sigKey = key;
+  $('sig').classList.toggle('show', !!mode && key !== sigHidden);   // 확인 누르면 안내창만 숨김(테두리는 유지)
+  $('sigOk').style.background = mode === 'sl' ? 'var(--r)' : mode === 'tp' ? 'var(--y)' : 'var(--blue)';
+}
+let sigKey = '', sigHidden = store.load('sigHidden') || '';
+$('sigOk').onclick = () => { sigHidden = sigKey; store.save('sigHidden', sigHidden); $('sig').classList.remove('show'); };
+setInterval(() => { updateEdge(); popup(); }, 2000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { updateEdge(); popup(); } });
+/* ---------- 알림 내역 ---------- */
+let hFilter = 'all';
+const hist = () => { try { return NATIVE && BR.alertHistory ? JSON.parse(BR.alertHistory() || '[]') : (store.load('demoHist') || []); } catch (e) { return []; } };
+function renderHist() {
+  const H = hist().sort((a, b) => b.at - a.at), mk = [...new Set(H.map(e => e.m))];
+  $('hfil').innerHTML = [['all', '전체'], ...mk.map(m => [m, (H.find(e => e.m === m) || {}).name || m.slice(4)])]
+    .map(([k, n]) => `<button class="chip ${k === hFilter ? 'sel' : ''}" data-hf="${esc(k)}" style="min-width:0">${esc(n)}</button>`).join('');
+  const L = H.filter(e => hFilter === 'all' || e.m === hFilter);
+  const ex = L.filter(e => e.type !== 'buy'), tp = ex.filter(e => e.type === 'tp').length, sl = ex.length - tp;
+  const sum = ex.reduce((a, e) => a + (e.gain || 0), 0) * 100;
+  $('hsum').innerHTML = `<div class="grid" style="margin-top:0">
+    <div class="m"><b>${L.filter(e => e.type === 'buy').length}회</b><span>🌈 탑승 권고</span></div>
+    <div class="m"><b>${ex.length ? Math.round(tp / ex.length * 100) + '%' : '−'}</b><span>💰${tp} / 🛑${sl} 익절 비율</span></div>
+    <div class="m"><b class="${sum >= 0 ? 'up' : 'dn'}">${ex.length ? pct(sum, 2) : '−'}</b><span>누적 수익(합계)</span></div></div>
+    <div class="why">알림대로 사고팔았다고 가정한 결과예요 (수수료 반영). 실제 매매와 다를 수 있어요.</div>`;
+  if (!L.length) { $('hlist').innerHTML = '<div class="card sub">아직 내역이 없어요. 종목 감시를 켜두면 알림이 올 때마다 여기에 쌓여요.</div>'; return; }
+  let day = '';
+  $('hlist').innerHTML = L.map(e => {
+    const d = new Date(e.at), ds = d.toLocaleDateString('ko-KR', {month: 'long', day: 'numeric', weekday: 'short'});
+    const head = ds !== day ? `<div class="hday">${ds}</div>` : ''; day = ds;
+    const tm = d.toLocaleTimeString('ko-KR', {hour: '2-digit', minute: '2-digit'});
+    const nm = esc(e.name || e.m.slice(4));
+    let ic, ttl, sub, g = '';
+    if (e.type === 'buy') { ic = '🌈'; ttl = `${nm} 탑승 권고`; sub = `${won(e.price)} · 비슷한 흐름 ${e.samples}번 중 ${Math.round(e.hit * 100)}% 성공 · 목표 +${e.target}% / 손절 −${e.stop}%`; }
+    else {
+      ic = e.type === 'tp' ? '💰' : '🛑'; ttl = `${nm} ${e.type === 'tp' ? '익절' : '손절'}`;
+      const mins = e.since ? Math.round((e.at - e.since) / 60000) : null;
+      sub = `${won(e.entry)} → ${won(e.price)}${mins != null ? ` · ${mins >= 60 ? Math.floor(mins / 60) + '시간 ' : ''}${mins % 60}분 보유` : ''}`;
+      g = `<div class="g ${e.gain >= 0 ? 'up' : 'dn'}">${pct(e.gain * 100, 2)}</div>`;
+    }
+    return `${head}<div class="hrow" data-hm="${esc(e.m)}"><div class="ic">${ic}</div><div><b>${ttl}</b><div class="t">${tm} · ${sub}</div></div>${g}</div>`;
+  }).join('');
+}
+const openHist = () => { store.save('histSeenAt', Date.now()); updateBell(); hFilter = 'all'; renderHist(); $('hist').classList.add('show'); $('hist').scrollTop = 0; history.pushState({hist: 1}, ''); };
+const closeHist = () => $('hist').classList.remove('show');
+$('histBtn').onclick = openHist;
+function updateBell() {   // 안 본 새 알림이 있으면 빨간 점 + 종 흔들림
+  const seenAt = store.load('histSeenAt') || 0, n = hist().filter(e => e.at > seenAt).length;
+  $('hdot').classList.toggle('on', n > 0); $('histBtn').classList.toggle('ring', n > 0);
+}
+setInterval(updateBell, 3000); updateBell();
+$('histClose').onclick = () => history.state && history.state.hist ? history.back() : closeHist();
+window.addEventListener('popstate', closeHist);
+$('hist').addEventListener('click', e => {
+  const f = e.target.closest('[data-hf]'); if (f) { hFilter = f.dataset.hf; renderHist(); return; }
+  const r = e.target.closest('[data-hm]'); if (r) { const m = r.dataset.hm; history.state && history.state.hist ? history.back() : closeHist(); setTimeout(() => window.openMarket(m), 50); }
+});
+$('histClear').onclick = () => {
+  const b = $('histClear');
+  if (b.dataset.sure) { if (NATIVE && BR.clearHistory) BR.clearHistory(); else store.save('demoHist', []); delete b.dataset.sure; b.textContent = '내역 모두 지우기'; renderHist(); }
+  else { b.dataset.sure = 1; b.textContent = '한 번 더 누르면 지워져요'; setTimeout(() => { delete b.dataset.sure; b.textContent = '내역 모두 지우기'; }, 3000); }
+};
+/* ---------- 사용법 ---------- */
+const showHelp = on => { $('help').classList.toggle('show', on); if (on) $('help').scrollTop = 0; else store.save('helpSeen', 1); };
+const openHelp = () => { showHelp(true); history.pushState({help: 1}, ''); };   // 휴대폰 뒤로가기로 닫히게
+$('helpBtn').onclick = openHelp;
+$('helpClose').onclick = $('helpClose2').onclick = () => history.state && history.state.help ? history.back() : showHelp(false);
+window.addEventListener('popstate', () => showHelp(false));
+if (!window.Android) $('iosHelp').style.display = 'block';
+if (!store.load('helpSeen')) openHelp();
+setTimeout(() => { const m = NATIVE && BR.takePendingMarket ? BR.takePendingMarket() : ''; if (m) window.openMarket(m); updateEdge(); popup(); }, 300);
+idbOpen().then(() => {
+  render(store.load('result'));   // 지난 결과를 먼저 보여주고
+  run();                          // 실행할 때마다 최신 데이터로 갱신
+});
+</script>
+</body>
+</html>
