@@ -189,6 +189,7 @@ footer { font-size: 12px; color: var(--muted); text-align: center; }
         <div><div class="label">다음 주문</div><div class="stat-val num" id="nextOrder">-</div></div>
       </div>
       <div class="sub" id="perfNote"></div>
+      <div class="msg" id="reportBox" hidden></div>
     </section>
 
     <section class="card" id="posCard" hidden>
@@ -421,7 +422,15 @@ function renderMore(s, stale) {
     else if (s.canEnter && s.canEnter !== "가능") notes.push("신규 매수 멈춤: " + s.canEnter);
     if (lg.martLevel) notes.push(`마틴게일 ${lg.martLevel}단계`);
     if (lg.tradesTotal) notes.push(`누적 ${lg.tradesTotal}회 · 승률 ${Math.round(lg.winsTotal / lg.tradesTotal * 100)}% · 실현 ${signed(lg.realizedTotal)}`);
+    if ((s.blocked || []).length) notes.push("오늘 제외(실전 부진): " + s.blocked.map((m) => m.split("-")[1]).join(", "));
     $("perfNote").textContent = notes.join(" · ");
+    const r = s.report;
+    if (r) {
+      const wr = r.trades ? Math.round(r.wins / r.trades * 100) + "%" : "-";
+      const worst = (r.byMarket || []).filter((x) => x.pnl < 0).slice(0, 3).map((x) => `${x.market.split("-")[1]} ${signed(x.pnl)}`).join(", ");
+      $("reportBox").textContent = `전날 결산(${r.day}): ${r.trades}회 · 승률 ${wr} · 손익 ${signed(r.pnl)}` + (worst ? ` · 손실 종목 ${worst}` : "");
+    }
+    $("reportBox").hidden = !r;
     $("perfNote").hidden = !notes.length;
   }
 

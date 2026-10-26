@@ -72,6 +72,11 @@ BT_MIN_WINRATE = 0.90            # 채택 최소 승률
 BT_HOLDOUT = 0.25                # 마지막 25% 구간은 따로 검증(손실이면 탈락)
 REOPTIMIZE_MIN = 60              # 전략 재선정 주기(분)
 
+# 실전 학습: 그날 실제 거래에서 이 기준보다 못하면 그 종목은 다음 날 9시까지 제외
+LIVE_MIN_TRADES = 3              # 판단에 필요한 최소 거래 수
+LIVE_MIN_WINRATE = 0.67          # 이보다 낮으면 제외
+LIVE_MAX_LOSS_STREAK = 2         # 같은 종목 연속 손실 횟수 한도
+
 STATUS_EVERY = 30
 LOOP_IDLE = 15                   # 보유 없을 때 확인 간격(초)
 LOOP_ACTIVE = 5                  # 보유 중 확인 간격(초)
@@ -190,6 +195,9 @@ def load_state(budget):
     s.setdefault("strategies", {})     # {market: spec}
     s.setdefault("lastOptimize", 0)
     s.setdefault("lastCandle", {})
+    s.setdefault("marketStats", {})    # 오늘 종목별 실전 성적
+    s.setdefault("blocked", [])        # 오늘 제외된 종목
+    s.setdefault("lastReport", None)   # 전날 결산
     s.pop("paper", None)               # v1 모의매매 기록 정리
     return s
 
@@ -629,6 +637,14 @@ class Bot:
         if lg["day"] != day:
             if lg["day"]:
                 log(f"거래일 마감 {lg['day']}: {lg['dayTrades']}회(익절 {lg['dayWins']}) 손익 {lg['dayPnl']:+,.0f}원")
+                by = [{"market": m, **v} for m, v in self.state["marketStats"].items()]
+                by.sort(key=lambda x: x["pnl"])
+                self.state["lastReport"] = {
+                    "day": lg["day"], "trades": lg["dayTrades"], "wins": lg["dayWins"], "pnl": round(lg["dayPnl"]),
+                    "seed": round(lg["seed"]), "locked": round(lg["locked"]), "byMarket": by,
+                    "blocked": list(self.state["blocked"])}
+            self.state["marketStats"] = {}
+            self.state["blocked"] = []
             lg.update({"day": day, "dayPnl": 0.0, "dayTrades": 0, "dayWins": 0})
             save_state(self.state)
             log(f"새 거래일 {day} 시작 · 시드 {lg['seed']:,.0f}원 · 잠긴 수익 {lg['locked']:,.0f}원")
@@ -649,6 +665,24 @@ class Bot:
             lg["seed"] += pnl
             lg["cooldownUntil"] = int(time.time()) + LOSS_COOLDOWN_MIN * 60
             lg["martLevel"] = min(lg["martLevel"] + 1, self.cfg["MARTINGALE_MAX_LEVEL"])
+        save_state(self.state)
+
+    def learn(self, market, pnl, reason):
+        st = self.state["marketStats"].setdefault(
+            market, {"trades": 0, "wins": 0, "pnl": 0.0, "lossStreak": 0, "reasons": {}})
+        st["trades"] += 1
+        st["pnl"] = round(st["pnl"] + pnl)
+        st["reasons"][reason] = st["reasons"].get(reason, 0) + 1
+        if pnl > 0:
+            st["wins"] += 1
+            st["lossStreak"] = 0
+        else:
+            st["lossStreak"] += 1
+        bad = (st["trades"] >= LIVE_MIN_TRADES and st["wins"] / st["trades"] < LIVE_MIN_WINRATE) \
+            or st["lossStreak"] >= LIVE_MAX_LOSS_STREAK
+        if bad and market not in self.state["blocked"]:
+            self.state["blocked"].append(market)
+            log(f"[학습] {market.split('-')[1]} 실전 성적 부진({st['wins']}/{st['trades']}승, 연속손실 {st['lossStreak']}) → 오늘 거래 제외")
         save_state(self.state)
 
     def order_size(self):
@@ -787,6 +821,7 @@ class Bot:
         pnl = proceeds - pos["cost"]
         del self.state["positions"][market]
         self.book(pnl)
+        self.learn(market, pnl, reason)
         tag = "실매도" if self.live else "모의매도"
         log(f"[{tag}] {market} 손익 {pnl:+,.0f}원 ({reason}) · 시드 {self.ledger['seed']:,.0f} · 잠김 {self.ledger['locked']:,.0f}"
             + ("" if pnl > 0 else f" · {LOSS_COOLDOWN_MIN}분 대기"))
@@ -822,7 +857,7 @@ class Bot:
         if not ok:
             return
         for mk, spec in self.state["strategies"].items():
-            if mk in self.state["positions"] or mk.split("-")[1] in PROTECTED_COINS:
+            if mk in self.state["positions"] or mk in self.state["blocked"] or mk.split("-")[1] in PROTECTED_COINS:
                 continue
             candles = self.upbit.minute_candles(mk, 200)
             closed = candles[:-1]                         # 진행 중인 봉 제외
@@ -947,7 +982,9 @@ class Bot:
                      "strategies": [{"market": m, "desc": describe(s), "winrate": s.get("winrate"),
                                      "trades": s.get("trades"), "totalPct": s.get("totalPct"),
                                      "holdoutPct": s.get("holdoutPct")} for m, s in self.state["strategies"].items()],
-                     "universe": self.state["universe"]["markets"]})
+                     "universe": self.state["universe"]["markets"],
+                     "blocked": self.state["blocked"], "marketStats": self.state["marketStats"],
+                     "report": self.state["lastReport"]})
         self.cloud.put_status(data)
         self.last_status = time.time()
 
