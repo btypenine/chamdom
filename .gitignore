@@ -1,0 +1,8 @@
+# 비밀 정보와 실행 기록은 절대 올리지 않음
+bot_config.env
+bot_state.json
+bot_state.json.tmp
+bot.log
+*.prev
+*.new
+__pycache__/

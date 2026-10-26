@@ -1,0 +1,1073 @@
+# -*- coding: utf-8 -*-
+"""
+참돔 트레이드 PC 봇 v2 — 소액 반복 자동매매
+
+동작 요약
+- 매일 09:00(KST)에 업비트 원화마켓 중 최근 1년 거래대금 상위 10종목 선정 (보호 코인·유의 종목 제외)
+- 종목마다 무작위 전략 조합을 1분봉으로 백테스트 → 승률 90% 이상 + 최근 구간 무손실인 것만 채택
+- 1시간마다 새 데이터로 전략을 다시 고름
+- 신호가 나오면 기본 1만원 시장가 매수 → 수수료 빼고 +0.5% 이상이면 매도(익절)
+- 손절/최대 보유시간은 전략별로 백테스트에서 고른 값 사용
+- 손실로 끝나면 30분간 전체 거래 정지, 마틴게일(손실 후 2배, 최대 단계 제한) 선택 가능
+- 시드 20만원(설정값)에서 시작, 수익의 50%는 잠금(거래 불가), 50%는 시드에 편입, 손실은 시드에서 차감
+- 보호 코인(XRP)은 절대 주문하지 않고, 웹페이지에도 표시하지 않음
+- TRADE_MODE=live 일 때만 실제 주문. 없거나 paper 면 모의매매
+
+실행: python chamdom_bot.py   (종료: Ctrl+C)
+필요 패키지: python -m pip install requests pyjwt
+"""
+import hashlib
+import json
+import math
+import os
+import random
+import sys
+import time
+import uuid
+from collections import deque
+from datetime import datetime, timezone, timedelta
+from urllib.parse import urlencode, unquote
+
+try:
+    import jwt
+    import requests
+except ImportError:
+    print("필요 패키지가 없습니다. 먼저 실행하세요:\n  python -m pip install requests pyjwt")
+    sys.exit(1)
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
+# ======================= 설정 =======================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(BASE_DIR, "bot_config.env")
+STATE_FILE = os.path.join(BASE_DIR, "bot_state.json")
+LOG_FILE = os.path.join(BASE_DIR, "bot.log")
+
+FIREBASE_API_KEY = "AIzaSyAriivkle0ogGBauc-VyyMm6YDgMhc8ccw"
+FIREBASE_PROJECT = "chamdom-trade"
+FS_BASE = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}/databases/(default)/documents"
+UPBIT = "https://api.upbit.com"
+KST = timezone(timedelta(hours=9))
+
+PROTECTED_COINS = {"XRP"}        # 절대 거래 금지 + 화면 표시 안 함
+STABLE_COINS = {"USDT", "USDC", "DAI", "USDE", "USD1", "PYUSD", "TUSD"}  # 가격 고정 코인은 거래 대상 제외
+MIN_ORDER_KRW = 5000
+FEE_RATE = 0.0005                # 업비트 원화마켓 0.05%
+
+# 매매 규칙 (bot_config.env 에서 바꿀 수 있는 값은 load_config 참고)
+TARGET_NET_PCT = 0.5             # 수수료 제외 순수익 목표 %
+LOSS_COOLDOWN_MIN = 30           # 손실 후 전체 거래 정지(분)
+PROFIT_LOCK_RATIO = 0.5          # 수익 중 잠그는 비율
+TOP_N = 10                       # 거래대금 상위 종목 수
+MAX_OPEN_POSITIONS = 3           # 동시에 들고 있을 최대 종목 수
+
+# 백테스트
+BT_CANDLES = 1200                # 1분봉 개수(약 20시간)
+BT_TRIALS = 250                  # 종목당 시험할 무작위 전략 수
+BT_MIN_TRADES = 6                # 채택 최소 거래 수
+BT_MIN_WINRATE = 0.90            # 채택 최소 승률
+BT_HOLDOUT = 0.25                # 마지막 25% 구간은 따로 검증(손실이면 탈락)
+REOPTIMIZE_MIN = 60              # 전략 재선정 주기(분)
+
+STATUS_EVERY = 30
+LOOP_IDLE = 15                   # 보유 없을 때 확인 간격(초)
+LOOP_ACTIVE = 5                  # 보유 중 확인 간격(초)
+COMMAND_MAX_AGE = 10 * 60
+
+# 자동 업데이트: GitHub에 올라간 최신 코드를 받아 스스로 재시작 (start_bot.bat 이 다시 띄워줌)
+UPDATE_URL = "https://raw.githubusercontent.com/btypenine/chamdom/main/bot/chamdom_bot.py"
+UPDATE_EVERY = 10 * 60
+RESTART_CODE = 3
+
+
+class RestartForUpdate(Exception):
+    pass
+
+
+def check_update():
+    """새 버전이 있으면 파일을 바꾸고 True"""
+    me = os.path.abspath(__file__)
+    try:
+        res = requests.get(UPDATE_URL, params={"t": int(time.time())}, timeout=15)
+        if res.status_code != 200:
+            return False
+        new = res.content.decode("utf-8").replace("\r\n", "\n")
+        with open(me, encoding="utf-8") as f:
+            cur = f.read().replace("\r\n", "\n")
+        if new == cur:
+            return False
+        if "참돔 트레이드 PC 봇" not in new:
+            return False
+        compile(new, "chamdom_bot.py", "exec")          # 문법 오류가 있는 코드는 받지 않음
+        with open(me + ".prev", "w", encoding="utf-8") as f:
+            f.write(cur)
+        tmp = me + ".new"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write(new)
+        os.replace(tmp, me)
+        return True
+    except Exception as e:
+        print(f"[업데이트 확인 실패] {e}", flush=True)
+        return False
+
+
+ACTIVITY = deque(maxlen=60)       # 웹페이지 '실시간 기록'용 최근 로그
+
+
+def log(msg):
+    line = f"[{datetime.now(KST).strftime('%m-%d %H:%M:%S')}] {msg}"
+    print(line, flush=True)
+    ACTIVITY.append(f"{datetime.now(KST).strftime('%H:%M:%S')} {msg}")
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def load_config():
+    if not os.path.exists(CONFIG_FILE):
+        print(f"[오류] 설정 파일이 없습니다: {CONFIG_FILE}")
+        sys.exit(1)
+    cfg = {}
+    with open(CONFIG_FILE, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                cfg[k.strip()] = v.strip()
+    missing = [k for k in ("UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "FIREBASE_LINK_CODE")
+               if not cfg.get(k) or cfg[k].startswith("여기에")]
+    if missing:
+        print("[오류] bot_config.env 에 값이 비어 있습니다: " + ", ".join(missing))
+        sys.exit(1)
+
+    def num(key, default):
+        try:
+            return float(str(cfg.get(key, default)).replace(",", ""))
+        except ValueError:
+            return float(default)
+
+    cfg["BOT_BUDGET_KRW"] = int(num("BOT_BUDGET_KRW", 200000))
+    cfg["ORDER_KRW"] = int(num("ORDER_KRW", 10000))
+    cfg["MARTINGALE_MAX_LEVEL"] = int(num("MARTINGALE_MAX_LEVEL", 3))     # 0이면 마틴게일 끔
+    cfg["DAILY_LOSS_LIMIT"] = int(num("DAILY_LOSS_LIMIT", 100000))       # 0이면 제한 없음
+    cfg["TRADE_MODE"] = cfg.get("TRADE_MODE", "paper").lower()
+    cfg["DEVICE_NAME"] = cfg.get("DEVICE_NAME") or "PC"
+    return cfg
+
+
+def today_key(now=None):
+    """09:00 KST 기준 '거래일' (09:00 이전은 전날로 침)"""
+    now = now or datetime.now(KST)
+    return (now - timedelta(hours=9)).strftime("%Y-%m-%d")
+
+
+def load_state(budget):
+    try:
+        with open(STATE_FILE, encoding="utf-8") as f:
+            s = json.load(f)
+    except Exception:
+        s = {}
+    s.setdefault("paused", False)
+    s.setdefault("positions", {})      # 봇이 실제로(또는 모의로) 산 코인: {market: {...}}
+    lg = s.setdefault("ledger", {})
+    lg.setdefault("seed", float(budget))       # 거래 가능한 시드
+    lg.setdefault("locked", 0.0)               # 잠긴 수익(거래 불가)
+    lg.setdefault("realizedTotal", 0.0)
+    lg.setdefault("tradesTotal", 0)
+    lg.setdefault("winsTotal", 0)
+    lg.setdefault("day", "")
+    lg.setdefault("dayPnl", 0.0)
+    lg.setdefault("dayTrades", 0)
+    lg.setdefault("dayWins", 0)
+    lg.setdefault("cooldownUntil", 0)
+    lg.setdefault("martLevel", 0)
+    s.setdefault("universe", {"day": "", "markets": []})
+    s.setdefault("strategies", {})     # {market: spec}
+    s.setdefault("lastOptimize", 0)
+    s.setdefault("lastCandle", {})
+    s.pop("paper", None)               # v1 모의매매 기록 정리
+    return s
+
+
+def save_state(s):
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(s, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, STATE_FILE)
+
+
+# ======================= 업비트 =======================
+class UpbitError(Exception):
+    def __init__(self, name, message):
+        super().__init__(f"{name}: {message}")
+        self.name = name
+
+
+class Upbit:
+    def __init__(self, access, secret):
+        self.access, self.secret = access, secret
+
+    def _headers(self, params=None):
+        payload = {"access_key": self.access, "nonce": str(uuid.uuid4())}
+        if params:
+            q = unquote(urlencode(params, doseq=True)).encode("utf-8")
+            payload["query_hash"] = hashlib.sha512(q).hexdigest()
+            payload["query_hash_alg"] = "SHA512"
+        token = jwt.encode(payload, self.secret, algorithm="HS256")
+        if isinstance(token, bytes):
+            token = token.decode()
+        return {"Authorization": f"Bearer {token}"}
+
+    @staticmethod
+    def _check(res):
+        if res.status_code in (200, 201):
+            return res.json()
+        try:
+            err = res.json().get("error", {})
+            raise UpbitError(err.get("name", str(res.status_code)), err.get("message", res.text))
+        except ValueError:
+            raise UpbitError(str(res.status_code), res.text[:200])
+
+    def _public(self, path, params):
+        for attempt in range(5):
+            res = requests.get(f"{UPBIT}{path}", params=params, timeout=10)
+            if res.status_code == 429:
+                time.sleep(1 + attempt)
+                continue
+            return self._check(res)
+        raise UpbitError("429", "요청이 너무 많습니다")
+
+    # --- 시세 ---
+    def markets_detail(self):
+        return self._public("/v1/market/all", {"isDetails": "true"})
+
+    def prices(self, markets):
+        if not markets:
+            return {}
+        data = self._public("/v1/ticker", {"markets": ",".join(markets)})
+        return {d["market"]: float(d["trade_price"]) for d in data}
+
+    def day_candles(self, market, count=200, to=None):
+        params = {"market": market, "count": count}
+        if to:
+            params["to"] = to
+        return self._public("/v1/candles/days", params)
+
+    def minute_candles(self, market, total):
+        """1분봉 total개, 오래된 것 → 최신 순"""
+        out, to = [], None
+        while len(out) < total:
+            params = {"market": market, "count": min(200, total - len(out))}
+            if to:
+                params["to"] = to
+            data = self._public("/v1/candles/minutes/1", params)
+            if not data:
+                break
+            out.extend(data)
+            to = data[-1]["candle_date_time_utc"] + "Z"
+            time.sleep(0.12)
+        out.reverse()
+        return out
+
+    # --- 계정/주문 ---
+    def accounts(self):
+        return self._check(requests.get(f"{UPBIT}/v1/accounts", headers=self._headers(), timeout=10))
+
+    def _guard(self, market):
+        if market.split("-")[1] in PROTECTED_COINS:
+            raise UpbitError("protected", f"{market}는 거래 금지 종목입니다")
+
+    def buy_market(self, market, krw):
+        self._guard(market)
+        params = {"market": market, "side": "bid", "ord_type": "price", "price": str(int(krw))}
+        return self._check(requests.post(f"{UPBIT}/v1/orders", json=params, headers=self._headers(params), timeout=10))
+
+    def sell_market(self, market, volume):
+        self._guard(market)
+        params = {"market": market, "side": "ask", "ord_type": "market", "volume": f"{volume:.8f}"}
+        return self._check(requests.post(f"{UPBIT}/v1/orders", json=params, headers=self._headers(params), timeout=10))
+
+    def order(self, order_uuid):
+        params = {"uuid": order_uuid}
+        return self._check(requests.get(f"{UPBIT}/v1/order", params=params, headers=self._headers(params), timeout=10))
+
+    def wait_fill(self, order_uuid, tries=10):
+        """체결 결과: (체결수량, 체결금액 합, 수수료)"""
+        info = None
+        for _ in range(tries):
+            time.sleep(0.6)
+            info = self.order(order_uuid)
+            if info.get("state") in ("done", "cancel") and float(info.get("executed_volume", 0)) > 0:
+                break
+        if not info:
+            raise UpbitError("fill", "주문 조회 실패")
+        vol = float(info.get("executed_volume", 0))
+        funds = sum(float(t["funds"]) for t in info.get("trades", []))
+        fee = float(info.get("paid_fee", 0))
+        return vol, funds, fee
+
+
+# ======================= Firebase =======================
+def to_fs(v):
+    if v is None:
+        return {"nullValue": None}
+    if isinstance(v, bool):
+        return {"booleanValue": v}
+    if isinstance(v, int):
+        return {"integerValue": str(v)}
+    if isinstance(v, float):
+        return {"doubleValue": v}
+    if isinstance(v, str):
+        return {"stringValue": v}
+    if isinstance(v, (list, tuple)):
+        return {"arrayValue": {"values": [to_fs(x) for x in v]}}
+    if isinstance(v, dict):
+        return {"mapValue": {"fields": {k: to_fs(x) for k, x in v.items()}}}
+    return {"stringValue": str(v)}
+
+
+def from_fs(v):
+    if "stringValue" in v:
+        return v["stringValue"]
+    if "integerValue" in v:
+        return int(v["integerValue"])
+    if "doubleValue" in v:
+        return v["doubleValue"]
+    if "booleanValue" in v:
+        return v["booleanValue"]
+    if "timestampValue" in v:
+        return v["timestampValue"]
+    if "mapValue" in v:
+        return {k: from_fs(x) for k, x in v["mapValue"].get("fields", {}).items()}
+    if "arrayValue" in v:
+        return [from_fs(x) for x in v["arrayValue"].get("values", [])]
+    return None
+
+
+class Cloud:
+    def __init__(self, link_code):
+        self.refresh_token = link_code
+        self.id_token = None
+        self.uid = None
+        self.expires_at = 0
+
+    def _auth(self):
+        if self.id_token and time.time() < self.expires_at - 300:
+            return {"Authorization": f"Bearer {self.id_token}"}
+        res = requests.post(
+            f"https://securetoken.googleapis.com/v1/token?key={FIREBASE_API_KEY}",
+            data={"grant_type": "refresh_token", "refresh_token": self.refresh_token}, timeout=10)
+        if res.status_code != 200:
+            raise RuntimeError("웹페이지 연결 코드가 맞지 않거나 만료되었습니다. 웹페이지에서 연결 코드를 다시 복사해 bot_config.env 에 넣으세요.")
+        d = res.json()
+        self.id_token, self.uid = d["id_token"], d["user_id"]
+        self.refresh_token = d.get("refresh_token", self.refresh_token)
+        self.expires_at = time.time() + int(d.get("expires_in", 3600))
+        return {"Authorization": f"Bearer {self.id_token}"}
+
+    def connect(self):
+        self._auth()
+        return self.uid
+
+    def put_status(self, data, partial=False):
+        h = self._auth()
+        url = f"{FS_BASE}/users/{self.uid}/status/current"
+        if partial:
+            url += "?" + "&".join(f"updateMask.fieldPaths={k}" for k in data)
+        res = requests.patch(url, json={"fields": {k: to_fs(v) for k, v in data.items()}}, headers=h, timeout=10)
+        if res.status_code != 200:
+            raise RuntimeError(f"상태 업로드 실패 {res.status_code}: {res.text[:200]}")
+
+    def add_trade(self, data):
+        h = self._auth()
+        res = requests.post(f"{FS_BASE}/users/{self.uid}/trades",
+                            json={"fields": {k: to_fs(v) for k, v in data.items()}}, headers=h, timeout=10)
+        if res.status_code != 200:
+            raise RuntimeError(f"거래 기록 실패 {res.status_code}: {res.text[:200]}")
+
+    def pending_commands(self):
+        h = self._auth()
+        body = {"structuredQuery": {
+            "from": [{"collectionId": "commands"}],
+            "where": {"fieldFilter": {"field": {"fieldPath": "status"}, "op": "EQUAL", "value": {"stringValue": "pending"}}},
+            "limit": 20}}
+        res = requests.post(f"{FS_BASE}/users/{self.uid}:runQuery", json=body, headers=h, timeout=10)
+        if res.status_code != 200:
+            raise RuntimeError(f"명령 확인 실패 {res.status_code}: {res.text[:200]}")
+        out = []
+        for row in res.json():
+            d = row.get("document")
+            if not d:
+                continue
+            fields = {k: from_fs(v) for k, v in d.get("fields", {}).items()}
+            fields["_name"] = d["name"]
+            out.append(fields)
+        out.sort(key=lambda c: c.get("createdAt") or "")
+        return out
+
+    def finish_command(self, name, status, result):
+        h = self._auth()
+        fields = {"status": status, "result": result, "doneAt": int(time.time() * 1000)}
+        mask = "&".join(f"updateMask.fieldPaths={k}" for k in fields)
+        res = requests.patch(f"https://firestore.googleapis.com/v1/{name}?{mask}",
+                             json={"fields": {k: to_fs(v) for k, v in fields.items()}}, headers=h, timeout=10)
+        if res.status_code != 200:
+            raise RuntimeError(f"명령 결과 기록 실패 {res.status_code}: {res.text[:200]}")
+
+
+# ======================= 지표와 전략 =======================
+def ema(values, n):
+    k = 2 / (n + 1)
+    out, e = [], values[0]
+    for v in values:
+        e = v * k + e * (1 - k)
+        out.append(e)
+    return out
+
+
+def sma(values, n):
+    out, s = [], 0.0
+    for i, v in enumerate(values):
+        s += v
+        if i >= n:
+            s -= values[i - n]
+        out.append(s / min(i + 1, n))
+    return out
+
+
+def rsi(closes, n):
+    out = [50.0] * len(closes)
+    gain = loss = 0.0
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        g, l = max(d, 0), max(-d, 0)
+        if i <= n:
+            gain += g / n
+            loss += l / n
+        else:
+            gain = (gain * (n - 1) + g) / n
+            loss = (loss * (n - 1) + l) / n
+        out[i] = 100.0 if loss == 0 else 100 - 100 / (1 + gain / loss)
+    return out
+
+
+def stdev(values, n):
+    out = []
+    for i in range(len(values)):
+        w = values[max(0, i - n + 1): i + 1]
+        m = sum(w) / len(w)
+        out.append(math.sqrt(sum((x - m) ** 2 for x in w) / len(w)))
+    return out
+
+
+CONDITION_POOL = [
+    ("rsi_below", [{"n": n, "t": t} for n in (7, 14) for t in (20, 25, 30, 35)]),
+    ("bb_below", [{"n": 20, "k": k} for k in (1.5, 2.0, 2.5)]),
+    ("ema_up", [{"f": f, "s": s} for f in (5, 9) for s in (20, 50)]),
+    ("ema_cross", [{"f": f, "s": s} for f in (5, 9) for s in (20, 50)]),
+    ("drop", [{"lb": lb, "p": p} for lb in (5, 10, 20) for p in (0.5, 1.0, 1.5, 2.0)]),
+    ("breakout", [{"lb": lb} for lb in (10, 20, 30)]),
+    ("vol_spike", [{"n": 20, "m": m} for m in (1.5, 2.0, 3.0)]),
+    ("green", [{}]),
+]
+SL_CHOICES = [-1.0, -1.5, -2.0, -3.0]
+HOLD_CHOICES = [30, 60, 120, 240]
+
+
+def random_spec(rng):
+    k = rng.choice([1, 2, 2, 3])
+    names = rng.sample(range(len(CONDITION_POOL)), k)
+    conds = []
+    for i in names:
+        name, variants = CONDITION_POOL[i]
+        conds.append([name, rng.choice(variants)])
+    return {"conds": conds, "sl": rng.choice(SL_CHOICES), "hold": rng.choice(HOLD_CHOICES)}
+
+
+def describe(spec):
+    names = {"rsi_below": "RSI과매도", "bb_below": "볼린저하단", "ema_up": "상승추세", "ema_cross": "골든크로스",
+             "drop": "단기급락", "breakout": "고점돌파", "vol_spike": "거래량급증", "green": "양봉"}
+    return "+".join(names[c[0]] for c in spec["conds"]) + f" / 손절{spec['sl']}% / 최대{spec['hold']}분"
+
+
+class Series:
+    """캔들 묶음 + 지표 캐시"""
+    def __init__(self, candles):
+        self.o = [c["opening_price"] for c in candles]
+        self.h = [c["high_price"] for c in candles]
+        self.l = [c["low_price"] for c in candles]
+        self.c = [c["trade_price"] for c in candles]
+        self.v = [c["candle_acc_trade_volume"] for c in candles]
+        self.n = len(self.c)
+        self._cache = {}
+
+    def cond(self, name, p):
+        key = (name, tuple(sorted(p.items())))
+        if key in self._cache:
+            return self._cache[key]
+        c, n = self.c, self.n
+        if name == "rsi_below":
+            r = rsi(c, p["n"])
+            out = [r[i] < p["t"] for i in range(n)]
+        elif name == "bb_below":
+            m, sd = sma(c, p["n"]), stdev(c, p["n"])
+            out = [c[i] < m[i] - p["k"] * sd[i] for i in range(n)]
+        elif name == "ema_up":
+            f, s = ema(c, p["f"]), ema(c, p["s"])
+            out = [f[i] > s[i] for i in range(n)]
+        elif name == "ema_cross":
+            f, s = ema(c, p["f"]), ema(c, p["s"])
+            out = [i > 0 and f[i - 1] <= s[i - 1] and f[i] > s[i] for i in range(n)]
+        elif name == "drop":
+            lb = p["lb"]
+            out = [i >= lb and c[i] <= max(c[i - lb:i]) * (1 - p["p"] / 100) for i in range(n)]
+        elif name == "breakout":
+            lb = p["lb"]
+            out = [i >= lb and c[i] > max(self.h[i - lb:i]) for i in range(n)]
+        elif name == "vol_spike":
+            a = sma(self.v, p["n"])
+            out = [i > 0 and self.v[i] > p["m"] * a[i - 1] for i in range(n)]
+        elif name == "green":
+            out = [c[i] > self.o[i] for i in range(n)]
+        else:
+            out = [False] * n
+        self._cache[key] = out
+        return out
+
+    def signal(self, spec):
+        arrs = [self.cond(name, p) for name, p in spec["conds"]]
+        return [all(a[i] for a in arrs) for i in range(self.n)]
+
+
+def target_price(entry_cost_per_unit):
+    """수수료 빼고 순수익 TARGET_NET_PCT 가 되는 매도가"""
+    return entry_cost_per_unit * (1 + TARGET_NET_PCT / 100) / (1 - FEE_RATE)
+
+
+def backtest(series, spec, start=60, end=None):
+    """1분봉 백테스트 → 거래별 순수익률(%) 리스트"""
+    sig = series.signal(spec)
+    end = end or series.n
+    results, i, cooldown_until = [], start, -1
+    while i < end - 1:
+        if i < cooldown_until or not sig[i]:
+            i += 1
+            continue
+        j = i + 1
+        entry = series.o[j] * (1 + FEE_RATE)          # 매수 수수료 포함 단가
+        tp, sl = target_price(entry), series.o[j] * (1 + spec["sl"] / 100)
+        exit_price, k = None, j
+        while k < end:
+            if series.l[k] <= sl:                       # 같은 봉에서 둘 다 닿으면 손절로 가정(보수적)
+                exit_price = sl
+                break
+            if series.h[k] >= tp:
+                exit_price = tp
+                break
+            if k - j >= spec["hold"]:
+                exit_price = series.c[k]
+                break
+            k += 1
+        if exit_price is None:
+            break
+        pnl = (exit_price * (1 - FEE_RATE) / entry - 1) * 100
+        results.append(pnl)
+        i = k + 1
+        if pnl < 0:
+            cooldown_until = i + LOSS_COOLDOWN_MIN
+    return results
+
+
+def evaluate(series, spec):
+    split = int(series.n * (1 - BT_HOLDOUT))
+    full = backtest(series, spec)
+    if len(full) < BT_MIN_TRADES:
+        return None
+    wins = sum(1 for x in full if x > 0)
+    winrate = wins / len(full)
+    total = sum(full)
+    if winrate < BT_MIN_WINRATE or total <= 0:
+        return None
+    hold = backtest(series, spec, start=split)
+    if sum(hold) < 0:
+        return None
+    return {"winrate": round(winrate, 3), "trades": len(full), "totalPct": round(total, 2),
+            "holdoutPct": round(sum(hold), 2), "holdoutTrades": len(hold)}
+
+
+# ======================= 봇 =======================
+class Bot:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.live = cfg["TRADE_MODE"] == "live"
+        self.upbit = Upbit(cfg["UPBIT_ACCESS_KEY"], cfg["UPBIT_SECRET_KEY"])
+        self.cloud = Cloud(cfg["FIREBASE_LINK_CODE"])
+        self.state = load_state(cfg["BOT_BUDGET_KRW"])
+        self.error = ""
+        self.rng = random.Random()
+        self.last_status = 0
+
+    # ---------- 장부 ----------
+    @property
+    def ledger(self):
+        return self.state["ledger"]
+
+    def in_use(self):
+        return sum(p["cost"] for p in self.state["positions"].values())
+
+    def available(self):
+        return max(0.0, self.ledger["seed"] - self.in_use())
+
+    def roll_day(self):
+        day = today_key()
+        lg = self.ledger
+        if lg["day"] != day:
+            if lg["day"]:
+                log(f"거래일 마감 {lg['day']}: {lg['dayTrades']}회(익절 {lg['dayWins']}) 손익 {lg['dayPnl']:+,.0f}원")
+            lg.update({"day": day, "dayPnl": 0.0, "dayTrades": 0, "dayWins": 0})
+            save_state(self.state)
+            log(f"새 거래일 {day} 시작 · 시드 {lg['seed']:,.0f}원 · 잠긴 수익 {lg['locked']:,.0f}원")
+
+    def book(self, pnl):
+        lg = self.ledger
+        lg["realizedTotal"] += pnl
+        lg["dayPnl"] += pnl
+        lg["tradesTotal"] += 1
+        lg["dayTrades"] += 1
+        if pnl > 0:
+            lg["winsTotal"] += 1
+            lg["dayWins"] += 1
+            lg["locked"] += pnl * PROFIT_LOCK_RATIO
+            lg["seed"] += pnl * (1 - PROFIT_LOCK_RATIO)
+            lg["martLevel"] = 0
+        else:
+            lg["seed"] += pnl
+            lg["cooldownUntil"] = int(time.time()) + LOSS_COOLDOWN_MIN * 60
+            lg["martLevel"] = min(lg["martLevel"] + 1, self.cfg["MARTINGALE_MAX_LEVEL"])
+        save_state(self.state)
+
+    def order_size(self):
+        size = self.cfg["ORDER_KRW"] * (2 ** self.ledger["martLevel"])
+        return min(size, self.available())
+
+    # ---------- 종목 선정 ----------
+    def pick_universe(self):
+        log("거래대금 상위 종목 계산 중 (최근 1년, 1~2분 걸림)…")
+        details = self.upbit.markets_detail()
+        candidates = []
+        for m in details:
+            mk = m["market"]
+            if not mk.startswith("KRW-") or mk.split("-")[1] in PROTECTED_COINS | STABLE_COINS:
+                continue
+            warn = m.get("market_warning") == "CAUTION"
+            ev = m.get("market_event") or {}
+            if ev.get("warning") or any((ev.get("caution") or {}).values()):
+                warn = True
+            if not warn:
+                candidates.append(mk)
+        totals = []
+        since = datetime.now(KST) - timedelta(days=365)
+        for idx, mk in enumerate(candidates, 1):
+            if idx % 40 == 0:
+                self.push_progress(f"거래대금 계산 {idx}/{len(candidates)}")
+            try:
+                total, to = 0.0, None
+                for _ in range(2):
+                    data = self.upbit.day_candles(mk, 200, to)
+                    if not data:
+                        break
+                    for c in data:
+                        if datetime.fromisoformat(c["candle_date_time_kst"]).replace(tzinfo=KST) >= since:
+                            total += c["candle_acc_trade_price"]
+                    to = data[-1]["candle_date_time_utc"] + "Z"
+                    time.sleep(0.12)
+                totals.append((total, mk))
+            except UpbitError as e:
+                log(f"[경고] {mk} 일봉 조회 실패: {e}")
+        totals.sort(reverse=True)
+        top = [mk for _, mk in totals[:TOP_N]]
+        self.state["universe"] = {"day": today_key(), "markets": top}
+        save_state(self.state)
+        log("상위 종목: " + ", ".join(m.split("-")[1] for m in top))
+
+    # ---------- 전략 선정 ----------
+    def optimize(self):
+        markets = self.state["universe"]["markets"]
+        log(f"전략 백테스트 시작: {len(markets)}종목 × {BT_TRIALS}개 조합")
+        chosen = {}
+        for idx, mk in enumerate(markets, 1):
+            self.push_progress(f"전략 백테스트 {idx}/{len(markets)} ({mk.split('-')[1]})")
+            try:
+                series = Series(self.upbit.minute_candles(mk, BT_CANDLES))
+            except UpbitError as e:
+                log(f"[경고] {mk} 분봉 조회 실패: {e}")
+                continue
+            if series.n < 300:
+                continue
+            best = None
+            for _ in range(BT_TRIALS):
+                spec = random_spec(self.rng)
+                r = evaluate(series, spec)
+                if r and (best is None or r["totalPct"] > best[1]["totalPct"]):
+                    best = (spec, r)
+            if best:
+                spec, r = best
+                spec.update(r)
+                chosen[mk] = spec
+                log(f"  채택 {mk.split('-')[1]}: {describe(spec)} · 승률 {r['winrate']*100:.0f}% "
+                    f"{r['trades']}회 · 누적 {r['totalPct']:+.2f}% · 최근구간 {r['holdoutPct']:+.2f}%")
+            else:
+                log(f"  {mk.split('-')[1]}: 조건(승률 90%↑, 최근구간 무손실) 맞는 전략 없음 → 이번 시간 거래 안 함")
+        self.state["strategies"] = chosen
+        self.state["lastOptimize"] = int(time.time())
+        save_state(self.state)
+        log(f"전략 선정 완료: {len(chosen)}종목 거래 대상")
+
+    # ---------- 진입/청산 ----------
+    def can_enter(self):
+        lg = self.ledger
+        if self.state["paused"]:
+            return False, "일시정지"
+        if time.time() < lg["cooldownUntil"]:
+            return False, "손실 후 대기"
+        if self.cfg["DAILY_LOSS_LIMIT"] and lg["dayPnl"] <= -self.cfg["DAILY_LOSS_LIMIT"]:
+            return False, "오늘 손실 한도 도달"
+        if len(self.state["positions"]) >= MAX_OPEN_POSITIONS:
+            return False, "동시 보유 한도"
+        if self.order_size() < MIN_ORDER_KRW:
+            return False, "시드 부족"
+        return True, ""
+
+    def enter(self, market, spec, price):
+        krw = self.order_size()
+        if self.live:
+            krw_balance = next((float(a["balance"]) for a in self.upbit.accounts() if a["currency"] == "KRW"), 0)
+            krw = min(krw, krw_balance * 0.995)
+            if krw < MIN_ORDER_KRW:
+                log("[경고] 업비트 원화 잔고 부족으로 매수 건너뜀")
+                return
+            res = self.upbit.buy_market(market, krw)
+            vol, funds, fee = self.upbit.wait_fill(res["uuid"])
+            if vol <= 0:
+                log(f"[경고] {market} 매수 체결 확인 실패")
+                return
+            cost = funds + fee
+        else:
+            vol = krw * (1 - FEE_RATE) / price
+            cost = krw
+        unit = cost / vol
+        # 목표가: 매수 수수료 포함 단가 기준, 매도 수수료까지 빼고 순수익 0.5%
+        self.state["positions"][market] = {
+            "volume": vol, "cost": cost, "unit": unit, "tp": target_price(unit),
+            "sl": unit * (1 + spec["sl"] / 100), "deadline": int(time.time()) + spec["hold"] * 60,
+            "at": int(time.time() * 1000), "strategy": describe(spec), "mart": self.ledger["martLevel"],
+        }
+        save_state(self.state)
+        tag = "실매수" if self.live else "모의매수"
+        log(f"[{tag}] {market} {cost:,.0f}원 @ {unit:,.4f} · 목표 {self.state['positions'][market]['tp']:,.4f} "
+            f"· 손절 {self.state['positions'][market]['sl']:,.4f} · {describe(spec)}")
+        self._record("buy", market, unit, cost, describe(spec), None)
+        self.upload_status()
+
+    def exit(self, market, price, reason):
+        pos = self.state["positions"].get(market)
+        if not pos:
+            return
+        if self.live:
+            res = self.upbit.sell_market(market, int(pos["volume"] * 1e8) / 1e8)
+            vol, funds, fee = self.upbit.wait_fill(res["uuid"])
+            proceeds = funds - fee
+        else:
+            proceeds = pos["volume"] * price * (1 - FEE_RATE)
+        pnl = proceeds - pos["cost"]
+        del self.state["positions"][market]
+        self.book(pnl)
+        tag = "실매도" if self.live else "모의매도"
+        log(f"[{tag}] {market} 손익 {pnl:+,.0f}원 ({reason}) · 시드 {self.ledger['seed']:,.0f} · 잠김 {self.ledger['locked']:,.0f}"
+            + ("" if pnl > 0 else f" · {LOSS_COOLDOWN_MIN}분 대기"))
+        self._record("sell", market, price, proceeds, reason, round(pnl))
+        self.upload_status()
+
+    def _record(self, side, market, price, krw, reason, pnl):
+        try:
+            self.cloud.add_trade({"mode": "live" if self.live else "paper", "side": side, "market": market,
+                                  "price": float(price), "krw": round(krw), "reason": reason, "pnl": pnl,
+                                  "at": int(time.time() * 1000)})
+        except Exception as e:
+            log(f"[경고] 거래 기록 업로드 실패: {e}")
+
+    def manage_positions(self):
+        pos = self.state["positions"]
+        if not pos:
+            return
+        prices = self.upbit.prices(list(pos.keys()))
+        for mk, p in list(pos.items()):
+            price = prices.get(mk)
+            if not price:
+                continue
+            if price >= p["tp"]:
+                self.exit(mk, price, "익절")
+            elif price <= p["sl"]:
+                self.exit(mk, price, "손절")
+            elif time.time() >= p["deadline"]:
+                self.exit(mk, price, "보유시간 초과")
+
+    def scan_entries(self):
+        ok, _ = self.can_enter()
+        if not ok:
+            return
+        for mk, spec in self.state["strategies"].items():
+            if mk in self.state["positions"] or mk.split("-")[1] in PROTECTED_COINS:
+                continue
+            candles = self.upbit.minute_candles(mk, 200)
+            closed = candles[:-1]                         # 진행 중인 봉 제외
+            if len(closed) < 60:
+                continue
+            key = closed[-1]["candle_date_time_kst"]
+            if self.state["lastCandle"].get(mk) == key:
+                continue
+            self.state["lastCandle"][mk] = key
+            series = Series(closed)
+            if series.signal(spec)[-1]:
+                price = self.upbit.prices([mk]).get(mk)
+                if price:
+                    self.enter(mk, spec, price)
+                    ok, _ = self.can_enter()
+                    if not ok:
+                        break
+        save_state(self.state)
+
+    # ---------- 화면용 상태 ----------
+    def snapshot(self):
+        accounts = self.upbit.accounts()
+        krw, held = 0.0, []
+        for a in accounts:
+            cur = a["currency"]
+            if cur in PROTECTED_COINS:            # 보호 코인은 화면에서 숨김
+                continue
+            amount = float(a["balance"]) + float(a["locked"])
+            if cur == "KRW":
+                krw = amount
+            elif amount > 0:
+                held.append((cur, amount, float(a["avg_buy_price"])))
+        markets = [f"KRW-{c}" for c, _, _ in held]
+        prices = {}
+        try:
+            prices = self.upbit.prices(markets)
+        except UpbitError:
+            for m in markets:                     # 상장폐지 종목 등이 섞이면 하나씩 조회
+                try:
+                    prices.update(self.upbit.prices([m]))
+                except UpbitError:
+                    pass
+        holdings, total = [], krw
+        for coin, amount, avg in held:
+            price = prices.get(f"KRW-{coin}")
+            value = amount * price if price else 0.0
+            if value < 1:
+                continue
+            total += value
+            holdings.append({"coin": coin, "balance": amount, "avgPrice": avg, "price": price,
+                             "value": round(value), "protected": False,
+                             "pnlPct": round((price - avg) / avg * 100, 2) if avg > 0 else None,
+                             "botOwned": f"KRW-{coin}" in self.state["positions"]})
+        holdings.sort(key=lambda h: -h["value"])
+        return {"krw": round(krw), "totalValue": round(total), "holdings": holdings}
+
+    def push_progress(self, phase):
+        """오래 걸리는 작업 중에도 웹페이지가 '응답 없음'으로 보이지 않게 진행 상황만 올림"""
+        try:
+            self.cloud.put_status({"phase": phase, "activity": list(ACTIVITY)[-40:],
+                                   "updatedAt": int(time.time() * 1000)}, partial=True)
+        except Exception:
+            pass
+
+    def positions_detail(self):
+        pos = self.state["positions"]
+        if not pos:
+            return []
+        try:
+            prices = self.upbit.prices(list(pos.keys()))
+        except Exception:
+            prices = {}
+        out = []
+        for mk, p in pos.items():
+            price = prices.get(mk)
+            out.append({"market": mk, "coin": mk.split("-")[1], "cost": round(p["cost"]), "unit": p["unit"],
+                        "tp": p["tp"], "sl": p["sl"], "price": price, "at": p["at"],
+                        "deadline": p["deadline"] * 1000, "strategy": p.get("strategy", ""),
+                        "pnlPct": round((price * (1 - FEE_RATE) / p["unit"] - 1) * 100, 2) if price else None})
+        return out
+
+    def summary(self):
+        lg = self.ledger
+        mode = "실매매" if self.live else "모의매매(실제 주문 없음)"
+        wait = ""
+        if time.time() < lg["cooldownUntil"]:
+            wait = f" · 손실 후 대기 {int((lg['cooldownUntil'] - time.time()) / 60) + 1}분"
+        ok, why = self.can_enter()
+        reason = "" if ok or why in ("손실 후 대기", "일시정지") else f" · 신규 진입 중지: {why}"
+        return (f"{mode} · 오늘 {lg['dayTrades']}회(익절 {lg['dayWins']}) {lg['dayPnl']:+,.0f}원 · "
+                f"시드 {lg['seed']:,.0f}원 · 잠긴 수익 {lg['locked']:,.0f}원 · "
+                f"대상 {len(self.state['strategies'])}종목 · 다음 주문 {self.order_size():,.0f}원{wait}{reason}")
+
+    def upload_status(self):
+        data = {"budget": round(self.ledger["seed"]), "device": self.cfg["DEVICE_NAME"],
+                "budgetUsed": round(self.in_use())}
+        try:
+            data.update(self.snapshot())
+            self.error = ""
+        except UpbitError as e:
+            self.error = "업비트 연결 오류: " + str(e)
+            if e.name == "no_authorization_ip":
+                self.error = "이 PC의 IP가 업비트 API 키에 등록되지 않았습니다. 업비트에서 허용 IP를 확인하세요."
+        except requests.RequestException as e:
+            self.error = "업비트 통신 오류: " + str(e)[:120]
+        if self.error:
+            state, msg = "error", self.error
+        elif self.state["paused"]:
+            state, msg = "paused", "일시정지됨. " + self.summary()
+        else:
+            state, msg = "running", self.summary()
+        lg = self.ledger
+        data.update({"phase": "", "activity": list(ACTIVITY)[-40:], "positions": self.positions_detail(),
+                     "cooldownUntil": lg["cooldownUntil"] * 1000, "nextOrder": round(self.order_size()),
+                     "canEnter": self.can_enter()[1] or "가능", "lastOptimize": self.state["lastOptimize"] * 1000})
+        data.update({"botState": state, "message": msg, "updatedAt": int(time.time() * 1000),
+                     "ledger": {"seed": round(lg["seed"]), "locked": round(lg["locked"]),
+                                "realizedTotal": round(lg["realizedTotal"]), "dayPnl": round(lg["dayPnl"]),
+                                "dayTrades": lg["dayTrades"], "dayWins": lg["dayWins"], "martLevel": lg["martLevel"],
+                                "tradesTotal": lg["tradesTotal"], "winsTotal": lg["winsTotal"],
+                                "mode": "live" if self.live else "paper"},
+                     "strategies": [{"market": m, "desc": describe(s), "winrate": s.get("winrate"),
+                                     "trades": s.get("trades"), "totalPct": s.get("totalPct"),
+                                     "holdoutPct": s.get("holdoutPct")} for m, s in self.state["strategies"].items()],
+                     "universe": self.state["universe"]["markets"]})
+        self.cloud.put_status(data)
+        self.last_status = time.time()
+
+    # ---------- 명령 ----------
+    def close_bot_positions(self):
+        pos = self.state["positions"]
+        self.state["paused"] = True
+        save_state(self.state)
+        if not pos:
+            return "done", "봇이 산 코인 없음 · 봇은 일시정지됨"
+        prices = self.upbit.prices(list(pos.keys()))
+        done = []
+        for mk in list(pos.keys()):
+            self.exit(mk, prices.get(mk, pos[mk]["unit"]), "비상 정리")
+            done.append(mk.split("-")[1])
+        return "done", "매도: " + ", ".join(done) + " · 봇은 일시정지됨"
+
+    def handle_commands(self):
+        for c in self.cloud.pending_commands():
+            ctype, created, age = c.get("type"), c.get("createdAt"), None
+            if created:
+                try:
+                    age = time.time() - datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    pass
+            try:
+                if age is not None and age > COMMAND_MAX_AGE:
+                    status, result = "rejected", "10분이 지난 명령이라 실행하지 않았습니다"
+                elif ctype == "pause":
+                    self.state["paused"] = True
+                    save_state(self.state)
+                    status, result = "done", "일시정지됨 (보유 중인 코인은 익절·손절 규칙대로 계속 관리)"
+                elif ctype == "resume":
+                    self.state["paused"] = False
+                    save_state(self.state)
+                    status, result = "done", "재개됨"
+                elif ctype == "close_bot_positions":
+                    status, result = self.close_bot_positions()
+                else:
+                    status, result = "rejected", "알 수 없는 명령"
+            except UpbitError as e:
+                status, result = "failed", "업비트 오류: " + str(e)
+            log(f"명령 처리: {ctype} → {status} ({result})")
+            self.cloud.finish_command(c["_name"], status, result)
+            self.upload_status()
+
+    # ---------- 메인 루프 ----------
+    def run(self):
+        uid = self.cloud.connect()
+        log(f"웹페이지 계정 연결됨 ({uid[:6]}…) · 기기: {self.cfg['DEVICE_NAME']}")
+        log(f"모드: {'★ 실매매 (실제 주문) ★' if self.live else '모의매매 (실제 주문 없음)'} · 거래 금지/숨김: {', '.join(sorted(PROTECTED_COINS))}")
+        log(f"기본 주문 {self.cfg['ORDER_KRW']:,}원 · 순익 +{TARGET_NET_PCT}% 익절 · 손실 후 {LOSS_COOLDOWN_MIN}분 대기 · "
+            f"마틴게일 최대 {self.cfg['MARTINGALE_MAX_LEVEL']}단계 · 하루 손실 한도 {self.cfg['DAILY_LOSS_LIMIT']:,}원")
+        self.roll_day()
+        uni = self.state["universe"]
+        if any(m.split("-")[1] in STABLE_COINS for m in uni["markets"]):
+            uni["markets"] = [m for m in uni["markets"] if m.split("-")[1] not in STABLE_COINS]
+            self.state["strategies"] = {m: v for m, v in self.state["strategies"].items() if m in uni["markets"]}
+            save_state(self.state)
+            log("스테이블코인을 거래 대상에서 뺐습니다")
+        self.upload_status()
+        last_update_check = time.time()
+        while True:
+            if time.time() - last_update_check >= UPDATE_EVERY:
+                last_update_check = time.time()
+                if check_update():
+                    log("새 버전을 받았습니다. 봇을 다시 시작합니다 (보유 코인은 이어서 관리)")
+                    self.push_progress("새 버전으로 재시작 중")
+                    raise RestartForUpdate()
+            try:
+                self.roll_day()
+                if self.state["universe"]["day"] != today_key() or not self.state["universe"]["markets"]:
+                    self.pick_universe()
+                    self.state["lastOptimize"] = 0
+                if time.time() - self.state["lastOptimize"] >= REOPTIMIZE_MIN * 60:
+                    self.optimize()
+                    self.upload_status()
+                self.handle_commands()
+                self.manage_positions()
+                if not self.error:
+                    self.scan_entries()
+                if time.time() - self.last_status >= STATUS_EVERY:
+                    self.upload_status()
+            except Exception as e:      # 밤새 돌아야 하므로 어떤 오류든 기록하고 계속
+                log(f"[경고] {type(e).__name__}: {e}")
+                time.sleep(15)
+            time.sleep(LOOP_ACTIVE if self.state["positions"] else LOOP_IDLE)
+
+    def mark_offline(self):
+        try:
+            if self.cloud.uid:
+                self.cloud.put_status({"botState": "paused", "message": "PC에서 봇 프로그램이 종료되었습니다.",
+                                       "updatedAt": 0}, partial=True)
+        except Exception:
+            pass
+
+
+def main():
+    if check_update():
+        print("새 버전을 받았습니다. 다시 시작합니다.", flush=True)
+        sys.exit(RESTART_CODE)
+    cfg = load_config()
+    bot = Bot(cfg)
+    log("참돔 트레이드 봇 v2 시작 (종료: Ctrl+C)")
+    restarting = False
+    try:
+        bot.run()
+    except RestartForUpdate:
+        restarting = True
+    except KeyboardInterrupt:
+        log("종료 요청 받음 (보유 중인 코인은 다음 실행 때 이어서 관리)")
+    except RuntimeError as e:
+        log(f"[중단] {e}")
+    finally:
+        if not restarting:
+            bot.mark_offline()
+            log("봇 종료")
+    if restarting:
+        sys.exit(RESTART_CODE)
+
+
+if __name__ == "__main__":
+    main()

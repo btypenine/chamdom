@@ -120,6 +120,30 @@ details[open] summary::after { content: "닫기"; }
 .warn-box { font-size: 13px; color: var(--warn); }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); background: var(--fg); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 14px; max-width: calc(100% - 32px); }
 footer { font-size: 12px; color: var(--muted); text-align: center; }
+
+/* 오늘 성과 */
+.head-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.mode { font-size: 11px; font-weight: 750; padding: 2px 8px; border-radius: 99px; letter-spacing: .02em; }
+.mode.live { background: var(--stop); color: #fff; }
+.mode.paper { background: var(--chip); color: var(--muted); }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px 10px; }
+.stat-val { font-weight: 750; font-size: 16px; }
+.phase { font-size: 13px; color: var(--brand); font-weight: 650; }
+/* 봇 보유 */
+.pos { display: flex; flex-direction: column; gap: 6px; padding-block: 10px; border-top: 1px solid var(--line); }
+.pos:first-child { border-top: none; padding-top: 0; }
+.pos-top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.range { position: relative; height: 8px; border-radius: 4px; background: linear-gradient(90deg, color-mix(in srgb, var(--down) 35%, transparent), var(--chip) 50%, color-mix(in srgb, var(--up) 35%, transparent)); }
+.range .tick { position: absolute; top: -3px; width: 3px; height: 14px; border-radius: 2px; background: var(--fg); transform: translateX(-50%); }
+.range .entry { position: absolute; top: 0; width: 1px; height: 8px; background: var(--muted); }
+.range-lbl { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+/* 전략·거래 목록 */
+.list { display: flex; flex-direction: column; }
+.li { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding-block: 8px; border-top: 1px solid var(--line); font-size: 13px; }
+.li:first-child { border-top: none; padding-top: 0; }
+.li b { font-weight: 700; }
+/* 실시간 기록 */
+.logbox { font: 12px/1.55 ui-monospace, Consolas, monospace; background: var(--chip); border-radius: 8px; padding: 10px; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-all; color: var(--fg); }
 @media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
 </style>
 </head>
@@ -150,7 +174,26 @@ footer { font-size: 12px; color: var(--muted); text-align: center; }
           <span class="state-sub" id="stateSub">아직 PC 봇에서 받은 정보가 없습니다</span>
         </div>
       </div>
+      <div class="phase" id="phase" hidden></div>
       <div class="msg" id="stateMsg" hidden></div>
+    </section>
+
+    <section class="card" id="perfCard" hidden>
+      <div class="head-row"><h2>오늘 성과 <span class="sub">(09시 기준)</span></h2><span class="mode" id="mode"></span></div>
+      <div class="stats">
+        <div><div class="label">오늘 손익</div><div class="stat-val num" id="dayPnl">-</div></div>
+        <div><div class="label">거래 / 익절</div><div class="stat-val num" id="dayTrades">-</div></div>
+        <div><div class="label">승률</div><div class="stat-val num" id="winrate">-</div></div>
+        <div><div class="label">시드</div><div class="stat-val num" id="seed">-</div></div>
+        <div><div class="label">잠긴 수익</div><div class="stat-val num" id="locked">-</div></div>
+        <div><div class="label">다음 주문</div><div class="stat-val num" id="nextOrder">-</div></div>
+      </div>
+      <div class="sub" id="perfNote"></div>
+    </section>
+
+    <section class="card" id="posCard" hidden>
+      <h2>봇 보유 중</h2>
+      <div id="positions"></div>
     </section>
 
     <section class="card">
@@ -167,6 +210,21 @@ footer { font-size: 12px; color: var(--muted); text-align: center; }
     <section class="card">
       <h2>보유 자산</h2>
       <div class="rows" id="holdings"><div class="empty">PC 봇이 연결되면 보유 코인이 여기에 표시됩니다.</div></div>
+    </section>
+
+    <section class="card">
+      <div class="head-row"><h2>거래 대상 전략</h2><span class="sub" id="optTime"></span></div>
+      <div class="list" id="strategies"><div class="empty">PC 봇이 전략을 고르면 여기에 표시됩니다.</div></div>
+    </section>
+
+    <section class="card">
+      <h2>최근 거래</h2>
+      <div class="list" id="trades"><div class="empty">아직 거래가 없습니다.</div></div>
+    </section>
+
+    <section class="card">
+      <h2>실시간 기록</h2>
+      <div class="logbox" id="activity">PC 봇 기록이 여기에 표시됩니다.</div>
     </section>
 
     <section class="card">
@@ -281,6 +339,10 @@ onAuthStateChanged(auth, async (user) => {
     (snap) => { lastStatus = snap.exists() ? snap.data() : null; renderStatus(); },
     (e) => toast("상태 불러오기 실패: " + e.code)));
 
+  const tq = query(collection(db, "users", user.uid, "trades"), orderBy("at", "desc"), limit(30));
+  unsubs.push(onSnapshot(tq, (snap) => renderTrades(snap.docs.map((d) => d.data())),
+    (e) => toast("거래 기록 불러오기 실패: " + e.code)));
+
   const q = query(collection(db, "users", user.uid, "commands"), orderBy("createdAt", "desc"), limit(5));
   unsubs.push(onSnapshot(q, (snap) => renderCmds(snap.docs.map((d) => d.data())),
     (e) => toast("명령 기록 불러오기 실패: " + e.code)));
@@ -305,6 +367,7 @@ function renderStatus() {
   const msg = stale ? "회사 PC가 꺼졌거나 인터넷이 끊겼을 수 있습니다. 원격으로 PC 상태를 확인하세요." : (s.message || "");
   $("stateMsg").textContent = msg; $("stateMsg").hidden = !msg;
 
+  renderMore(s, stale);
   $("krw").textContent = won(s.krw);
   $("total").textContent = won(s.totalValue);
   const budget = Number(s.budget) || 0, used = Number(s.budgetUsed) || 0;
@@ -333,6 +396,98 @@ function renderStatus() {
   }
 }
 setInterval(() => { if (lastStatus) renderStatus(); }, 15000);
+
+const signed = (n) => (n == null || isNaN(n)) ? "-" : (n > 0 ? "+" : "") + Math.round(n).toLocaleString("ko-KR") + "원";
+const hm = (ms) => new Date(ms).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+function setPnl(el, n) { el.textContent = signed(n); el.classList.remove("up", "down"); if (n > 0) el.classList.add("up"); else if (n < 0) el.classList.add("down"); }
+
+function renderMore(s, stale) {
+  $("phase").textContent = s.phase ? "진행 중: " + s.phase : "";
+  $("phase").hidden = !s.phase || stale;
+
+  const lg = s.ledger;
+  $("perfCard").hidden = !lg;
+  if (lg) {
+    $("mode").textContent = lg.mode === "live" ? "실매매" : "모의매매";
+    $("mode").className = "mode " + (lg.mode === "live" ? "live" : "paper");
+    setPnl($("dayPnl"), lg.dayPnl);
+    $("dayTrades").textContent = `${lg.dayTrades ?? 0}회 / ${lg.dayWins ?? 0}회`;
+    $("winrate").textContent = lg.dayTrades ? Math.round((lg.dayWins / lg.dayTrades) * 100) + "%" : "-";
+    $("seed").textContent = won(lg.seed);
+    $("locked").textContent = won(lg.locked);
+    $("nextOrder").textContent = won(s.nextOrder);
+    const notes = [];
+    if (s.cooldownUntil && s.cooldownUntil > Date.now()) notes.push(`손실 후 대기 중 · ${hm(s.cooldownUntil)}부터 다시 매수`);
+    else if (s.canEnter && s.canEnter !== "가능") notes.push("신규 매수 멈춤: " + s.canEnter);
+    if (lg.martLevel) notes.push(`마틴게일 ${lg.martLevel}단계`);
+    if (lg.tradesTotal) notes.push(`누적 ${lg.tradesTotal}회 · 승률 ${Math.round(lg.winsTotal / lg.tradesTotal * 100)}% · 실현 ${signed(lg.realizedTotal)}`);
+    $("perfNote").textContent = notes.join(" · ");
+    $("perfNote").hidden = !notes.length;
+  }
+
+  // 봇 보유 중
+  const ps = Array.isArray(s.positions) ? s.positions : [];
+  $("posCard").hidden = !ps.length;
+  const pbox = $("positions"); pbox.textContent = "";
+  for (const p of ps) {
+    const el = document.createElement("div"); el.className = "pos";
+    const lo = p.sl, hi = p.tp, span = hi - lo;
+    const at = (v) => Math.max(0, Math.min(100, ((v - lo) / span) * 100));
+    el.innerHTML = `<div class="pos-top"><span class="coin"></span><span class="num pnl" style="font-weight:700"></span></div>
+      <div class="range"><span class="entry"></span><span class="tick"></span></div>
+      <div class="range-lbl num"><span class="l"></span><span class="m"></span><span class="r"></span></div>
+      <div class="sub info"></div>`;
+    el.querySelector(".coin").textContent = `${p.coin} · ${won(p.cost)}`;
+    const pnlEl = el.querySelector(".pnl");
+    pnlEl.textContent = p.pnlPct == null ? "-" : (p.pnlPct > 0 ? "+" : "") + p.pnlPct.toFixed(2) + "%";
+    if (p.pnlPct > 0) pnlEl.classList.add("up"); else if (p.pnlPct < 0) pnlEl.classList.add("down");
+    el.querySelector(".entry").style.left = at(p.unit) + "%";
+    el.querySelector(".tick").style.left = (p.price ? at(p.price) : at(p.unit)) + "%";
+    el.querySelector(".l").textContent = "손절 " + qty(+p.sl.toPrecision(6));
+    el.querySelector(".m").textContent = "현재 " + (p.price ? qty(p.price) : "-");
+    el.querySelector(".r").textContent = "익절 " + qty(+p.tp.toPrecision(6));
+    const left = Math.max(0, Math.round((p.deadline - Date.now()) / 60000));
+    el.querySelector(".info").textContent = `${hm(p.at)} 매수 · 최대 ${left}분 더 보유 · ${p.strategy}`;
+    pbox.append(el);
+  }
+
+  // 전략
+  const st = Array.isArray(s.strategies) ? s.strategies : [];
+  const sbox = $("strategies"); sbox.textContent = "";
+  $("optTime").textContent = s.lastOptimize ? hm(s.lastOptimize) + " 선정 · 1시간마다 갱신" : "";
+  if (!st.length) {
+    const uni = (s.universe || []).map((m) => m.split("-")[1]).join(", ");
+    sbox.innerHTML = '<div class="empty"></div>';
+    sbox.firstChild.textContent = uni ? `후보 ${uni} 중 조건(승률 90%↑, 최근 구간 무손실)을 통과한 전략이 아직 없습니다. 다음 선정 때 다시 시도합니다.` : "PC 봇이 전략을 고르면 여기에 표시됩니다.";
+  }
+  for (const x of st) {
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = `<span><b></b> <span class="sub d"></span></span><span class="num r"></span>`;
+    el.querySelector("b").textContent = x.market.split("-")[1];
+    el.querySelector(".d").textContent = x.desc;
+    el.querySelector(".r").textContent = `승률 ${Math.round((x.winrate || 0) * 100)}% · ${x.trades}회`;
+    sbox.append(el);
+  }
+
+  // 실시간 기록 (최신이 위)
+  const act = Array.isArray(s.activity) ? s.activity.slice().reverse() : [];
+  if (act.length) $("activity").textContent = act.join("\n");
+}
+
+function renderTrades(items) {
+  const box = $("trades"); box.textContent = "";
+  if (!items.length) { box.innerHTML = '<div class="empty">아직 거래가 없습니다.</div>'; return; }
+  for (const t of items) {
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = `<span><b></b> <span class="sub d"></span></span><span class="num r"></span>`;
+    const coin = (t.market || "").split("-")[1] || t.market;
+    el.querySelector("b").textContent = `${t.side === "buy" ? "매수" : "매도"} ${coin}`;
+    el.querySelector(".d").textContent = `${t.at ? hm(t.at) : ""} · ${t.side === "buy" ? won(t.krw) : t.reason}${t.mode === "paper" ? " · 모의" : ""}`;
+    const r = el.querySelector(".r");
+    if (t.side === "sell") setPnl(r, t.pnl); else r.textContent = "";
+    box.append(el);
+  }
+}
 
 function renderCmds(items) {
   const box = $("cmds"); box.textContent = "";
