@@ -60,15 +60,16 @@ STABLE_COINS = {"USDT", "USDC", "DAI", "USDE", "USD1", "PYUSD", "TUSD"}  # 가�
 MIN_ORDER_KRW = 5000
 FEE_RATE = 0.0005                # 업비트 원화마켓 0.05%
 
+# 탐험 모드 (2026-10-28 사용자 결정): 큰 수익보다 '많은 종목·많은 시도'를 소액으로 계속 돌리며 실전 기록으로 규칙을 걸러냄
+EXPLORE_MODE = True
+EXPLORE_ORDER_KRW = 6000         # 1회 주문 고정 (업비트 최소 5,000원 + 하락 여유) · bot_config.env 의 ORDER_KRW 보다 우선
+EXPLORE_MARTINGALE = 0           # 마틴게일 끔 · bot_config.env 보다 우선
+
 # 매매 규칙 (bot_config.env 에서 바꿀 수 있는 값은 load_config 참고)
 TARGET_NET_PCT = 0.5             # 기본 익절(순수익 %) — 전략마다 백테스트로 따로 정함
 LOSS_COOLDOWN_MIN = 7            # 손실(손절·보유시간 초과 손실) 후 신규 매수 정지(분) — 2026-10-28 사용자 요청 30→7
 COOLDOWN_PER_MARKET = EXPLORE_MODE   # True: 손실 난 그 종목만 정지 / False: 전체 정지
 PROFIT_LOCK_RATIO = 0.5          # 수익 중 잠그는 비율
-# 탐험 모드 (2026-10-28 사용자 결정): 큰 수익보다 '많은 종목·많은 시도'를 소액으로 계속 돌리며 실전 기록으로 규칙을 걸러냄
-EXPLORE_MODE = True
-EXPLORE_ORDER_KRW = 6000         # 1회 주문 고정 (업비트 최소 5,000원 + 하락 여유) · bot_config.env 의 ORDER_KRW 보다 우선
-EXPLORE_MARTINGALE = 0           # 마틴게일 끔 · bot_config.env 보다 우선
 TOP_N = 50 if EXPLORE_MODE else 10   # 거래대금 상위 종목 수
 MAX_OPEN_POSITIONS = 30 if EXPLORE_MODE else 3   # 동시에 들고 있을 최대 종목 수
 
