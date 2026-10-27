@@ -58,21 +58,23 @@ MIN_ORDER_KRW = 5000
 FEE_RATE = 0.0005                # 업비트 원화마켓 0.05%
 
 # 매매 규칙 (bot_config.env 에서 바꿀 수 있는 값은 load_config 참고)
-TARGET_NET_PCT = 0.5             # 수수료 제외 순수익 목표 %
+TARGET_NET_PCT = 0.5             # 기본 익절(순수익 %) — 전략마다 백테스트로 따로 정함
 LOSS_COOLDOWN_MIN = 30           # 손실 후 전체 거래 정지(분)
 PROFIT_LOCK_RATIO = 0.5          # 수익 중 잠그는 비율
 TOP_N = 10                       # 거래대금 상위 종목 수
 MAX_OPEN_POSITIONS = 3           # 동시에 들고 있을 최대 종목 수
 
 # 백테스트
-STRATEGY_VERSION = 2             # 바뀌면 재시작 직후 전략을 새로 고름
+STRATEGY_VERSION = 3             # 바뀌면 재시작 직후 전략을 새로 고름
 BT_CANDLES = 4320                # 1분봉 개수(3일) — 20시간은 우연히 맞는 전략이 너무 많이 통과했음
-BT_TRIALS = 120                  # 종목당 시험할 무작위 전략 수 (많을수록 우연히 맞는 전략이 늘어남)
+BT_TRIALS = 200                  # 종목당 시험할 무작위 전략 수 (많을수록 우연히 맞는 전략이 늘어남)
 BT_MIN_TRADES = 20               # 채택 최소 거래 수 (6회는 우연과 구분 불가)
 BT_HOLDOUT_MIN_TRADES = 5        # 최근 검증 구간 최소 거래 수
 BT_HOLDOUT_MIN_WINRATE = 0.80    # 최근 검증 구간 최소 승률
 BT_SLIPPAGE = 0.001              # 시장가 체결 미끄러짐 0.1% (매수·매도 각각)
-BT_MIN_WINRATE = 0.90            # 채택 최소 승률
+BT_MIN_WINRATE = 0.90            # (참고용) 이전 고정 기준
+BT_MIN_EDGE_PCT = 0.10           # 거래당 평균 순수익 최소 % (학습·검증 구간 모두)
+BT_MIN_PROFIT_FACTOR = 1.5       # 총이익 / 총손실 최소 (학습 구간)
 BT_HOLDOUT = 0.25                # 마지막 25% 구간은 따로 검증(손실이면 탈락)
 REOPTIMIZE_MIN = 60              # 전략 재선정 주기(분)
 
@@ -491,7 +493,8 @@ CONDITION_POOL = [
     ("vol_spike", [{"n": 20, "m": m} for m in (1.5, 2.0, 3.0)]),
     ("green", [{}]),
 ]
-SL_CHOICES = [-1.0, -1.5, -2.0, -3.0]
+TP_CHOICES = [0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0]     # 익절: 수수료 뺀 순수익 %
+SL_CHOICES = [-0.5, -0.8, -1.0, -1.5, -2.0, -3.0, -5.0]  # 손절: 매수 단가 대비 %
 HOLD_CHOICES = [30, 60, 120, 240]
 
 
@@ -502,13 +505,13 @@ def random_spec(rng):
     for i in names:
         name, variants = CONDITION_POOL[i]
         conds.append([name, rng.choice(variants)])
-    return {"conds": conds, "sl": rng.choice(SL_CHOICES), "hold": rng.choice(HOLD_CHOICES)}
+    return {"conds": conds, "tp": rng.choice(TP_CHOICES), "sl": rng.choice(SL_CHOICES), "hold": rng.choice(HOLD_CHOICES)}
 
 
 def describe(spec):
     names = {"rsi_below": "RSI과매도", "bb_below": "볼린저하단", "ema_up": "상승추세", "ema_cross": "골든크로스",
              "drop": "단기급락", "breakout": "고점돌파", "vol_spike": "거래량급증", "green": "양봉"}
-    return "+".join(names[c[0]] for c in spec["conds"]) + f" / 손절{spec['sl']}% / 최대{spec['hold']}분"
+    return "+".join(names[c[0]] for c in spec["conds"]) + f" / 익절+{spec.get('tp', TARGET_NET_PCT)}% / 손절{spec['sl']}% / 최대{spec['hold']}분"
 
 
 class Series:
@@ -560,9 +563,9 @@ class Series:
         return [all(a[i] for a in arrs) for i in range(self.n)]
 
 
-def target_price(entry_cost_per_unit):
-    """수수료 빼고 순수익 TARGET_NET_PCT 가 되는 매도가"""
-    return entry_cost_per_unit * (1 + TARGET_NET_PCT / 100) / (1 - FEE_RATE)
+def target_price(entry_cost_per_unit, net_pct=TARGET_NET_PCT):
+    """수수료 빼고 순수익 net_pct % 가 되는 매도가"""
+    return entry_cost_per_unit * (1 + net_pct / 100) / (1 - FEE_RATE)
 
 
 def backtest(series, spec, start=60, end=None):
@@ -577,7 +580,7 @@ def backtest(series, spec, start=60, end=None):
         j = i + 1
         fill = series.o[j] * (1 + BT_SLIPPAGE)        # 시장가 매수 미끄러짐
         entry = fill * (1 + FEE_RATE)                  # 매수 수수료 포함 단가
-        tp, sl = target_price(entry), entry * (1 + spec["sl"] / 100)
+        tp, sl = target_price(entry, spec.get("tp", TARGET_NET_PCT)), entry * (1 + spec["sl"] / 100)
         exit_price, k = None, j
         while k < end:
             if series.l[k] <= sl:                       # 같은 봉에서 둘 다 닿으면 손절로 가정(보수적)
@@ -600,25 +603,34 @@ def backtest(series, spec, start=60, end=None):
     return results
 
 
+def stats(results):
+    n = len(results)
+    wins = [x for x in results if x > 0]
+    losses = [-x for x in results if x <= 0]
+    gross_l = sum(losses)
+    return {"n": n, "winrate": len(wins) / n if n else 0, "edge": sum(results) / n if n else 0,
+            "total": sum(results), "pf": (sum(wins) / gross_l) if gross_l > 0 else 99.0}
+
+
 def evaluate(series, spec):
-    """앞 75%에서만 고르고, 고를 때 보지 않은 뒤 25%에서 다시 통과해야 채택 (과거 끼워맞춤 방지)"""
+    """익절·손절·보유시간까지 포함한 조합을 앞 75%로 고르고, 보지 않은 뒤 25%에서 다시 통과해야 채택.
+    기준은 '승률'이 아니라 '거래당 평균 순수익'(익절 폭이 달라서 승률만으로는 비교 불가)"""
     split = int(series.n * (1 - BT_HOLDOUT))
-    train = backtest(series, spec, end=split)
-    if len(train) < BT_MIN_TRADES:
+    tr = stats(backtest(series, spec, end=split))
+    if tr["n"] < BT_MIN_TRADES or tr["edge"] < BT_MIN_EDGE_PCT or tr["pf"] < BT_MIN_PROFIT_FACTOR:
         return None
-    wins = sum(1 for x in train if x > 0)
-    winrate = wins / len(train)
-    total = sum(train)
-    if winrate < BT_MIN_WINRATE or total <= 0:
+    # 손익분기 승률보다 여유 있게 높아야 함
+    tp, sl = spec.get("tp", TARGET_NET_PCT), abs(spec["sl"]) + 0.2
+    breakeven = sl / (sl + tp)
+    if tr["winrate"] < breakeven + 0.05:
         return None
-    hold = backtest(series, spec, start=split)
-    if len(hold) < BT_HOLDOUT_MIN_TRADES or sum(hold) <= 0:
+    ho = stats(backtest(series, spec, start=split))
+    if ho["n"] < BT_HOLDOUT_MIN_TRADES or ho["edge"] < BT_MIN_EDGE_PCT or ho["winrate"] < breakeven:
         return None
-    hold_wr = sum(1 for x in hold if x > 0) / len(hold)
-    if hold_wr < BT_HOLDOUT_MIN_WINRATE:
-        return None
-    return {"winrate": round(winrate, 3), "trades": len(train), "totalPct": round(total, 2),
-            "holdoutPct": round(sum(hold), 2), "holdoutTrades": len(hold), "holdoutWinrate": round(hold_wr, 3)}
+    return {"winrate": round(tr["winrate"], 3), "trades": tr["n"], "totalPct": round(tr["total"], 2),
+            "edgePct": round(tr["edge"], 3), "pf": round(min(tr["pf"], 99), 2),
+            "holdoutPct": round(ho["total"], 2), "holdoutTrades": ho["n"], "holdoutWinrate": round(ho["winrate"], 3),
+            "holdoutEdgePct": round(ho["edge"], 3), "score": round(min(tr["edge"], ho["edge"]), 4)}
 
 
 # ======================= 봇 =======================
@@ -754,16 +766,16 @@ class Bot:
             for _ in range(BT_TRIALS):
                 spec = random_spec(self.rng)
                 r = evaluate(series, spec)
-                if r and (best is None or r["totalPct"] > best[1]["totalPct"]):
+                if r and (best is None or r["score"] > best[1]["score"]):
                     best = (spec, r)
             if best:
                 spec, r = best
                 spec.update(r)
                 chosen[mk] = spec
                 log(f"  채택 {mk.split('-')[1]}: {describe(spec)} · 승률 {r['winrate']*100:.0f}% "
-                    f"{r['trades']}회 · 누적 {r['totalPct']:+.2f}% · 검증구간 {r['holdoutTrades']}회 승률 {r['holdoutWinrate']*100:.0f}% {r['holdoutPct']:+.2f}%")
+                    f"{r['trades']}회 · 거래당 {r['edgePct']:+.2f}% · 검증구간 {r['holdoutTrades']}회 승률 {r['holdoutWinrate']*100:.0f}% 거래당 {r['holdoutEdgePct']:+.2f}%")
             else:
-                log(f"  {mk.split('-')[1]}: 조건(승률 90%↑, 최근구간 무손실) 맞는 전략 없음 → 이번 시간 거래 안 함")
+                log(f"  {mk.split('-')[1]}: 학습·검증 구간 모두 수익 나는 익절/손절 조합 없음 → 이번 시간 거래 안 함")
         self.state["strategies"] = chosen
         self.state["lastOptimize"] = int(time.time())
         save_state(self.state)
@@ -806,7 +818,7 @@ class Bot:
         unit = cost / vol
         # 목표가: 매수 수수료 포함 단가 기준, 매도 수수료까지 빼고 순수익 0.5%
         self.state["positions"][market] = {
-            "volume": vol, "cost": cost, "unit": unit, "tp": target_price(unit),
+            "volume": vol, "cost": cost, "unit": unit, "tp": target_price(unit, spec.get("tp", TARGET_NET_PCT)),
             "sl": unit * (1 + spec["sl"] / 100), "deadline": int(time.time()) + spec["hold"] * 60,
             "at": int(time.time() * 1000), "strategy": describe(spec), "mart": self.ledger["martLevel"],
         }
@@ -1045,7 +1057,7 @@ class Bot:
         uid = self.cloud.connect()
         log(f"웹페이지 계정 연결됨 ({uid[:6]}…) · 기기: {self.cfg['DEVICE_NAME']}")
         log(f"모드: {'★ 실매매 (실제 주문) ★' if self.live else '모의매매 (실제 주문 없음)'} · 거래 금지/숨김: {', '.join(sorted(PROTECTED_COINS))}")
-        log(f"기본 주문 {self.cfg['ORDER_KRW']:,}원 · 순익 +{TARGET_NET_PCT}% 익절 · 손실 후 {LOSS_COOLDOWN_MIN}분 대기 · "
+        log(f"기본 주문 {self.cfg['ORDER_KRW']:,}원 · 익절/손절은 전략별 백테스트로 결정 · 손실 후 {LOSS_COOLDOWN_MIN}분 대기 · "
             f"마틴게일 최대 {self.cfg['MARTINGALE_MAX_LEVEL']}단계 · 하루 손실 한도 {self.cfg['DAILY_LOSS_LIMIT']:,}원")
         self.roll_day()
         uni = self.state["universe"]
