@@ -22,6 +22,7 @@ import math
 import os
 import random
 import sys
+import threading
 import time
 import uuid
 from collections import deque
@@ -91,6 +92,12 @@ STATUS_EVERY = 30
 LOOP_IDLE = 15                   # 보유 없을 때 확인 간격(초)
 LOOP_ACTIVE = 5                  # 보유 중 확인 간격(초)
 COMMAND_MAX_AGE = 10 * 60
+
+# AI 분석가 (bot_config.env 에 ANTHROPIC_API_KEY 가 있을 때만 동작)
+AI_MODEL_DEFAULT = "claude-sonnet-5-5"
+AI_EVERY_LOSSES = 5              # 손실 거래가 이만큼 새로 쌓이면 분석
+AI_MIN_INTERVAL_MIN = 60         # 분석 최소 간격
+AI_TRADE_LOG = 60                # AI에게 보여줄 최근 거래 수
 
 # 자동 업데이트: GitHub에 올라간 최신 코드를 받아 스스로 재시작 (start_bot.bat 이 다시 띄워줌)
 UPDATE_URL = "https://raw.githubusercontent.com/btypenine/chamdom/main/bot/chamdom_bot.py"
@@ -172,6 +179,9 @@ def load_config():
     cfg["DAILY_LOSS_LIMIT"] = int(num("DAILY_LOSS_LIMIT", 100000))       # 0이면 제한 없음
     cfg["TRADE_MODE"] = cfg.get("TRADE_MODE", "paper").lower()
     cfg["DEVICE_NAME"] = cfg.get("DEVICE_NAME") or "PC"
+    key = cfg.get("ANTHROPIC_API_KEY", "")
+    cfg["ANTHROPIC_API_KEY"] = "" if not key or key.startswith("여기에") else key
+    cfg["AI_MODEL"] = cfg.get("AI_MODEL") or AI_MODEL_DEFAULT
     return cfg
 
 
@@ -715,6 +725,7 @@ class Bot:
                 log(f"거래일 마감 {lg['day']}: {lg['dayTrades']}회(익절 {lg['dayWins']}) 손익 {lg['dayPnl']:+,.0f}원")
                 by = [{"market": m, **v} for m, v in self.state["marketStats"].items()]
                 by.sort(key=lambda x: x["pnl"])
+                self.state["aiDue"] = True
                 self.state["lastReport"] = {
                     "day": lg["day"], "trades": lg["dayTrades"], "wins": lg["dayWins"], "pnl": round(lg["dayPnl"]),
                     "seed": round(lg["seed"]), "locked": round(lg["locked"]), "byMarket": by,
@@ -906,6 +917,16 @@ class Bot:
         analysis = None
         if pnl <= 0:
             analysis = self.post_mortem(market, pos, price, reason, pnl)
+        tl = self.state.setdefault("tradeLog", [])
+        tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "coin": market.split("-")[1],
+                   "pnl": round(pnl), "cost": round(pos["cost"]), "exit": reason, "strategy": pos.get("strategy", ""),
+                   "heldMin": round((time.time() * 1000 - pos["at"]) / 60000, 1),
+                   "btWinrate": pos.get("btWinrate"), "mart": pos.get("mart"),
+                   "cause": analysis["label"] if analysis else None,
+                   "details": [c["detail"] for c in analysis["causes"]] if analysis else None})
+        del tl[:-AI_TRADE_LOG]
+        if pnl <= 0:
+            self.state["aiLossesSince"] = self.state.get("aiLossesSince", 0) + 1
         tag = "실매도" if self.live else "모의매도"
         log(f"[{tag}] {market} 손익 {pnl:+,.0f}원 ({reason}) · 시드 {self.ledger['seed']:,.0f} · 잠김 {self.ledger['locked']:,.0f}"
             + ("" if pnl > 0 else f" · {LOSS_COOLDOWN_MIN}분 대기"))
@@ -1052,6 +1073,86 @@ class Bot:
                         "pnlPct": round((price * (1 - FEE_RATE) / p["unit"] - 1) * 100, 2) if price else None})
         return out
 
+    # ---------- AI 분석가 ----------
+    def ai_should_run(self):
+        if not self.cfg["ANTHROPIC_API_KEY"] or getattr(self, "_ai_busy", False):
+            return False
+        if len(self.state.get("tradeLog", [])) < 3:
+            return False
+        if time.time() - self.state.get("aiLastAt", 0) < AI_MIN_INTERVAL_MIN * 60:
+            return False
+        return self.state.get("aiDue") or self.state.get("aiLossesSince", 0) >= AI_EVERY_LOSSES
+
+    def ai_start(self):
+        self._ai_busy = True
+        self.state["aiDue"] = False
+        self.state["aiLossesSince"] = 0
+        self.state["aiLastAt"] = int(time.time())
+        payload = self.ai_payload()
+        threading.Thread(target=self._ai_worker, args=(payload,), daemon=True).start()
+        log("[AI] 거래 기록 분석 요청 보냄 (30초~1분)")
+
+    def ai_payload(self):
+        lg = self.ledger
+        return {
+            "규칙": {"기본주문": self.cfg["ORDER_KRW"], "마틴게일최대단계": self.cfg["MARTINGALE_MAX_LEVEL"],
+                   "손실후대기분": LOSS_COOLDOWN_MIN, "하루손실한도": self.cfg["DAILY_LOSS_LIMIT"],
+                   "수익잠금비율": PROFIT_LOCK_RATIO, "동시보유최대": MAX_OPEN_POSITIONS,
+                   "백테스트": {"분봉수": BT_CANDLES, "시험조합": BT_TRIALS, "최소거래": BT_MIN_TRADES,
+                             "검증구간비율": BT_HOLDOUT, "거래당최소순익%": BT_MIN_EDGE_PCT,
+                             "최소손익비": BT_MIN_PROFIT_FACTOR, "미끄러짐": BT_SLIPPAGE,
+                             "익절후보": TP_CHOICES, "손절후보": SL_CHOICES, "보유후보분": HOLD_CHOICES},
+                   "실전부진기준": {"종목최소거래": LIVE_MIN_TRADES, "종목최소승률": LIVE_MIN_WINRATE,
+                               "종목연속손실": LIVE_MAX_LOSS_STREAK, "하루최소거래": LIVE_DAY_MIN_TRADES,
+                               "하루최소승률": LIVE_DAY_MIN_WINRATE},
+                   "종목선정": {"상위개수": TOP_N, "거래대금기간일": UNIVERSE_DAYS, "최소상장일": UNIVERSE_MIN_LISTED_DAYS}},
+            "장부": {"시드": round(lg["seed"]), "잠긴수익": round(lg["locked"]), "누적실현": round(lg["realizedTotal"]),
+                   "누적거래": lg["tradesTotal"], "누적익절": lg["winsTotal"], "오늘손익": round(lg["dayPnl"]),
+                   "오늘거래": lg["dayTrades"], "오늘익절": lg["dayWins"]},
+            "전날결산": self.state.get("lastReport"),
+            "현재전략": [{"종목": m, "설명": describe(sp), "학습승률": sp.get("winrate"), "거래당%": sp.get("edgePct"),
+                       "검증승률": sp.get("holdoutWinrate"), "검증거래": sp.get("holdoutTrades")}
+                      for m, sp in self.state["strategies"].items()],
+            "실패원인누적": self.state.get("failStats", {}),
+            "최근거래": self.state.get("tradeLog", []),
+        }
+
+    def _ai_worker(self, payload):
+        prompt = (
+            "너는 업비트 원화마켓 소액 자동매매 봇의 성과 분석가다. 아래 JSON은 봇의 규칙, 장부, 현재 전략, "
+            "손해 거래마다 봇이 자동 진단한 실패 원인, 최근 거래 기록이다.\n"
+            "할 일: 1) 무엇이 잘되고 무엇이 안되는지 숫자로 짚고 2) 손해의 주된 원인을 찾고 "
+            "3) 봇 규칙을 어떻게 바꾸면 좋을지 구체적인 수정안을 낸다. 수정안은 위 규칙 항목 이름과 바꿀 값을 적는다. "
+            "표본이 적으면 그렇다고 말하고 과한 결론을 피한다. 수익을 장담하지 말 것. 마틴게일이 손실을 키우는지도 평가한다.\n"
+            "반드시 아래 형식의 JSON 하나만 출력한다(설명 문장, 코드블록 금지):\n"
+            '{"요약": "2~3문장", "잘된점": ["..."], "문제점": ["..."], '
+            '"수정안": [{"제목": "...", "이유": "...", "항목": "규칙 항목 이름", "현재": "...", "제안": "...", "우선순위": "높음|중간|낮음"}], '
+            '"주의": "표본 크기나 한계"}\n\n'
+            + json.dumps(payload, ensure_ascii=False))
+        try:
+            res = requests.post("https://api.anthropic.com/v1/messages", timeout=120, headers={
+                "x-api-key": self.cfg["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01",
+                "content-type": "application/json"},
+                json={"model": self.cfg["AI_MODEL"], "max_tokens": 2000,
+                      "messages": [{"role": "user", "content": prompt}]})
+            if res.status_code != 200:
+                raise RuntimeError(f"HTTP {res.status_code}: {res.text[:200]}")
+            text = "".join(b.get("text", "") for b in res.json().get("content", []) if b.get("type") == "text")
+            start, end = text.find("{"), text.rfind("}")
+            report = json.loads(text[start:end + 1])
+            report["at"] = int(time.time() * 1000)
+            report["trades"] = len(payload["최근거래"])
+            self.state["aiReport"] = report
+            log(f"[AI] 분석 완료: {report.get('요약', '')[:120]}")
+            for sug in report.get("수정안", [])[:5]:
+                log(f"[AI 제안·{sug.get('우선순위', '')}] {sug.get('제목', '')}: {sug.get('항목', '')} {sug.get('현재', '')} → {sug.get('제안', '')}")
+        except Exception as e:
+            self.state["aiReport"] = {"error": f"AI 분석 실패: {str(e)[:200]}", "at": int(time.time() * 1000)}
+            log(f"[AI] 분석 실패: {e}")
+        finally:
+            self._ai_busy = False
+            self._ai_dirty = True
+
     def summary(self):
         lg = self.ledger
         mode = "실매매" if self.live else "모의매매(실제 주문 없음)"
@@ -1098,6 +1199,8 @@ class Bot:
                      "universe": self.state["universe"]["markets"],
                      "blocked": self.state["blocked"], "marketStats": self.state["marketStats"],
                      "report": self.state["lastReport"],
+                     "ai": self.state.get("aiReport"),
+                     "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
                      "failStats": [{"code": k, "label": FAIL_LABELS.get(k, k), "count": v}
                                    for k, v in sorted(self.state.get("failStats", {}).items(), key=lambda x: -x[1])]})
         self.cloud.put_status(data)
@@ -1151,6 +1254,8 @@ class Bot:
         uid = self.cloud.connect()
         log(f"웹페이지 계정 연결됨 ({uid[:6]}…) · 기기: {self.cfg['DEVICE_NAME']}")
         log(f"모드: {'★ 실매매 (실제 주문) ★' if self.live else '모의매매 (실제 주문 없음)'} · 거래 금지/숨김: {', '.join(sorted(PROTECTED_COINS))}")
+        log("AI 분석가: " + (f"켜짐 ({self.cfg['AI_MODEL']} · 손실 {AI_EVERY_LOSSES}건마다·매일 9시)" if self.cfg["ANTHROPIC_API_KEY"]
+                            else "꺼짐 (bot_config.env 에 ANTHROPIC_API_KEY 를 넣으면 켜짐)"))
         log(f"기본 주문 {self.cfg['ORDER_KRW']:,}원 · 익절/손절은 전략별 백테스트로 결정 · 손실 후 {LOSS_COOLDOWN_MIN}분 대기 · "
             f"마틴게일 최대 {self.cfg['MARTINGALE_MAX_LEVEL']}단계 · 하루 손실 한도 {self.cfg['DAILY_LOSS_LIMIT']:,}원")
         self.roll_day()
@@ -1186,6 +1291,12 @@ class Bot:
                     continue
                 if time.time() - self.state["lastOptimize"] >= REOPTIMIZE_MIN * 60:
                     self.optimize()
+                    self.upload_status()
+                if self.ai_should_run():
+                    self.ai_start()
+                if getattr(self, "_ai_dirty", False):
+                    self._ai_dirty = False
+                    save_state(self.state)
                     self.upload_status()
                 self.handle_commands()
                 self.manage_positions()
