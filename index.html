@@ -234,11 +234,6 @@ footer { font-size: 12px; color: var(--muted); text-align: center; }
       <div class="list" id="ruleBook"><div class="empty">아직 기록된 규칙이 없습니다.</div></div>
     </section>
 
-    <section class="card" id="aiCard" hidden>
-      <div class="head-row"><h2>AI 분석</h2><span class="sub" id="aiTime"></span></div>
-      <div id="aiBody"></div>
-    </section>
-
     <section class="card" id="failCard" hidden>
       <h2>실패 원인 통계</h2>
       <div class="sub">손해로 끝난 거래를 봇이 진단한 결과입니다. 한 거래에 원인이 여러 개일 수 있습니다.</div>
@@ -522,44 +517,6 @@ function renderMore(s, stale) {
       ? `실전 ${r.trades}회 · 승률 ${Math.round(r.winrate * 100)}% · 거래당 ${pct(r.avgPct)} (예상 ${pct(r.btEdge)}) · ${r.pnl >= 0 ? "+" : ""}${r.pnl.toLocaleString()}원`
       : `실전 0회 · 예상 거래당 ${pct(r.btEdge)}`;
     rbox.append(el);
-  }
-
-  // AI 분석
-  const ai = s.ai;
-  $("aiCard").hidden = !(ai || s.aiEnabled === false);
-  const ab = $("aiBody"); ab.textContent = "";
-  $("aiTime").textContent = ai && ai.at ? hm(ai.at) + " 분석" : "";
-  if (!ai) {
-    const d = document.createElement("div"); d.className = "empty";
-    d.textContent = s.aiEnabled ? "매일 3·9·15·21시와 손실 거래가 5건 쌓일 때마다 AI가 분석합니다." : "AI 분석가가 꺼져 있습니다. 회사 PC의 bot_config.env 에 ANTHROPIC_API_KEY 를 넣으면 켜집니다.";
-    ab.append(d);
-  } else if (ai.error) {
-    const d = document.createElement("div"); d.className = "msg"; d.textContent = ai.error; ab.append(d);
-  } else {
-    const add = (cls, text, tag = "div") => { const e = document.createElement(tag); e.className = cls; e.textContent = text; ab.append(e); return e; };
-    add("ai-sum", ai["요약"] || "");
-    const list = (title, arr) => {
-      if (!arr || !arr.length) return;
-      add("ai-h", title);
-      const ul = document.createElement("ul"); ul.className = "ai-ul";
-      for (const x of arr) { const li = document.createElement("li"); li.textContent = x; ul.append(li); }
-      ab.append(ul);
-    };
-    list("잘된 점", ai["잘된점"]);
-    list("문제점", ai["문제점"]);
-    const sugs = ai["수정안"] || [];
-    if (sugs.length) add("ai-h", "수정안 (적용하려면 Claude 대화에서 '이 수정안 적용해줘')");
-    for (const g of sugs) {
-      const box = document.createElement("div"); box.className = "sug";
-      const t = document.createElement("div"); t.className = "t";
-      const name = document.createElement("span"); name.textContent = g["제목"] || "";
-      const pr = document.createElement("span"); pr.className = "pri" + (g["우선순위"] === "높음" ? " high" : ""); pr.textContent = g["우선순위"] || "";
-      t.append(name, pr);
-      const why = document.createElement("div"); why.className = "sub"; why.textContent = g["이유"] || "";
-      const chg = document.createElement("div"); chg.className = "chg"; chg.textContent = `${g["항목"] || ""}: ${g["현재"] ?? ""} → ${g["제안"] ?? ""}`;
-      box.append(t, why, chg); ab.append(box);
-    }
-    if (ai["주의"]) add("sub", "주의: " + ai["주의"]);
   }
 
   // 실패 원인 통계
