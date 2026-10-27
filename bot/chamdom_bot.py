@@ -65,7 +65,7 @@ TOP_N = 10                       # 거래대금 상위 종목 수
 MAX_OPEN_POSITIONS = 3           # 동시에 들고 있을 최대 종목 수
 
 # 백테스트
-STRATEGY_VERSION = 3             # 바뀌면 재시작 직후 전략을 새로 고름
+STRATEGY_VERSION = 4             # 바뀌면 재시작 직후 전략을 새로 고름
 BT_CANDLES = 4320                # 1분봉 개수(3일) — 20시간은 우연히 맞는 전략이 너무 많이 통과했음
 BT_TRIALS = 200                  # 종목당 시험할 무작위 전략 수 (많을수록 우연히 맞는 전략이 늘어남)
 BT_MIN_TRADES = 20               # 채택 최소 거래 수 (6회는 우연과 구분 불가)
@@ -201,6 +201,8 @@ def load_state(budget):
     lg.setdefault("dayWins", 0)
     lg.setdefault("cooldownUntil", 0)
     lg.setdefault("martLevel", 0)
+    lg.setdefault("gateTrades", 0)             # 현재 전략 기준으로 센 오늘 거래 수 (부진 판단용)
+    lg.setdefault("gateWins", 0)
     s.setdefault("universe", {"day": "", "markets": []})
     s.setdefault("strategies", {})     # {market: spec}
     s.setdefault("lastOptimize", 0)
@@ -670,7 +672,7 @@ class Bot:
                     "blocked": list(self.state["blocked"])}
             self.state["marketStats"] = {}
             self.state["blocked"] = []
-            lg.update({"day": day, "dayPnl": 0.0, "dayTrades": 0, "dayWins": 0})
+            lg.update({"day": day, "dayPnl": 0.0, "dayTrades": 0, "dayWins": 0, "gateTrades": 0, "gateWins": 0})
             save_state(self.state)
             log(f"새 거래일 {day} 시작 · 시드 {lg['seed']:,.0f}원 · 잠긴 수익 {lg['locked']:,.0f}원")
 
@@ -680,7 +682,9 @@ class Bot:
         lg["dayPnl"] += pnl
         lg["tradesTotal"] += 1
         lg["dayTrades"] += 1
+        lg["gateTrades"] += 1
         if pnl > 0:
+            lg["gateWins"] += 1
             lg["winsTotal"] += 1
             lg["dayWins"] += 1
             lg["locked"] += pnl * PROFIT_LOCK_RATIO
@@ -790,8 +794,8 @@ class Bot:
             return False, "손실 후 대기"
         if self.cfg["DAILY_LOSS_LIMIT"] and lg["dayPnl"] <= -self.cfg["DAILY_LOSS_LIMIT"]:
             return False, "오늘 손실 한도 도달"
-        if lg["dayTrades"] >= LIVE_DAY_MIN_TRADES and lg["dayWins"] / lg["dayTrades"] < LIVE_DAY_MIN_WINRATE:
-            return False, f"오늘 실전 승률 {lg['dayWins']}/{lg['dayTrades']} 부진 → 9시까지 쉼"
+        if lg["gateTrades"] >= LIVE_DAY_MIN_TRADES and lg["gateWins"] / lg["gateTrades"] < LIVE_DAY_MIN_WINRATE:
+            return False, f"현재 전략 실전 승률 {lg['gateWins']}/{lg['gateTrades']} 부진 → 9시까지 쉼"
         if len(self.state["positions"]) >= MAX_OPEN_POSITIONS:
             return False, "동시 보유 한도"
         if self.order_size() < MIN_ORDER_KRW:
@@ -1084,8 +1088,11 @@ class Bot:
                     self.state["strategyVersion"] = STRATEGY_VERSION
                     self.state["universe"]["day"] = ""        # 새 기준으로 종목·전략 다시 선정
                     self.state["strategies"] = {}
+                    self.state["blocked"] = []                 # 예전 전략 성적으로 막힌 종목도 다시 기회
+                    self.state["marketStats"] = {}
+                    self.ledger["gateTrades"] = self.ledger["gateWins"] = 0
                     save_state(self.state)
-                    log(f"전략 선정 기준 v{STRATEGY_VERSION} 적용 → 종목과 전략을 다시 고릅니다")
+                    log(f"전략 선정 기준 v{STRATEGY_VERSION} 적용 → 종목과 전략을 다시 고르고, 부진 판단은 새 전략 거래부터 다시 셉니다")
                     continue
                 if time.time() - self.state["lastOptimize"] >= REOPTIMIZE_MIN * 60:
                     self.optimize()
