@@ -65,9 +65,13 @@ TOP_N = 10                       # 거래대금 상위 종목 수
 MAX_OPEN_POSITIONS = 3           # 동시에 들고 있을 최대 종목 수
 
 # 백테스트
-BT_CANDLES = 1200                # 1분봉 개수(약 20시간)
-BT_TRIALS = 250                  # 종목당 시험할 무작위 전략 수
-BT_MIN_TRADES = 6                # 채택 최소 거래 수
+STRATEGY_VERSION = 2             # 바뀌면 재시작 직후 전략을 새로 고름
+BT_CANDLES = 4320                # 1분봉 개수(3일) — 20시간은 우연히 맞는 전략이 너무 많이 통과했음
+BT_TRIALS = 120                  # 종목당 시험할 무작위 전략 수 (많을수록 우연히 맞는 전략이 늘어남)
+BT_MIN_TRADES = 20               # 채택 최소 거래 수 (6회는 우연과 구분 불가)
+BT_HOLDOUT_MIN_TRADES = 5        # 최근 검증 구간 최소 거래 수
+BT_HOLDOUT_MIN_WINRATE = 0.80    # 최근 검증 구간 최소 승률
+BT_SLIPPAGE = 0.001              # 시장가 체결 미끄러짐 0.1% (매수·매도 각각)
 BT_MIN_WINRATE = 0.90            # 채택 최소 승률
 BT_HOLDOUT = 0.25                # 마지막 25% 구간은 따로 검증(손실이면 탈락)
 REOPTIMIZE_MIN = 60              # 전략 재선정 주기(분)
@@ -76,6 +80,10 @@ REOPTIMIZE_MIN = 60              # 전략 재선정 주기(분)
 LIVE_MIN_TRADES = 3              # 판단에 필요한 최소 거래 수
 LIVE_MIN_WINRATE = 0.67          # 이보다 낮으면 제외
 LIVE_MAX_LOSS_STREAK = 2         # 같은 종목 연속 손실 횟수 한도
+LIVE_DAY_MIN_TRADES = 8          # 하루 거래가 이만큼 쌓였는데
+LIVE_DAY_MIN_WINRATE = 0.50      # 승률이 이보다 낮으면 다음 날 9시까지 신규 매수 중지
+UNIVERSE_DAYS = 30               # 거래대금 순위 기간(최근 30일)
+UNIVERSE_MIN_LISTED_DAYS = 90    # 상장 90일 미만 종목 제외
 
 STATUS_EVERY = 30
 LOOP_IDLE = 15                   # 보유 없을 때 확인 간격(초)
@@ -567,8 +575,9 @@ def backtest(series, spec, start=60, end=None):
             i += 1
             continue
         j = i + 1
-        entry = series.o[j] * (1 + FEE_RATE)          # 매수 수수료 포함 단가
-        tp, sl = target_price(entry), series.o[j] * (1 + spec["sl"] / 100)
+        fill = series.o[j] * (1 + BT_SLIPPAGE)        # 시장가 매수 미끄러짐
+        entry = fill * (1 + FEE_RATE)                  # 매수 수수료 포함 단가
+        tp, sl = target_price(entry), entry * (1 + spec["sl"] / 100)
         exit_price, k = None, j
         while k < end:
             if series.l[k] <= sl:                       # 같은 봉에서 둘 다 닿으면 손절로 가정(보수적)
@@ -583,7 +592,7 @@ def backtest(series, spec, start=60, end=None):
             k += 1
         if exit_price is None:
             break
-        pnl = (exit_price * (1 - FEE_RATE) / entry - 1) * 100
+        pnl = (exit_price * (1 - BT_SLIPPAGE) * (1 - FEE_RATE) / entry - 1) * 100
         results.append(pnl)
         i = k + 1
         if pnl < 0:
@@ -592,20 +601,24 @@ def backtest(series, spec, start=60, end=None):
 
 
 def evaluate(series, spec):
+    """앞 75%에서만 고르고, 고를 때 보지 않은 뒤 25%에서 다시 통과해야 채택 (과거 끼워맞춤 방지)"""
     split = int(series.n * (1 - BT_HOLDOUT))
-    full = backtest(series, spec)
-    if len(full) < BT_MIN_TRADES:
+    train = backtest(series, spec, end=split)
+    if len(train) < BT_MIN_TRADES:
         return None
-    wins = sum(1 for x in full if x > 0)
-    winrate = wins / len(full)
-    total = sum(full)
+    wins = sum(1 for x in train if x > 0)
+    winrate = wins / len(train)
+    total = sum(train)
     if winrate < BT_MIN_WINRATE or total <= 0:
         return None
     hold = backtest(series, spec, start=split)
-    if sum(hold) < 0:
+    if len(hold) < BT_HOLDOUT_MIN_TRADES or sum(hold) <= 0:
         return None
-    return {"winrate": round(winrate, 3), "trades": len(full), "totalPct": round(total, 2),
-            "holdoutPct": round(sum(hold), 2), "holdoutTrades": len(hold)}
+    hold_wr = sum(1 for x in hold if x > 0) / len(hold)
+    if hold_wr < BT_HOLDOUT_MIN_WINRATE:
+        return None
+    return {"winrate": round(winrate, 3), "trades": len(train), "totalPct": round(total, 2),
+            "holdoutPct": round(sum(hold), 2), "holdoutTrades": len(hold), "holdoutWinrate": round(hold_wr, 3)}
 
 
 # ======================= 봇 =======================
@@ -691,7 +704,7 @@ class Bot:
 
     # ---------- 종목 선정 ----------
     def pick_universe(self):
-        log("거래대금 상위 종목 계산 중 (최근 1년, 1~2분 걸림)…")
+        log(f"거래대금 상위 종목 계산 중 (최근 {UNIVERSE_DAYS}일, 상장 {UNIVERSE_MIN_LISTED_DAYS}일 이상)…")
         details = self.upbit.markets_detail()
         candidates = []
         for m in details:
@@ -705,21 +718,15 @@ class Bot:
             if not warn:
                 candidates.append(mk)
         totals = []
-        since = datetime.now(KST) - timedelta(days=365)
         for idx, mk in enumerate(candidates, 1):
             if idx % 40 == 0:
                 self.push_progress(f"거래대금 계산 {idx}/{len(candidates)}")
             try:
-                total, to = 0.0, None
-                for _ in range(2):
-                    data = self.upbit.day_candles(mk, 200, to)
-                    if not data:
-                        break
-                    for c in data:
-                        if datetime.fromisoformat(c["candle_date_time_kst"]).replace(tzinfo=KST) >= since:
-                            total += c["candle_acc_trade_price"]
-                    to = data[-1]["candle_date_time_utc"] + "Z"
-                    time.sleep(0.12)
+                data = self.upbit.day_candles(mk, UNIVERSE_MIN_LISTED_DAYS)
+                time.sleep(0.12)
+                if len(data) < UNIVERSE_MIN_LISTED_DAYS:
+                    continue                              # 상장한 지 얼마 안 된 종목은 제외
+                total = sum(c["candle_acc_trade_price"] for c in data[:UNIVERSE_DAYS])
                 totals.append((total, mk))
             except UpbitError as e:
                 log(f"[경고] {mk} 일봉 조회 실패: {e}")
@@ -754,7 +761,7 @@ class Bot:
                 spec.update(r)
                 chosen[mk] = spec
                 log(f"  채택 {mk.split('-')[1]}: {describe(spec)} · 승률 {r['winrate']*100:.0f}% "
-                    f"{r['trades']}회 · 누적 {r['totalPct']:+.2f}% · 최근구간 {r['holdoutPct']:+.2f}%")
+                    f"{r['trades']}회 · 누적 {r['totalPct']:+.2f}% · 검증구간 {r['holdoutTrades']}회 승률 {r['holdoutWinrate']*100:.0f}% {r['holdoutPct']:+.2f}%")
             else:
                 log(f"  {mk.split('-')[1]}: 조건(승률 90%↑, 최근구간 무손실) 맞는 전략 없음 → 이번 시간 거래 안 함")
         self.state["strategies"] = chosen
@@ -771,6 +778,8 @@ class Bot:
             return False, "손실 후 대기"
         if self.cfg["DAILY_LOSS_LIMIT"] and lg["dayPnl"] <= -self.cfg["DAILY_LOSS_LIMIT"]:
             return False, "오늘 손실 한도 도달"
+        if lg["dayTrades"] >= LIVE_DAY_MIN_TRADES and lg["dayWins"] / lg["dayTrades"] < LIVE_DAY_MIN_WINRATE:
+            return False, f"오늘 실전 승률 {lg['dayWins']}/{lg['dayTrades']} 부진 → 9시까지 쉼"
         if len(self.state["positions"]) >= MAX_OPEN_POSITIONS:
             return False, "동시 보유 한도"
         if self.order_size() < MIN_ORDER_KRW:
@@ -1059,6 +1068,13 @@ class Bot:
                 if self.state["universe"]["day"] != today_key() or not self.state["universe"]["markets"]:
                     self.pick_universe()
                     self.state["lastOptimize"] = 0
+                if self.state.get("strategyVersion") != STRATEGY_VERSION:
+                    self.state["strategyVersion"] = STRATEGY_VERSION
+                    self.state["universe"]["day"] = ""        # 새 기준으로 종목·전략 다시 선정
+                    self.state["strategies"] = {}
+                    save_state(self.state)
+                    log(f"전략 선정 기준 v{STRATEGY_VERSION} 적용 → 종목과 전략을 다시 고릅니다")
+                    continue
                 if time.time() - self.state["lastOptimize"] >= REOPTIMIZE_MIN * 60:
                     self.optimize()
                     self.upload_status()
