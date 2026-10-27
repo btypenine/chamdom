@@ -234,6 +234,12 @@ footer { font-size: 12px; color: var(--muted); text-align: center; }
       <div class="list" id="ruleBook"><div class="empty">아직 기록된 규칙이 없습니다.</div></div>
     </section>
 
+    <section class="card" id="condCard" hidden>
+      <h2>조건별 실전 성적 (학습)</h2>
+      <div class="sub">규칙에 쓰인 조건마다 실전 결과를 모읍니다. 10회 이상 쌓이면 잘된 조건을 새 규칙 만들 때 더 자주 시도합니다(최대 3배, 최소 0.3배).</div>
+      <div class="list" id="condStats"></div>
+    </section>
+
     <section class="card" id="failCard" hidden>
       <h2>실패 원인 통계</h2>
       <div class="sub">손해로 끝난 거래를 봇이 진단한 결과입니다. 한 거래에 원인이 여러 개일 수 있습니다.</div>
@@ -443,6 +449,8 @@ function renderMore(s, stale) {
     if (s.cooldownUntil && s.cooldownUntil > Date.now()) notes.push(`손실 후 대기 중 · ${hm(s.cooldownUntil)}부터 다시 매수`);
     else if (s.canEnter && s.canEnter !== "가능") notes.push("신규 매수 멈춤: " + s.canEnter);
     if (lg.martLevel) notes.push(`마틴게일 ${lg.martLevel}단계`);
+    if (s.explore) notes.push(`탐험 모드 · 보유 ${(s.positions || []).length}종목 · 대상 ${(s.strategies || []).length}종목`);
+    if ((s.cooling || []).length) notes.push("손실 후 7분 대기: " + s.cooling.join(", "));
     if (lg.tradesTotal) notes.push(`누적 ${lg.tradesTotal}회 · 승률 ${Math.round(lg.winsTotal / lg.tradesTotal * 100)}% · 실현 ${signed(lg.realizedTotal)}`);
     if ((s.blocked || []).length) notes.push("오늘 제외(실전 부진): " + s.blocked.map((m) => m.split("-")[1]).join(", "));
     $("perfNote").textContent = notes.join(" · ");
@@ -517,6 +525,19 @@ function renderMore(s, stale) {
       ? `실전 ${r.trades}회 · 승률 ${Math.round(r.winrate * 100)}% · 거래당 ${pct(r.avgPct)} (예상 ${pct(r.btEdge)}) · ${r.pnl >= 0 ? "+" : ""}${r.pnl.toLocaleString()}원`
       : `실전 0회 · 예상 거래당 ${pct(r.btEdge)}`;
     rbox.append(el);
+  }
+
+  // 조건별 실전 성적
+  const CN = { rsi_below: "RSI과매도", bb_below: "볼린저하단", ema_up: "상승추세", ema_cross: "골든크로스", drop: "단기급락", breakout: "고점돌파", vol_spike: "거래량급증", green: "양봉" };
+  const cst = (Array.isArray(s.condStats) ? s.condStats : []).slice().sort((a, b) => b.avgPct - a.avgPct);
+  $("condCard").hidden = !cst.length;
+  const cbox = $("condStats"); cbox.textContent = "";
+  for (const c of cst) {
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = "<span></span><span class='num'></span>";
+    el.firstChild.textContent = CN[c.name] || c.name;
+    el.lastChild.textContent = `${c.n}회 · 승률 ${Math.round(c.wins / c.n * 100)}% · 거래당 ${c.avgPct >= 0 ? "+" : ""}${c.avgPct.toFixed(2)}%`;
+    cbox.append(el);
   }
 
   // 실패 원인 통계
