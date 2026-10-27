@@ -979,7 +979,7 @@ class Bot:
                 log(f"[경고] {mk} 일봉 조회 실패: {e}")
         totals.sort(reverse=True)
         top = [mk for _, mk in totals[:TOP_N]]
-        self.state["universe"] = {"day": today_key(), "markets": top}
+        self.state["universe"] = {"day": today_key(), "markets": top, "topN": TOP_N}
         save_state(self.state)
         log("상위 종목: " + ", ".join(m.split("-")[1] for m in top))
 
@@ -1549,7 +1549,8 @@ class Bot:
                     raise RestartForUpdate()
             try:
                 self.roll_day()
-                if self.state["universe"]["day"] != today_key() or not self.state["universe"]["markets"]:
+                uni = self.state["universe"]
+                if uni["day"] != today_key() or not uni["markets"] or uni.get("topN", 10) != TOP_N:
                     self.pick_universe()
                     self.state["lastOptimize"] = 0
                 if self.state.get("strategyVersion") != STRATEGY_VERSION:
