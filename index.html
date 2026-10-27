@@ -228,6 +228,12 @@ footer { font-size: 12px; color: var(--muted); text-align: center; }
       <div class="list" id="strategies"><div class="empty">PC 봇이 전략을 고르면 여기에 표시됩니다.</div></div>
     </section>
 
+    <section class="card">
+      <h2>규칙 장부 (실전 성적)</h2>
+      <div class="sub">종목+규칙마다 실전 결과를 날짜와 상관없이 쌓습니다. 5회를 채우면 거래당 평균 순수익(수수료 포함)으로 판정 → 플러스면 계속, 마이너스면 퇴출. 10·20·40회에 다시 판정.</div>
+      <div class="list" id="ruleBook"><div class="empty">아직 기록된 규칙이 없습니다.</div></div>
+    </section>
+
     <section class="card" id="aiCard" hidden>
       <div class="head-row"><h2>AI 분석</h2><span class="sub" id="aiTime"></span></div>
       <div id="aiBody"></div>
@@ -484,11 +490,11 @@ function renderMore(s, stale) {
   // 전략
   const st = Array.isArray(s.strategies) ? s.strategies : [];
   const sbox = $("strategies"); sbox.textContent = "";
-  $("optTime").textContent = s.lastOptimize ? hm(s.lastOptimize) + " 선정 · 1시간마다 갱신" : "";
+  $("optTime").textContent = s.lastOptimize ? hm(s.lastOptimize) + " 선정 · 1시간마다 갱신 (검증 중·실전 통과 규칙은 유지)" : "";
   if (!st.length) {
     const uni = (s.universe || []).map((m) => m.split("-")[1]).join(", ");
     sbox.innerHTML = '<div class="empty"></div>';
-    sbox.firstChild.textContent = uni ? `후보 ${uni} 중 조건(승률 90%↑, 최근 구간 무손실)을 통과한 전략이 아직 없습니다. 다음 선정 때 다시 시도합니다.` : "PC 봇이 전략을 고르면 여기에 표시됩니다.";
+    sbox.firstChild.textContent = uni ? `후보 ${uni} 중 학습·검증 구간 모두 수수료 빼고 수익 나는 전략이 아직 없습니다. 다음 선정 때 다시 시도합니다.` : "PC 봇이 전략을 고르면 여기에 표시됩니다.";
   }
   for (const x of st) {
     const el = document.createElement("div"); el.className = "li";
@@ -497,6 +503,25 @@ function renderMore(s, stale) {
     el.querySelector(".d").textContent = x.desc;
     el.querySelector(".r").textContent = `승률 ${Math.round((x.winrate || 0) * 100)}% · ${x.trades}회`;
     sbox.append(el);
+  }
+
+  // 규칙 장부
+  const rbk = Array.isArray(s.ruleBook) ? s.ruleBook : [];
+  const rbox = $("ruleBook"); rbox.textContent = "";
+  if (!rbk.length) rbox.innerHTML = '<div class="empty">아직 기록된 규칙이 없습니다.</div>';
+  const pct = (v) => (v == null ? "-" : (v >= 0 ? "+" : "") + v.toFixed(2) + "%");
+  for (const r of rbk) {
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = `<span><b></b> <span class="tag"></span><br><span class="sub d"></span></span><span class="num r"></span>`;
+    el.querySelector("b").textContent = r.coin + (r.active ? " ●" : "");
+    const tag = el.querySelector(".tag");
+    tag.textContent = r.status === "proven" ? "실전 통과" : r.status === "retired" ? "퇴출" : `검증 중 ${r.trades}/5`;
+    tag.style.cssText = "font-size:11px;padding:1px 6px;border-radius:8px;" + (r.status === "proven" ? "background:#1f6f43;color:#d6ffe6" : r.status === "retired" ? "background:#5a2323;color:#ffd6d6" : "background:#2e333c;color:#cfd3da");
+    el.querySelector(".d").textContent = r.desc;
+    el.querySelector(".r").textContent = r.trades
+      ? `실전 ${r.trades}회 · 승률 ${Math.round(r.winrate * 100)}% · 거래당 ${pct(r.avgPct)} (예상 ${pct(r.btEdge)}) · ${r.pnl >= 0 ? "+" : ""}${r.pnl.toLocaleString()}원`
+      : `실전 0회 · 예상 거래당 ${pct(r.btEdge)}`;
+    rbox.append(el);
   }
 
   // AI 분석

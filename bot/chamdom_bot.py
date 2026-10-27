@@ -87,6 +87,10 @@ LIVE_MIN_WINRATE = 2 / 3         # 이보다 낮으면 제외 (3전 2승은 통�
 LIVE_MAX_LOSS_STREAK = 2         # 같은 종목 연속 손실 횟수 한도
 LIVE_DAY_MIN_TRADES = 8          # 하루 거래가 이만큼 쌓였는데
 LIVE_DAY_MIN_WINRATE = 0.50      # 승률이 이보다 낮으면 다음 날 9시까지 신규 매수 중지
+# 규칙 장부: 종목+규칙마다 실전 성적을 날짜와 상관없이 계속 기록
+RULE_EVAL_TRADES = 5             # 이 횟수를 채울 때까지 규칙을 바꾸지 않음, 이후 판정
+RULE_RECHECK = (10, 20, 40)      # 이 횟수마다 다시 판정 (5회는 표본이 작아 운 영향 큼)
+RULE_BOOK_MAX = 300              # 장부에 남길 최대 규칙 수 (퇴출 규칙부터 정리)
 UNIVERSE_DAYS = 30               # 거래대금 순위 기간(최근 30일)
 UNIVERSE_MIN_LISTED_DAYS = 90    # 상장 90일 미만 종목 제외
 
@@ -223,6 +227,7 @@ def load_state(budget):
     s.setdefault("marketStats", {})    # 오늘 종목별 실전 성적
     s.setdefault("blocked", [])        # 오늘 제외된 종목
     s.setdefault("lastReport", None)   # 전날 결산
+    s.setdefault("ruleBook", {})       # 규칙 장부 {rid: {...}} — 매일 초기화하지 않음
     s.pop("paper", None)               # v1 모의매매 기록 정리
     return s
 
@@ -529,6 +534,16 @@ def describe(spec):
     return "+".join(names[c[0]] for c in spec["conds"]) + f" / 익절+{spec.get('tp', TARGET_NET_PCT)}% / 손절{spec['sl']}% / 최대{spec['hold']}분"
 
 
+def rule_id(market, spec):
+    """종목 + 조건 + 익절·손절·보유시간 → 고유번호 (같은 규칙이면 날이 바뀌어도 같은 번호)"""
+    key = json.dumps([market, sorted([c[0], sorted(c[1].items())] for c in spec["conds"]),
+                      spec.get("tp", TARGET_NET_PCT), spec["sl"], spec["hold"]], ensure_ascii=False)
+    return market.split("-")[1] + "-" + hashlib.sha1(key.encode()).hexdigest()[:8]
+
+
+SPEC_KEYS = ("conds", "tp", "sl", "hold")
+
+
 class Series:
     """캔들 묶음 + 지표 캐시"""
     def __init__(self, candles):
@@ -770,12 +785,87 @@ class Bot:
             st["lossStreak"] = 0
         else:
             st["lossStreak"] += 1
-        bad = (st["trades"] >= LIVE_MIN_TRADES and st["wins"] / st["trades"] < LIVE_MIN_WINRATE - 1e-9) \
-            or st["lossStreak"] >= LIVE_MAX_LOSS_STREAK
-        if bad and market not in self.state["blocked"]:
-            self.state["blocked"].append(market)
-            log(f"[학습] {market.split('-')[1]} 실전 성적 부진({st['wins']}/{st['trades']}승, 연속손실 {st['lossStreak']}) → 오늘 거래 제외")
+        # 종목 하루 제외는 하지 않음: 규칙마다 실전 5회를 채운 뒤 규칙 장부에서 판정 (rule_record)
         save_state(self.state)
+
+    def rule_record(self, pos, pnl):
+        """규칙 장부에 실전 결과 기록 → 5회부터 판정"""
+        rid = pos.get("rid")
+        rb = self.state["ruleBook"].get(rid) if rid else None
+        if not rb:
+            return
+        pct = pnl / pos["cost"] * 100 if pos.get("cost") else 0.0
+        rb["trades"] += 1
+        rb["wins"] += 1 if pnl > 0 else 0
+        rb["sumPct"] = round(rb["sumPct"] + pct, 4)
+        rb["pnl"] = round(rb["pnl"] + pnl)
+        rb["lastAt"] = int(time.time() * 1000)
+        n = rb["trades"]
+        avg = rb["sumPct"] / n
+        coin = rb["market"].split("-")[1]
+        if n == RULE_EVAL_TRADES or n in RULE_RECHECK or (n > RULE_EVAL_TRADES and rb["status"] == "proven" and avg <= 0):
+            old = rb["status"]
+            rb["status"] = "proven" if avg > 0 else "retired"
+            verdict = "계속 사용" if rb["status"] == "proven" else "퇴출(다시 채택 안 함)"
+            log(f"[규칙 판정] {coin} {rb['id']} 실전 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}% "
+                f"(백테스트 예상 {rb.get('btEdge') or 0:+.2f}%) → {verdict}")
+            if rb["status"] == "retired" and old != "retired" and self.state["strategies"].get(rb["market"], {}).get("rid") == rid:
+                del self.state["strategies"][rb["market"]]
+        else:
+            left = RULE_EVAL_TRADES - n
+            log(f"[규칙 기록] {coin} {rb['id']} 실전 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}%"
+                + (f" · 판정까지 {left}회" if left > 0 else ""))
+        self.trim_rulebook()
+        save_state(self.state)
+
+    def rule_open(self, market, spec):
+        """채택한 규칙을 장부에 등록 (이미 있으면 그대로)"""
+        rid = spec.get("rid") or rule_id(market, spec)
+        spec["rid"] = rid
+        rb = self.state["ruleBook"].setdefault(rid, {
+            "id": rid, "market": market, "desc": describe(spec), "spec": {k: spec[k] for k in SPEC_KEYS if k in spec},
+            "btWinrate": spec.get("winrate"), "btEdge": spec.get("edgePct"), "btVol": spec.get("btVol"),
+            "trades": 0, "wins": 0, "sumPct": 0.0, "pnl": 0, "status": "testing",
+            "firstAt": int(time.time() * 1000), "lastAt": 0})
+        return rb
+
+    def trim_rulebook(self):
+        rbk = self.state["ruleBook"]
+        if len(rbk) <= RULE_BOOK_MAX:
+            return
+        order = {"retired": 0, "testing": 1, "proven": 2}
+        drop = sorted(rbk.values(), key=lambda r: (order.get(r["status"], 1), r["trades"] > 0, r.get("lastAt") or r["firstAt"]))
+        for r in drop[:len(rbk) - RULE_BOOK_MAX]:
+            if r["status"] != "proven":
+                rbk.pop(r["id"], None)
+
+    def keep_rule(self, market):
+        """지금 규칙을 유지해야 하면 그 spec 반환: 실전 5회 전(검증 중)이거나 실전에서 통한 규칙"""
+        cur = self.state["strategies"].get(market)
+        if cur:
+            rb = self.state["ruleBook"].get(cur.get("rid") or rule_id(market, cur))
+            if rb and rb["status"] == "proven":
+                return cur
+            if rb and rb["status"] == "testing" and rb["trades"] < RULE_EVAL_TRADES:
+                # 6시간 동안 한 번도 신호가 없던 규칙은 붙잡고 있지 않음 (기록은 장부에 남음)
+                if rb["trades"] > 0 or time.time() * 1000 - rb["firstAt"] < 6 * 3600 * 1000:
+                    return cur
+            if not rb:
+                return cur                                # 이전 버전에서 고른 규칙: 장부에 등록하고 검증 시작
+        # 예전에 실전에서 통한 규칙이 있으면 그것부터 (거래당 평균 순익 높은 순)
+        best = None
+        for rb in self.state["ruleBook"].values():
+            if rb["market"] == market and rb["status"] == "proven" and rb.get("spec"):
+                avg = rb["sumPct"] / rb["trades"]
+                if best is None or avg > best[0]:
+                    best = (avg, rb)
+        if best:
+            rb = best[1]
+            spec = dict(rb["spec"])
+            spec.update({"rid": rb["id"], "winrate": rb.get("btWinrate"), "edgePct": rb.get("btEdge"),
+                         "btVol": rb.get("btVol"), "trades": rb["trades"], "fromBook": True})
+            return spec
+        return None
 
     def order_size(self):
         size = self.cfg["ORDER_KRW"] * (2 ** self.ledger["martLevel"])
@@ -821,6 +911,13 @@ class Bot:
         log(f"전략 백테스트 시작: {len(markets)}종목 × {BT_TRIALS}개 조합")
         chosen = {}
         for idx, mk in enumerate(markets, 1):
+            kept = self.keep_rule(mk)
+            if kept:
+                rb = self.rule_open(mk, kept)
+                chosen[mk] = kept
+                why = "실전에서 통한 규칙" if rb["status"] == "proven" else f"실전 검증 중 {rb['trades']}/{RULE_EVAL_TRADES}회"
+                log(f"  유지 {mk.split('-')[1]}: {rb['desc']} ({why})")
+                continue
             self.push_progress(f"전략 백테스트 {idx}/{len(markets)} ({mk.split('-')[1]})")
             try:
                 series = Series(self.upbit.minute_candles(mk, BT_CANDLES))
@@ -832,6 +929,9 @@ class Bot:
             best = None
             for _ in range(BT_TRIALS):
                 spec = random_spec(self.rng)
+                rb = self.state["ruleBook"].get(rule_id(mk, spec))
+                if rb and rb["status"] == "retired":
+                    continue                              # 실전에서 퇴출된 규칙은 다시 안 씀
                 r = evaluate(series, spec)
                 if r and (best is None or r["score"] > best[1]["score"]):
                     best = (spec, r)
@@ -839,6 +939,7 @@ class Bot:
                 spec, r = best
                 spec.update(r)
                 spec["btVol"] = round(avg_range_pct(series, series.n), 4)
+                self.rule_open(mk, spec)
                 chosen[mk] = spec
                 log(f"  채택 {mk.split('-')[1]}: {describe(spec)} · 승률 {r['winrate']*100:.0f}% "
                     f"{r['trades']}회 · 거래당 {r['edgePct']:+.2f}% · 검증구간 {r['holdoutTrades']}회 승률 {r['holdoutWinrate']*100:.0f}% 거래당 {r['holdoutEdgePct']:+.2f}%")
@@ -890,7 +991,8 @@ class Bot:
             "sl": unit * (1 + spec["sl"] / 100), "deadline": int(time.time()) + spec["hold"] * 60,
             "at": int(time.time() * 1000), "strategy": describe(spec), "mart": self.ledger["martLevel"],
             "maxP": unit, "minP": unit, "btVol": spec.get("btVol"),
-            "btWinrate": spec.get("winrate"), "btEdge": spec.get("edgePct"), **(ctx or {}),
+            "btWinrate": spec.get("winrate"), "btEdge": spec.get("edgePct"),
+            "rid": spec.get("rid") or self.rule_open(market, spec)["id"], **(ctx or {}),
         }
         try:
             self.state["positions"][market]["btcAtEntry"] = self.upbit.prices(["KRW-BTC"]).get("KRW-BTC")
@@ -926,6 +1028,7 @@ class Bot:
         del self.state["positions"][market]
         self.book(pnl)
         self.learn(market, pnl, reason)
+        self.rule_record(pos, pnl)
         analysis = None
         if pnl <= 0:
             analysis = self.post_mortem(market, pos, price, reason, pnl)
@@ -1228,6 +1331,7 @@ class Bot:
                                      "holdoutPct": s.get("holdoutPct")} for m, s in self.state["strategies"].items()],
                      "universe": self.state["universe"]["markets"],
                      "blocked": self.state["blocked"], "marketStats": self.state["marketStats"],
+                     "ruleBook": self.rulebook_view(),
                      "report": self.state["lastReport"],
                      "ai": self.state.get("aiReport"),
                      "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
@@ -1236,6 +1340,20 @@ class Bot:
         self.cloud.put_status(data)
         self.last_status = time.time()
         self.write_report(data)
+
+    def rulebook_view(self, limit=40):
+        """화면용 규칙 장부: 실전 기록 있는 것 먼저, 최근 순"""
+        rows = []
+        for r in self.state["ruleBook"].values():
+            n = r["trades"]
+            rows.append({"id": r["id"], "coin": r["market"].split("-")[1], "desc": r["desc"], "status": r["status"],
+                         "trades": n, "wins": r["wins"], "winrate": round(r["wins"] / n, 3) if n else None,
+                         "avgPct": round(r["sumPct"] / n, 3) if n else None, "pnl": r["pnl"],
+                         "btEdge": r.get("btEdge"), "btWinrate": r.get("btWinrate"),
+                         "active": self.state["strategies"].get(r["market"], {}).get("rid") == r["id"],
+                         "lastAt": r.get("lastAt") or r["firstAt"]})
+        rows.sort(key=lambda x: (not x["active"], x["trades"] == 0, -x["lastAt"]))
+        return rows[:limit]
 
     def write_report(self, data):
         """분석용 보고서를 내 문서\\chamdom_report 에 저장 (비밀 정보 없음)"""
