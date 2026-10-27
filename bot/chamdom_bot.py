@@ -96,7 +96,8 @@ COMMAND_MAX_AGE = 10 * 60
 # AI 분석가 (bot_config.env 에 ANTHROPIC_API_KEY 가 있을 때만 동작)
 AI_MODEL_DEFAULT = "claude-sonnet-5-5"
 AI_EVERY_LOSSES = 5              # 손실 거래가 이만큼 새로 쌓이면 분석
-AI_MIN_INTERVAL_MIN = 60         # 분석 최소 간격
+AI_MIN_INTERVAL_MIN = 60         # 손실 누적으로 인한 분석 최소 간격
+AI_SCHEDULE_HOURS = [3, 9, 15, 21]  # 정기 분석 시각(KST) — 하루 4번
 AI_TRADE_LOG = 60                # AI에게 보여줄 최근 거래 수
 
 # 자동 업데이트: GitHub에 올라간 최신 코드를 받아 스스로 재시작 (start_bot.bat 이 다시 띄워줌)
@@ -1074,14 +1075,32 @@ class Bot:
         return out
 
     # ---------- AI 분석가 ----------
+    @staticmethod
+    def ai_slot(now=None):
+        """가장 최근에 지난 정기 분석 시각 (예: '2026-10-27 15시')"""
+        now = now or datetime.now(KST)
+        past = [h for h in AI_SCHEDULE_HOURS if h <= now.hour]
+        if past:
+            return f"{now.strftime('%Y-%m-%d')} {max(past)}시"
+        prev = now - timedelta(days=1)
+        return f"{prev.strftime('%Y-%m-%d')} {max(AI_SCHEDULE_HOURS)}시"
+
     def ai_should_run(self):
         if not self.cfg["ANTHROPIC_API_KEY"] or getattr(self, "_ai_busy", False):
             return False
+        slot = self.ai_slot()
+        if self.state.get("aiSlotDone") != slot:          # 정기 분석 (하루 4번)
+            if not self.state.get("tradeLog"):
+                self.state["aiSlotDone"] = slot
+                log(f"[AI] {slot} 정기 분석: 아직 거래 기록이 없어 건너뜀")
+                return False
+            self.state["aiSlotDone"] = slot
+            return True
         if len(self.state.get("tradeLog", [])) < 3:
             return False
         if time.time() - self.state.get("aiLastAt", 0) < AI_MIN_INTERVAL_MIN * 60:
             return False
-        return self.state.get("aiDue") or self.state.get("aiLossesSince", 0) >= AI_EVERY_LOSSES
+        return self.state.get("aiLossesSince", 0) >= AI_EVERY_LOSSES
 
     def ai_start(self):
         self._ai_busy = True
@@ -1254,7 +1273,7 @@ class Bot:
         uid = self.cloud.connect()
         log(f"웹페이지 계정 연결됨 ({uid[:6]}…) · 기기: {self.cfg['DEVICE_NAME']}")
         log(f"모드: {'★ 실매매 (실제 주문) ★' if self.live else '모의매매 (실제 주문 없음)'} · 거래 금지/숨김: {', '.join(sorted(PROTECTED_COINS))}")
-        log("AI 분석가: " + (f"켜짐 ({self.cfg['AI_MODEL']} · 손실 {AI_EVERY_LOSSES}건마다·매일 9시)" if self.cfg["ANTHROPIC_API_KEY"]
+        log("AI 분석가: " + (f"켜짐 ({self.cfg['AI_MODEL']} · 매일 {'/'.join(str(h) for h in AI_SCHEDULE_HOURS)}시 + 손실 {AI_EVERY_LOSSES}건마다)" if self.cfg["ANTHROPIC_API_KEY"]
                             else "꺼짐 (bot_config.env 에 ANTHROPIC_API_KEY 를 넣으면 켜짐)"))
         log(f"기본 주문 {self.cfg['ORDER_KRW']:,}원 · 익절/손절은 전략별 백테스트로 결정 · 손실 후 {LOSS_COOLDOWN_MIN}분 대기 · "
             f"마틴게일 최대 {self.cfg['MARTINGALE_MAX_LEVEL']}단계 · 하루 손실 한도 {self.cfg['DAILY_LOSS_LIMIT']:,}원")

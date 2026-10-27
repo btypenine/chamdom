@@ -506,7 +506,7 @@ function renderMore(s, stale) {
   $("aiTime").textContent = ai && ai.at ? hm(ai.at) + " 분석" : "";
   if (!ai) {
     const d = document.createElement("div"); d.className = "empty";
-    d.textContent = s.aiEnabled ? "손실 거래가 5건 쌓이거나 매일 9시에 AI가 분석합니다." : "AI 분석가가 꺼져 있습니다. 회사 PC의 bot_config.env 에 ANTHROPIC_API_KEY 를 넣으면 켜집니다.";
+    d.textContent = s.aiEnabled ? "매일 3·9·15·21시와 손실 거래가 5건 쌓일 때마다 AI가 분석합니다." : "AI 분석가가 꺼져 있습니다. 회사 PC의 bot_config.env 에 ANTHROPIC_API_KEY 를 넣으면 켜집니다.";
     ab.append(d);
   } else if (ai.error) {
     const d = document.createElement("div"); d.className = "msg"; d.textContent = ai.error; ab.append(d);
