@@ -62,7 +62,7 @@ FEE_RATE = 0.0005                # 업비트 원화마켓 0.05%
 
 # 매매 규칙 (bot_config.env 에서 바꿀 수 있는 값은 load_config 참고)
 TARGET_NET_PCT = 0.5             # 기본 익절(순수익 %) — 전략마다 백테스트로 따로 정함
-LOSS_COOLDOWN_MIN = 30           # 손실 후 전체 거래 정지(분)
+LOSS_COOLDOWN_MIN = 7            # 손실(손절·보유시간 초과 손실) 후 전체 신규 매수 정지(분) — 2026-10-28 사용자 요청 30→7
 PROFIT_LOCK_RATIO = 0.5          # 수익 중 잠그는 비율
 TOP_N = 10                       # 거래대금 상위 종목 수
 MAX_OPEN_POSITIONS = 3           # 동시에 들고 있을 최대 종목 수
