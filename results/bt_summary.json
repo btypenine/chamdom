@@ -1,23 +1,16 @@
 {
- "엄격(기존)": {
-  "windows": 138,
-  "picked": 4,
-  "fwdTrades": 10,
-  "fwdSum": 1.2506821394001277,
-  "fwdWins": 9
+ "현재표": {
+  "windows": 324,
+  "picked": 256,
+  "fwdTrades": 192,
+  "fwdSum": -159.49406633950503,
+  "fwdWins": 67
  },
- "탐험": {
-  "windows": 138,
-  "picked": 70,
-  "fwdTrades": 46,
-  "fwdSum": 8.179966299951335,
-  "fwdWins": 35
- },
- "무작위(선정없음)": {
-  "windows": 138,
-  "picked": 138,
-  "fwdTrades": 351,
-  "fwdSum": -305.92727308820815,
-  "fwdWins": 103
+ "수정표": {
+  "windows": 324,
+  "picked": 109,
+  "fwdTrades": 55,
+  "fwdSum": 6.640692768965671,
+  "fwdWins": 33
  }
 }
