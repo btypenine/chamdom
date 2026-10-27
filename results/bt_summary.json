@@ -1,0 +1,37 @@
+{
+ "현재(v4)": {
+  "windows": 72,
+  "picked": 0,
+  "fwdTrades": 0,
+  "fwdSum": 0.0,
+  "fwdWins": 0
+ },
+ "미끄러짐0.05": {
+  "windows": 72,
+  "picked": 0,
+  "fwdTrades": 0,
+  "fwdSum": 0.0,
+  "fwdWins": 0
+ },
+ "최소거래12": {
+  "windows": 72,
+  "picked": 0,
+  "fwdTrades": 0,
+  "fwdSum": 0.0,
+  "fwdWins": 0
+ },
+ "PF1.2": {
+  "windows": 72,
+  "picked": 2,
+  "fwdTrades": 3,
+  "fwdSum": -0.8981512500000011,
+  "fwdWins": 1
+ },
+ "완화묶음": {
+  "windows": 72,
+  "picked": 5,
+  "fwdTrades": 8,
+  "fwdSum": 0.0010980999999854468,
+  "fwdWins": 4
+ }
+}
