@@ -62,10 +62,15 @@ FEE_RATE = 0.0005                # 업비트 원화마켓 0.05%
 
 # 매매 규칙 (bot_config.env 에서 바꿀 수 있는 값은 load_config 참고)
 TARGET_NET_PCT = 0.5             # 기본 익절(순수익 %) — 전략마다 백테스트로 따로 정함
-LOSS_COOLDOWN_MIN = 30           # 손실 후 전체 거래 정지(분)
+LOSS_COOLDOWN_MIN = 7            # 손실(손절·보유시간 초과 손실) 후 신규 매수 정지(분) — 2026-10-28 사용자 요청 30→7
+COOLDOWN_PER_MARKET = EXPLORE_MODE   # True: 손실 난 그 종목만 정지 / False: 전체 정지
 PROFIT_LOCK_RATIO = 0.5          # 수익 중 잠그는 비율
-TOP_N = 10                       # 거래대금 상위 종목 수
-MAX_OPEN_POSITIONS = 3           # 동시에 들고 있을 최대 종목 수
+# 탐험 모드 (2026-10-28 사용자 결정): 큰 수익보다 '많은 종목·많은 시도'를 소액으로 계속 돌리며 실전 기록으로 규칙을 걸러냄
+EXPLORE_MODE = True
+EXPLORE_ORDER_KRW = 6000         # 1회 주문 고정 (업비트 최소 5,000원 + 하락 여유) · bot_config.env 의 ORDER_KRW 보다 우선
+EXPLORE_MARTINGALE = 0           # 마틴게일 끔 · bot_config.env 보다 우선
+TOP_N = 50 if EXPLORE_MODE else 10   # 거래대금 상위 종목 수
+MAX_OPEN_POSITIONS = 30 if EXPLORE_MODE else 3   # 동시에 들고 있을 최대 종목 수
 
 # 백테스트
 STRATEGY_VERSION = 4             # 바뀌면 재시작 직후 전략을 새로 고름
@@ -74,7 +79,12 @@ BT_TRIALS = 200                  # 종목당 시험할 무작위 전략 수 (많
 BT_MIN_TRADES = 20               # 채택 최소 거래 수 (6회는 우연과 구분 불가)
 BT_HOLDOUT_MIN_TRADES = 5        # 최근 검증 구간 최소 거래 수
 BT_HOLDOUT_MIN_WINRATE = 0.80    # 최근 검증 구간 최소 승률
-BT_SLIPPAGE = 0.001              # 시장가 체결 미끄러짐 0.1% (매수·매도 각각)
+BT_SLIPPAGE = 0.001              # (고정값 쓸 때) 시장가 체결 미끄러짐 0.1% (매수·매도 각각)
+BT_SLIP_BASE = 0.0003            # 종목별 미끄러짐 = 0.03% + 호가 한 칸/가격 (BTC≈0.03%, 100원대 코인≈0.13%)
+EXPLORE_MIN_TRADES = 6           # 탐험 모드: 학습 구간 최소 거래 수
+EXPLORE_MIN_EDGE = 0.0           # 탐험 모드: 학습 구간 거래당 순익(비용 포함) 최소 %
+EXPLORE_HOLDOUT_FLOOR = -0.10    # 탐험 모드: 검증 구간 거래당 순익이 이보다 나쁘면 탈락
+COND_LEARN_MIN = 10              # 조건별 실전 기록이 이만큼 쌓이면 무작위 전략 생성 확률에 반영
 BT_MIN_WINRATE = 0.90            # (참고용) 이전 고정 기준
 BT_MIN_EDGE_PCT = 0.10           # 거래당 평균 순수익 최소 % (학습·검증 구간 모두)
 BT_MIN_PROFIT_FACTOR = 1.5       # 총이익 / 총손실 최소 (학습 구간)
@@ -83,10 +93,14 @@ REOPTIMIZE_MIN = 60              # 전략 재선정 주기(분)
 
 # 실전 학습: 그날 실제 거래에서 이 기준보다 못하면 그 종목은 다음 날 9시까지 제외
 LIVE_MIN_TRADES = 3              # 판단에 필요한 최소 거래 수
-LIVE_MIN_WINRATE = 0.67          # 이보다 낮으면 제외
+LIVE_MIN_WINRATE = 2 / 3         # 이보다 낮으면 제외 (3전 2승은 통과 — 0.67로 두면 2/3=0.666… 이 걸려 버렸음)
 LIVE_MAX_LOSS_STREAK = 2         # 같은 종목 연속 손실 횟수 한도
 LIVE_DAY_MIN_TRADES = 8          # 하루 거래가 이만큼 쌓였는데
 LIVE_DAY_MIN_WINRATE = 0.50      # 승률이 이보다 낮으면 다음 날 9시까지 신규 매수 중지
+# 규칙 장부: 종목+규칙마다 실전 성적을 날짜와 상관없이 계속 기록
+RULE_EVAL_TRADES = 5             # 이 횟수를 채울 때까지 규칙을 바꾸지 않음, 이후 판정
+RULE_RECHECK = (10, 20, 40)      # 이 횟수마다 다시 판정 (5회는 표본이 작아 운 영향 큼)
+RULE_BOOK_MAX = 300              # 장부에 남길 최대 규칙 수 (퇴출 규칙부터 정리)
 UNIVERSE_DAYS = 30               # 거래대금 순위 기간(최근 30일)
 UNIVERSE_MIN_LISTED_DAYS = 90    # 상장 90일 미만 종목 제외
 
@@ -185,6 +199,9 @@ def load_config():
     key = cfg.get("ANTHROPIC_API_KEY", "")
     cfg["ANTHROPIC_API_KEY"] = "" if not key or key.startswith("여기에") else key
     cfg["AI_MODEL"] = cfg.get("AI_MODEL") or AI_MODEL_DEFAULT
+    if EXPLORE_MODE:
+        cfg["ORDER_KRW"] = EXPLORE_ORDER_KRW
+        cfg["MARTINGALE_MAX_LEVEL"] = EXPLORE_MARTINGALE
     return cfg
 
 
@@ -223,6 +240,7 @@ def load_state(budget):
     s.setdefault("marketStats", {})    # 오늘 종목별 실전 성적
     s.setdefault("blocked", [])        # 오늘 제외된 종목
     s.setdefault("lastReport", None)   # 전날 결산
+    s.setdefault("ruleBook", {})       # 규칙 장부 {rid: {...}} — 매일 초기화하지 않음
     s.pop("paper", None)               # v1 모의매매 기록 정리
     return s
 
@@ -513,9 +531,33 @@ SL_CHOICES = [-0.5, -0.8, -1.0, -1.5, -2.0, -3.0, -5.0]  # 손절: 매수 단가
 HOLD_CHOICES = [30, 60, 120, 240]
 
 
-def random_spec(rng):
+def tick_size(price):
+    """업비트 원화마켓 호가 단위"""
+    for floor, tick in ((2000000, 1000), (1000000, 500), (500000, 100), (100000, 50), (10000, 10),
+                        (1000, 1), (100, 0.1), (10, 0.01), (1, 0.001)):
+        if price >= floor:
+            return tick
+    return 0.0001
+
+
+def slip_for(price):
+    return BT_SLIP_BASE + (tick_size(price) / price if price else 0.001)
+
+
+def random_spec(rng, weights=None):
+    """weights: 조건 이름별 가중치(실전 성적으로 학습). 없으면 균등"""
     k = rng.choice([1, 2, 2, 3])
-    names = rng.sample(range(len(CONDITION_POOL)), k)
+    pool = list(range(len(CONDITION_POOL)))
+    w = [max(0.05, (weights or {}).get(CONDITION_POOL[i][0], 1.0)) for i in pool]
+    names = []
+    for _ in range(k):
+        x, acc = rng.random() * sum(w), 0.0
+        for idx, wi in enumerate(w):
+            acc += wi
+            if x <= acc:
+                break
+        names.append(pool.pop(idx))
+        w.pop(idx)
     conds = []
     for i in names:
         name, variants = CONDITION_POOL[i]
@@ -529,6 +571,16 @@ def describe(spec):
     return "+".join(names[c[0]] for c in spec["conds"]) + f" / 익절+{spec.get('tp', TARGET_NET_PCT)}% / 손절{spec['sl']}% / 최대{spec['hold']}분"
 
 
+def rule_id(market, spec):
+    """종목 + 조건 + 익절·손절·보유시간 → 고유번호 (같은 규칙이면 날이 바뀌어도 같은 번호)"""
+    key = json.dumps([market, sorted([c[0], sorted(c[1].items())] for c in spec["conds"]),
+                      spec.get("tp", TARGET_NET_PCT), spec["sl"], spec["hold"]], ensure_ascii=False)
+    return market.split("-")[1] + "-" + hashlib.sha1(key.encode()).hexdigest()[:8]
+
+
+SPEC_KEYS = ("conds", "tp", "sl", "hold")
+
+
 class Series:
     """캔들 묶음 + 지표 캐시"""
     def __init__(self, candles):
@@ -538,6 +590,7 @@ class Series:
         self.c = [c["trade_price"] for c in candles]
         self.v = [c["candle_acc_trade_volume"] for c in candles]
         self.n = len(self.c)
+        self.slip = slip_for(self.c[-1]) if self.c else BT_SLIPPAGE
         self._cache = {}
 
     def cond(self, name, p):
@@ -642,7 +695,8 @@ def backtest(series, spec, start=60, end=None):
             i += 1
             continue
         j = i + 1
-        fill = series.o[j] * (1 + BT_SLIPPAGE)        # 시장가 매수 미끄러짐
+        slip = getattr(series, "slip", BT_SLIPPAGE)
+        fill = series.o[j] * (1 + slip)                # 시장가 매수 미끄러짐 (종목별 호가 단위 반영)
         entry = fill * (1 + FEE_RATE)                  # 매수 수수료 포함 단가
         tp, sl = target_price(entry, spec.get("tp", TARGET_NET_PCT)), entry * (1 + spec["sl"] / 100)
         exit_price, k = None, j
@@ -659,7 +713,7 @@ def backtest(series, spec, start=60, end=None):
             k += 1
         if exit_price is None:
             break
-        pnl = (exit_price * (1 - BT_SLIPPAGE) * (1 - FEE_RATE) / entry - 1) * 100
+        pnl = (exit_price * (1 - slip) * (1 - FEE_RATE) / entry - 1) * 100
         results.append(pnl)
         i = k + 1
         if pnl < 0:
@@ -681,6 +735,18 @@ def evaluate(series, spec):
     기준은 '승률'이 아니라 '거래당 평균 순수익'(익절 폭이 달라서 승률만으로는 비교 불가)"""
     split = int(series.n * (1 - BT_HOLDOUT))
     tr = stats(backtest(series, spec, end=split))
+    if EXPLORE_MODE:
+        # 탐험: 백테스트에서 비용 빼고 지지 않는 규칙이면 후보 → 진짜 판정은 실전 5회(규칙 장부)
+        if tr["n"] < EXPLORE_MIN_TRADES or tr["edge"] < EXPLORE_MIN_EDGE:
+            return None
+        ho = stats(backtest(series, spec, start=split))
+        if ho["n"] and ho["edge"] < EXPLORE_HOLDOUT_FLOOR:
+            return None
+        score = tr["edge"] if not ho["n"] else (tr["edge"] * tr["n"] + ho["edge"] * ho["n"]) / (tr["n"] + ho["n"])
+        return {"winrate": round(tr["winrate"], 3), "trades": tr["n"], "totalPct": round(tr["total"], 2),
+                "edgePct": round(tr["edge"], 3), "pf": round(min(tr["pf"], 99), 2),
+                "holdoutPct": round(ho["total"], 2), "holdoutTrades": ho["n"], "holdoutWinrate": round(ho["winrate"], 3),
+                "holdoutEdgePct": round(ho["edge"], 3), "score": round(score, 4)}
     if tr["n"] < BT_MIN_TRADES or tr["edge"] < BT_MIN_EDGE_PCT or tr["pf"] < BT_MIN_PROFIT_FACTOR:
         return None
     # 손익분기 승률보다 여유 있게 높아야 함
@@ -739,7 +805,7 @@ class Bot:
             save_state(self.state)
             log(f"새 거래일 {day} 시작 · 시드 {lg['seed']:,.0f}원 · 잠긴 수익 {lg['locked']:,.0f}원")
 
-    def book(self, pnl):
+    def book(self, pnl, market=None):
         lg = self.ledger
         lg["realizedTotal"] += pnl
         lg["dayPnl"] += pnl
@@ -755,7 +821,11 @@ class Bot:
             lg["martLevel"] = 0
         else:
             lg["seed"] += pnl
-            lg["cooldownUntil"] = int(time.time()) + LOSS_COOLDOWN_MIN * 60
+            until = int(time.time()) + LOSS_COOLDOWN_MIN * 60
+            if COOLDOWN_PER_MARKET and market:
+                self.state.setdefault("coolMarkets", {})[market] = until
+            else:
+                lg["cooldownUntil"] = until
             lg["martLevel"] = min(lg["martLevel"] + 1, self.cfg["MARTINGALE_MAX_LEVEL"])
         save_state(self.state)
 
@@ -770,12 +840,108 @@ class Bot:
             st["lossStreak"] = 0
         else:
             st["lossStreak"] += 1
-        bad = (st["trades"] >= LIVE_MIN_TRADES and st["wins"] / st["trades"] < LIVE_MIN_WINRATE) \
-            or st["lossStreak"] >= LIVE_MAX_LOSS_STREAK
-        if bad and market not in self.state["blocked"]:
-            self.state["blocked"].append(market)
-            log(f"[학습] {market.split('-')[1]} 실전 성적 부진({st['wins']}/{st['trades']}승, 연속손실 {st['lossStreak']}) → 오늘 거래 제외")
+        # 종목 하루 제외는 하지 않음: 규칙마다 실전 5회를 채운 뒤 규칙 장부에서 판정 (rule_record)
         save_state(self.state)
+
+    def rule_record(self, pos, pnl):
+        """규칙 장부에 실전 결과 기록 → 5회부터 판정"""
+        rid = pos.get("rid")
+        rb = self.state["ruleBook"].get(rid) if rid else None
+        if not rb:
+            return
+        pct = pnl / pos["cost"] * 100 if pos.get("cost") else 0.0
+        rb["trades"] += 1
+        rb["wins"] += 1 if pnl > 0 else 0
+        rb["sumPct"] = round(rb["sumPct"] + pct, 4)
+        rb["pnl"] = round(rb["pnl"] + pnl)
+        rb["lastAt"] = int(time.time() * 1000)
+        n = rb["trades"]
+        avg = rb["sumPct"] / n
+        coin = rb["market"].split("-")[1]
+        if n == RULE_EVAL_TRADES or n in RULE_RECHECK or (n > RULE_EVAL_TRADES and rb["status"] == "proven" and avg <= 0):
+            old = rb["status"]
+            rb["status"] = "proven" if avg > 0 else "retired"
+            verdict = "계속 사용" if rb["status"] == "proven" else "퇴출(다시 채택 안 함)"
+            log(f"[규칙 판정] {coin} {rb['id']} 실전 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}% "
+                f"(백테스트 예상 {rb.get('btEdge') or 0:+.2f}%) → {verdict}")
+            if rb["status"] == "retired" and old != "retired" and self.state["strategies"].get(rb["market"], {}).get("rid") == rid:
+                del self.state["strategies"][rb["market"]]
+        else:
+            left = RULE_EVAL_TRADES - n
+            log(f"[규칙 기록] {coin} {rb['id']} 실전 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}%"
+                + (f" · 판정까지 {left}회" if left > 0 else ""))
+        self.trim_rulebook()
+        save_state(self.state)
+
+    def cond_record(self, pos, pnl):
+        """조건 이름별 실전 성적 → 다음 전략 생성 때 잘된 조건을 더 자주 시도"""
+        rb = self.state["ruleBook"].get(pos.get("rid") or "")
+        if not rb or not pos.get("cost"):
+            return
+        pct = pnl / pos["cost"] * 100
+        cs = self.state.setdefault("condStats", {})
+        for c in rb["spec"].get("conds", []):
+            st = cs.setdefault(c[0], {"n": 0, "sumPct": 0.0, "wins": 0})
+            st["n"] += 1
+            st["sumPct"] = round(st["sumPct"] + pct, 4)
+            st["wins"] += 1 if pnl > 0 else 0
+
+    def cond_weights(self):
+        """실전 거래당 순익이 좋은 조건일수록 가중치↑ (0.3~3배)"""
+        w = {}
+        for name, st in self.state.get("condStats", {}).items():
+            if st["n"] >= COND_LEARN_MIN:
+                w[name] = min(3.0, max(0.3, 1 + (st["sumPct"] / st["n"]) / 0.3))
+        return w
+
+    def rule_open(self, market, spec):
+        """채택한 규칙을 장부에 등록 (이미 있으면 그대로)"""
+        rid = spec.get("rid") or rule_id(market, spec)
+        spec["rid"] = rid
+        rb = self.state["ruleBook"].setdefault(rid, {
+            "id": rid, "market": market, "desc": describe(spec), "spec": {k: spec[k] for k in SPEC_KEYS if k in spec},
+            "btWinrate": spec.get("winrate"), "btEdge": spec.get("edgePct"), "btVol": spec.get("btVol"),
+            "trades": 0, "wins": 0, "sumPct": 0.0, "pnl": 0, "status": "testing",
+            "firstAt": int(time.time() * 1000), "lastAt": 0})
+        return rb
+
+    def trim_rulebook(self):
+        rbk = self.state["ruleBook"]
+        if len(rbk) <= RULE_BOOK_MAX:
+            return
+        order = {"retired": 0, "testing": 1, "proven": 2}
+        drop = sorted(rbk.values(), key=lambda r: (order.get(r["status"], 1), r["trades"] > 0, r.get("lastAt") or r["firstAt"]))
+        for r in drop[:len(rbk) - RULE_BOOK_MAX]:
+            if r["status"] != "proven":
+                rbk.pop(r["id"], None)
+
+    def keep_rule(self, market):
+        """지금 규칙을 유지해야 하면 그 spec 반환: 실전 5회 전(검증 중)이거나 실전에서 통한 규칙"""
+        cur = self.state["strategies"].get(market)
+        if cur:
+            rb = self.state["ruleBook"].get(cur.get("rid") or rule_id(market, cur))
+            if rb and rb["status"] == "proven":
+                return cur
+            if rb and rb["status"] == "testing" and rb["trades"] < RULE_EVAL_TRADES:
+                # 6시간 동안 한 번도 신호가 없던 규칙은 붙잡고 있지 않음 (기록은 장부에 남음)
+                if rb["trades"] > 0 or time.time() * 1000 - rb["firstAt"] < 6 * 3600 * 1000:
+                    return cur
+            if not rb:
+                return cur                                # 이전 버전에서 고른 규칙: 장부에 등록하고 검증 시작
+        # 예전에 실전에서 통한 규칙이 있으면 그것부터 (거래당 평균 순익 높은 순)
+        best = None
+        for rb in self.state["ruleBook"].values():
+            if rb["market"] == market and rb["status"] == "proven" and rb.get("spec"):
+                avg = rb["sumPct"] / rb["trades"]
+                if best is None or avg > best[0]:
+                    best = (avg, rb)
+        if best:
+            rb = best[1]
+            spec = dict(rb["spec"])
+            spec.update({"rid": rb["id"], "winrate": rb.get("btWinrate"), "edgePct": rb.get("btEdge"),
+                         "btVol": rb.get("btVol"), "trades": rb["trades"], "fromBook": True})
+            return spec
+        return None
 
     def order_size(self):
         size = self.cfg["ORDER_KRW"] * (2 ** self.ledger["martLevel"])
@@ -820,7 +986,22 @@ class Bot:
         markets = self.state["universe"]["markets"]
         log(f"전략 백테스트 시작: {len(markets)}종목 × {BT_TRIALS}개 조합")
         chosen = {}
+        weights = self.cond_weights()
+        if weights:
+            log("조건 학습 가중치: " + ", ".join(f"{k} ×{v:.1f}" for k, v in sorted(weights.items(), key=lambda x: -x[1])))
         for idx, mk in enumerate(markets, 1):
+            if self.state["positions"]:
+                try:
+                    self.manage_positions()            # 오래 걸리는 선정 중에도 보유 코인 익절·손절 관리
+                except Exception as e:
+                    log(f"[경고] 선정 중 보유 관리 오류: {e}")
+            kept = self.keep_rule(mk)
+            if kept:
+                rb = self.rule_open(mk, kept)
+                chosen[mk] = kept
+                why = "실전에서 통한 규칙" if rb["status"] == "proven" else f"실전 검증 중 {rb['trades']}/{RULE_EVAL_TRADES}회"
+                log(f"  유지 {mk.split('-')[1]}: {rb['desc']} ({why})")
+                continue
             self.push_progress(f"전략 백테스트 {idx}/{len(markets)} ({mk.split('-')[1]})")
             try:
                 series = Series(self.upbit.minute_candles(mk, BT_CANDLES))
@@ -831,7 +1012,10 @@ class Bot:
                 continue
             best = None
             for _ in range(BT_TRIALS):
-                spec = random_spec(self.rng)
+                spec = random_spec(self.rng, weights)
+                rb = self.state["ruleBook"].get(rule_id(mk, spec))
+                if rb and rb["status"] == "retired":
+                    continue                              # 실전에서 퇴출된 규칙은 다시 안 씀
                 r = evaluate(series, spec)
                 if r and (best is None or r["score"] > best[1]["score"]):
                     best = (spec, r)
@@ -839,6 +1023,7 @@ class Bot:
                 spec, r = best
                 spec.update(r)
                 spec["btVol"] = round(avg_range_pct(series, series.n), 4)
+                self.rule_open(mk, spec)
                 chosen[mk] = spec
                 log(f"  채택 {mk.split('-')[1]}: {describe(spec)} · 승률 {r['winrate']*100:.0f}% "
                     f"{r['trades']}회 · 거래당 {r['edgePct']:+.2f}% · 검증구간 {r['holdoutTrades']}회 승률 {r['holdoutWinrate']*100:.0f}% 거래당 {r['holdoutEdgePct']:+.2f}%")
@@ -858,7 +1043,7 @@ class Bot:
             return False, "손실 후 대기"
         if self.cfg["DAILY_LOSS_LIMIT"] and lg["dayPnl"] <= -self.cfg["DAILY_LOSS_LIMIT"]:
             return False, "오늘 손실 한도 도달"
-        if lg["gateTrades"] >= LIVE_DAY_MIN_TRADES and lg["gateWins"] / lg["gateTrades"] < LIVE_DAY_MIN_WINRATE:
+        if not EXPLORE_MODE and lg["gateTrades"] >= LIVE_DAY_MIN_TRADES and lg["gateWins"] / lg["gateTrades"] < LIVE_DAY_MIN_WINRATE:
             return False, f"현재 전략 실전 승률 {lg['gateWins']}/{lg['gateTrades']} 부진 → 9시까지 쉼"
         if len(self.state["positions"]) >= MAX_OPEN_POSITIONS:
             return False, "동시 보유 한도"
@@ -890,7 +1075,8 @@ class Bot:
             "sl": unit * (1 + spec["sl"] / 100), "deadline": int(time.time()) + spec["hold"] * 60,
             "at": int(time.time() * 1000), "strategy": describe(spec), "mart": self.ledger["martLevel"],
             "maxP": unit, "minP": unit, "btVol": spec.get("btVol"),
-            "btWinrate": spec.get("winrate"), "btEdge": spec.get("edgePct"), **(ctx or {}),
+            "btWinrate": spec.get("winrate"), "btEdge": spec.get("edgePct"),
+            "rid": spec.get("rid") or self.rule_open(market, spec)["id"], **(ctx or {}),
         }
         try:
             self.state["positions"][market]["btcAtEntry"] = self.upbit.prices(["KRW-BTC"]).get("KRW-BTC")
@@ -911,12 +1097,23 @@ class Bot:
             res = self.upbit.sell_market(market, int(pos["volume"] * 1e8) / 1e8)
             vol, funds, fee = self.upbit.wait_fill(res["uuid"])
             proceeds = funds - fee
+            if vol > 0:
+                fill = funds / vol
+                slip = (fill / price - 1) * 100
+                if abs(slip) >= 0.2:
+                    log(f"[체결 확인] {market} 신호가 {price:,.4f} → 체결가 {fill:,.4f} ({slip:+.2f}%)")
+            if vol < pos["volume"] * 0.999:
+                log(f"[경고] {market} 매도 일부만 체결 {vol:.8f}/{pos['volume']:.8f} — 남은 수량은 업비트에서 확인 필요")
         else:
             proceeds = pos["volume"] * price * (1 - FEE_RATE)
         pnl = proceeds - pos["cost"]
+        if reason == "익절" and pnl <= 0:
+            reason = "익절 신호였으나 체결 손실"     # 장부·학습에 '익절'로 잘못 남지 않게
         del self.state["positions"][market]
-        self.book(pnl)
+        self.book(pnl, market)
         self.learn(market, pnl, reason)
+        self.cond_record(pos, pnl)
+        self.rule_record(pos, pnl)
         analysis = None
         if pnl <= 0:
             analysis = self.post_mortem(market, pos, price, reason, pnl)
@@ -993,10 +1190,20 @@ class Bot:
         ok, _ = self.can_enter()
         if not ok:
             return
-        for mk, spec in self.state["strategies"].items():
+        cool = self.state.setdefault("coolMarkets", {})
+        now_min = int(time.time() // 60)
+        seen = getattr(self, "_scan_min", {})
+        self._scan_min = seen
+        for mk, spec in list(self.state["strategies"].items()):
             if mk in self.state["positions"] or mk in self.state["blocked"] or mk.split("-")[1] in PROTECTED_COINS:
                 continue
+            if cool.get(mk, 0) > time.time():
+                continue                                  # 이 종목만 손실 후 대기
+            if seen.get(mk) == now_min:
+                continue                                  # 1분봉은 1분에 한 번만 새로 생김
+            seen[mk] = now_min
             candles = self.upbit.minute_candles(mk, 200)
+            time.sleep(0.1)
             closed = candles[:-1]                         # 진행 중인 봉 제외
             if len(closed) < 60:
                 continue
@@ -1176,7 +1383,7 @@ class Bot:
 
     def summary(self):
         lg = self.ledger
-        mode = "실매매" if self.live else "모의매매(실제 주문 없음)"
+        mode = ("실매매" if self.live else "모의매매(실제 주문 없음)") + (" · 탐험 모드" if EXPLORE_MODE else "")
         wait = ""
         if time.time() < lg["cooldownUntil"]:
             wait = f" · 손실 후 대기 {int((lg['cooldownUntil'] - time.time()) / 60) + 1}분"
@@ -1219,6 +1426,11 @@ class Bot:
                                      "holdoutPct": s.get("holdoutPct")} for m, s in self.state["strategies"].items()],
                      "universe": self.state["universe"]["markets"],
                      "blocked": self.state["blocked"], "marketStats": self.state["marketStats"],
+                     "ruleBook": self.rulebook_view(),
+                     "explore": EXPLORE_MODE,
+                     "condStats": [{"name": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3)}
+                                   for k, v in self.state.get("condStats", {}).items() if v["n"]],
+                     "cooling": sorted(m.split("-")[1] for m, t in self.state.get("coolMarkets", {}).items() if t > time.time()),
                      "report": self.state["lastReport"],
                      "ai": self.state.get("aiReport"),
                      "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
@@ -1227,6 +1439,20 @@ class Bot:
         self.cloud.put_status(data)
         self.last_status = time.time()
         self.write_report(data)
+
+    def rulebook_view(self, limit=40):
+        """화면용 규칙 장부: 실전 기록 있는 것 먼저, 최근 순"""
+        rows = []
+        for r in self.state["ruleBook"].values():
+            n = r["trades"]
+            rows.append({"id": r["id"], "coin": r["market"].split("-")[1], "desc": r["desc"], "status": r["status"],
+                         "trades": n, "wins": r["wins"], "winrate": round(r["wins"] / n, 3) if n else None,
+                         "avgPct": round(r["sumPct"] / n, 3) if n else None, "pnl": r["pnl"],
+                         "btEdge": r.get("btEdge"), "btWinrate": r.get("btWinrate"),
+                         "active": self.state["strategies"].get(r["market"], {}).get("rid") == r["id"],
+                         "lastAt": r.get("lastAt") or r["firstAt"]})
+        rows.sort(key=lambda x: (not x["active"], x["trades"] == 0, -x["lastAt"]))
+        return rows[:limit]
 
     def write_report(self, data):
         """분석용 보고서를 내 문서\\chamdom_report 에 저장 (비밀 정보 없음)"""
@@ -1300,6 +1526,9 @@ class Bot:
                             else "꺼짐 (bot_config.env 에 ANTHROPIC_API_KEY 를 넣으면 켜짐)"))
         log(f"기본 주문 {self.cfg['ORDER_KRW']:,}원 · 익절/손절은 전략별 백테스트로 결정 · 손실 후 {LOSS_COOLDOWN_MIN}분 대기 · "
             f"마틴게일 최대 {self.cfg['MARTINGALE_MAX_LEVEL']}단계 · 하루 손실 한도 {self.cfg['DAILY_LOSS_LIMIT']:,}원")
+        if EXPLORE_MODE:
+            log(f"탐험 모드: 상위 {TOP_N}종목 · 1회 {EXPLORE_ORDER_KRW:,}원 고정 · 마틴게일 끔 · 동시 보유 최대 {MAX_OPEN_POSITIONS} · "
+                f"손실 난 종목만 {LOSS_COOLDOWN_MIN}분 정지 · 규칙은 실전 {RULE_EVAL_TRADES}회로 판정")
         self.roll_day()
         uni = self.state["universe"]
         if any(m.split("-")[1] in STABLE_COINS for m in uni["markets"]):
