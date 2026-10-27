@@ -46,6 +46,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "bot_config.env")
 STATE_FILE = os.path.join(BASE_DIR, "bot_state.json")
 LOG_FILE = os.path.join(BASE_DIR, "bot.log")
+# 분석용 보고서 (키·연결 코드 없음). Claude 예약 분석이 이 폴더만 읽음
+REPORT_DIR = os.path.join(os.path.expanduser("~"), "Documents", "chamdom_report")
 
 FIREBASE_API_KEY = "AIzaSyAriivkle0ogGBauc-VyyMm6YDgMhc8ccw"
 FIREBASE_PROJECT = "chamdom-trade"
@@ -1224,6 +1226,27 @@ class Bot:
                                    for k, v in sorted(self.state.get("failStats", {}).items(), key=lambda x: -x[1])]})
         self.cloud.put_status(data)
         self.last_status = time.time()
+        self.write_report(data)
+
+    def write_report(self, data):
+        """분석용 보고서를 내 문서\\chamdom_report 에 저장 (비밀 정보 없음)"""
+        try:
+            os.makedirs(REPORT_DIR, exist_ok=True)
+            rep = dict(data)
+            rep["tradeLog"] = self.state.get("tradeLog", [])
+            rep["savedAt"] = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+            rep["mode"] = "live" if self.live else "paper"
+            tmp = os.path.join(REPORT_DIR, "report.json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(rep, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, os.path.join(REPORT_DIR, "report.json"))
+            if os.path.exists(LOG_FILE):
+                with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()[-600:]
+                with open(os.path.join(REPORT_DIR, "recent_log.txt"), "w", encoding="utf-8") as f:
+                    f.writelines(lines)
+        except Exception as e:
+            print(f"[보고서 저장 실패] {e}", flush=True)
 
     # ---------- 명령 ----------
     def close_bot_positions(self):
