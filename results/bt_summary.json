@@ -1,37 +1,23 @@
 {
- "현재(v4)": {
-  "windows": 72,
-  "picked": 0,
-  "fwdTrades": 0,
-  "fwdSum": 0.0,
-  "fwdWins": 0
+ "엄격(기존)": {
+  "windows": 138,
+  "picked": 4,
+  "fwdTrades": 10,
+  "fwdSum": 1.2506821394001277,
+  "fwdWins": 9
  },
- "미끄러짐0.05": {
-  "windows": 72,
-  "picked": 0,
-  "fwdTrades": 0,
-  "fwdSum": 0.0,
-  "fwdWins": 0
+ "탐험": {
+  "windows": 138,
+  "picked": 70,
+  "fwdTrades": 46,
+  "fwdSum": 8.179966299951335,
+  "fwdWins": 35
  },
- "최소거래12": {
-  "windows": 72,
-  "picked": 0,
-  "fwdTrades": 0,
-  "fwdSum": 0.0,
-  "fwdWins": 0
- },
- "PF1.2": {
-  "windows": 72,
-  "picked": 2,
-  "fwdTrades": 3,
-  "fwdSum": -0.8981512500000011,
-  "fwdWins": 1
- },
- "완화묶음": {
-  "windows": 72,
-  "picked": 5,
-  "fwdTrades": 8,
-  "fwdSum": 0.0010980999999854468,
-  "fwdWins": 4
+ "무작위(선정없음)": {
+  "windows": 138,
+  "picked": 138,
+  "fwdTrades": 351,
+  "fwdSum": -305.92727308820815,
+  "fwdWins": 103
  }
 }
