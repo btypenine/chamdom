@@ -83,7 +83,7 @@ REOPTIMIZE_MIN = 60              # 전략 재선정 주기(분)
 
 # 실전 학습: 그날 실제 거래에서 이 기준보다 못하면 그 종목은 다음 날 9시까지 제외
 LIVE_MIN_TRADES = 3              # 판단에 필요한 최소 거래 수
-LIVE_MIN_WINRATE = 0.67          # 이보다 낮으면 제외
+LIVE_MIN_WINRATE = 2 / 3         # 이보다 낮으면 제외 (3전 2승은 통과 — 0.67로 두면 2/3=0.666… 이 걸려 버렸음)
 LIVE_MAX_LOSS_STREAK = 2         # 같은 종목 연속 손실 횟수 한도
 LIVE_DAY_MIN_TRADES = 8          # 하루 거래가 이만큼 쌓였는데
 LIVE_DAY_MIN_WINRATE = 0.50      # 승률이 이보다 낮으면 다음 날 9시까지 신규 매수 중지
@@ -770,7 +770,7 @@ class Bot:
             st["lossStreak"] = 0
         else:
             st["lossStreak"] += 1
-        bad = (st["trades"] >= LIVE_MIN_TRADES and st["wins"] / st["trades"] < LIVE_MIN_WINRATE) \
+        bad = (st["trades"] >= LIVE_MIN_TRADES and st["wins"] / st["trades"] < LIVE_MIN_WINRATE - 1e-9) \
             or st["lossStreak"] >= LIVE_MAX_LOSS_STREAK
         if bad and market not in self.state["blocked"]:
             self.state["blocked"].append(market)
@@ -911,9 +911,18 @@ class Bot:
             res = self.upbit.sell_market(market, int(pos["volume"] * 1e8) / 1e8)
             vol, funds, fee = self.upbit.wait_fill(res["uuid"])
             proceeds = funds - fee
+            if vol > 0:
+                fill = funds / vol
+                slip = (fill / price - 1) * 100
+                if abs(slip) >= 0.2:
+                    log(f"[체결 확인] {market} 신호가 {price:,.4f} → 체결가 {fill:,.4f} ({slip:+.2f}%)")
+            if vol < pos["volume"] * 0.999:
+                log(f"[경고] {market} 매도 일부만 체결 {vol:.8f}/{pos['volume']:.8f} — 남은 수량은 업비트에서 확인 필요")
         else:
             proceeds = pos["volume"] * price * (1 - FEE_RATE)
         pnl = proceeds - pos["cost"]
+        if reason == "익절" and pnl <= 0:
+            reason = "익절 신호였으나 체결 손실"     # 장부·학습에 '익절'로 잘못 남지 않게
         del self.state["positions"][market]
         self.book(pnl)
         self.learn(market, pnl, reason)
