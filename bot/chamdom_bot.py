@@ -535,10 +535,11 @@ HOLD_CHOICES = [30, 60, 120, 240]
 def tick_size(price):
     """업비트 원화마켓 호가 단위"""
     for floor, tick in ((2000000, 1000), (1000000, 500), (500000, 100), (100000, 50), (10000, 10),
-                        (1000, 1), (100, 0.1), (10, 0.01), (1, 0.001)):
+                        (1000, 1), (100, 0.1), (10, 0.01), (1, 0.001), (0.1, 0.0001), (0.01, 0.00001),
+                        (0.001, 0.000001), (0.0001, 0.0000001)):
         if price >= floor:
             return tick
-    return 0.0001
+    return 0.00000001
 
 
 def slip_for(price):
@@ -978,7 +979,7 @@ class Bot:
                 log(f"[경고] {mk} 일봉 조회 실패: {e}")
         totals.sort(reverse=True)
         top = [mk for _, mk in totals[:TOP_N]]
-        self.state["universe"] = {"day": today_key(), "markets": top}
+        self.state["universe"] = {"day": today_key(), "markets": top, "topN": TOP_N}
         save_state(self.state)
         log("상위 종목: " + ", ".join(m.split("-")[1] for m in top))
 
@@ -1548,7 +1549,8 @@ class Bot:
                     raise RestartForUpdate()
             try:
                 self.roll_day()
-                if self.state["universe"]["day"] != today_key() or not self.state["universe"]["markets"]:
+                uni = self.state["universe"]
+                if uni["day"] != today_key() or not uni["markets"] or uni.get("topN", 10) != TOP_N:
                     self.pick_universe()
                     self.state["lastOptimize"] = 0
                 if self.state.get("strategyVersion") != STRATEGY_VERSION:
