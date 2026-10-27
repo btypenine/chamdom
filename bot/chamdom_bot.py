@@ -565,6 +565,55 @@ class Series:
         return [all(a[i] for a in arrs) for i in range(self.n)]
 
 
+def avg_range_pct(series, last=60):
+    """최근 1분봉 평균 변동폭 % (고가-저가)/종가"""
+    n = series.n
+    idx = range(max(0, n - last), n)
+    vals = [(series.h[i] - series.l[i]) / series.c[i] * 100 for i in idx if series.c[i]]
+    return sum(vals) / len(vals) if vals else 0.0
+
+
+FAIL_LABELS = {
+    "market_drop": "시장 전체 하락",
+    "vol_spike": "변동성 급증(손절폭 대비 출렁임)",
+    "late_entry": "신호 늦게 따라감(진입가가 신호가보다 높음)",
+    "near_miss": "익절 직전까지 갔다가 반락(익절폭 과대)",
+    "instant_drop": "진입 직후 바로 하락(신호 오판)",
+    "timeout": "보유시간 안에 목표 미도달(힘 부족)",
+    "slow_bleed": "서서히 하락(추세 반대 진입)",
+}
+
+
+def diagnose(pos, exit_price, reason, btc_change_pct, now_vol):
+    """손해로 끝난 거래가 왜 실패했는지 추정. 여러 원인 중 가장 강한 것 순서로 반환"""
+    unit, tp, sl = pos["unit"], pos["tp"], pos["sl"]
+    up_room = tp - unit
+    mfe = (pos.get("maxP", unit) - unit) / up_room * 100 if up_room > 0 else 0   # 익절까지 몇 % 갔었나
+    held_min = (time.time() * 1000 - pos["at"]) / 60000
+    causes = []
+    if btc_change_pct is not None and btc_change_pct <= -0.5:
+        causes.append(("market_drop", f"보유 중 BTC {btc_change_pct:+.2f}%"))
+    bt_vol, entry_vol = pos.get("btVol") or 0, pos.get("entryVol") or 0
+    if bt_vol and max(entry_vol, now_vol) > bt_vol * 1.8:
+        causes.append(("vol_spike", f"1분 변동폭 {max(entry_vol, now_vol):.2f}% (백테스트 때 {bt_vol:.2f}%)"))
+    sig = pos.get("signalPrice")
+    if sig and unit > sig * 1.003:
+        causes.append(("late_entry", f"신호가 대비 {(unit / sig - 1) * 100:+.2f}% 비싸게 체결"))
+    if mfe >= 70:
+        causes.append(("near_miss", f"익절까지 {mfe:.0f}% 도달 후 반락"))
+    if reason == "보유시간 초과":
+        causes.append(("timeout", f"{held_min:.0f}분 보유, 최고 익절 진행률 {max(mfe, 0):.0f}%"))
+    elif mfe < 10 and held_min <= 5:
+        causes.append(("instant_drop", f"{held_min:.1f}분 만에 손절, 한 번도 위로 못 감"))
+    elif mfe < 30:
+        causes.append(("slow_bleed", f"{held_min:.0f}분 동안 위로 {max(mfe, 0):.0f}%만 갔다가 하락"))
+    if not causes:
+        causes.append(("slow_bleed", f"{held_min:.0f}분 보유 후 손실"))
+    return {"primary": causes[0][0], "label": FAIL_LABELS[causes[0][0]],
+            "causes": [{"code": c, "label": FAIL_LABELS[c], "detail": d} for c, d in causes],
+            "mfePct": round(mfe, 1), "heldMin": round(held_min, 1), "btcPct": btc_change_pct}
+
+
 def target_price(entry_cost_per_unit, net_pct=TARGET_NET_PCT):
     """수수료 빼고 순수익 net_pct % 가 되는 매도가"""
     return entry_cost_per_unit * (1 + net_pct / 100) / (1 - FEE_RATE)
@@ -775,6 +824,7 @@ class Bot:
             if best:
                 spec, r = best
                 spec.update(r)
+                spec["btVol"] = round(avg_range_pct(series, series.n), 4)
                 chosen[mk] = spec
                 log(f"  채택 {mk.split('-')[1]}: {describe(spec)} · 승률 {r['winrate']*100:.0f}% "
                     f"{r['trades']}회 · 거래당 {r['edgePct']:+.2f}% · 검증구간 {r['holdoutTrades']}회 승률 {r['holdoutWinrate']*100:.0f}% 거래당 {r['holdoutEdgePct']:+.2f}%")
@@ -802,7 +852,7 @@ class Bot:
             return False, "시드 부족"
         return True, ""
 
-    def enter(self, market, spec, price):
+    def enter(self, market, spec, price, ctx=None):
         krw = self.order_size()
         if self.live:
             krw_balance = next((float(a["balance"]) for a in self.upbit.accounts() if a["currency"] == "KRW"), 0)
@@ -825,7 +875,13 @@ class Bot:
             "volume": vol, "cost": cost, "unit": unit, "tp": target_price(unit, spec.get("tp", TARGET_NET_PCT)),
             "sl": unit * (1 + spec["sl"] / 100), "deadline": int(time.time()) + spec["hold"] * 60,
             "at": int(time.time() * 1000), "strategy": describe(spec), "mart": self.ledger["martLevel"],
+            "maxP": unit, "minP": unit, "btVol": spec.get("btVol"),
+            "btWinrate": spec.get("winrate"), "btEdge": spec.get("edgePct"), **(ctx or {}),
         }
+        try:
+            self.state["positions"][market]["btcAtEntry"] = self.upbit.prices(["KRW-BTC"]).get("KRW-BTC")
+        except Exception:
+            pass
         save_state(self.state)
         tag = "실매수" if self.live else "모의매수"
         log(f"[{tag}] {market} {cost:,.0f}원 @ {unit:,.4f} · 목표 {self.state['positions'][market]['tp']:,.4f} "
@@ -847,17 +903,47 @@ class Bot:
         del self.state["positions"][market]
         self.book(pnl)
         self.learn(market, pnl, reason)
+        analysis = None
+        if pnl <= 0:
+            analysis = self.post_mortem(market, pos, price, reason, pnl)
         tag = "실매도" if self.live else "모의매도"
         log(f"[{tag}] {market} 손익 {pnl:+,.0f}원 ({reason}) · 시드 {self.ledger['seed']:,.0f} · 잠김 {self.ledger['locked']:,.0f}"
             + ("" if pnl > 0 else f" · {LOSS_COOLDOWN_MIN}분 대기"))
-        self._record("sell", market, price, proceeds, reason, round(pnl))
+        self._record("sell", market, price, proceeds, reason, round(pnl), analysis)
         self.upload_status()
 
-    def _record(self, side, market, price, krw, reason, pnl):
+    def post_mortem(self, market, pos, price, reason, pnl):
+        """실패로 끝난 거래 원인 분석 → 기록·통계"""
+        btc = None
         try:
-            self.cloud.add_trade({"mode": "live" if self.live else "paper", "side": side, "market": market,
-                                  "price": float(price), "krw": round(krw), "reason": reason, "pnl": pnl,
-                                  "at": int(time.time() * 1000)})
+            if pos.get("btcAtEntry"):
+                now_btc = self.upbit.prices(["KRW-BTC"]).get("KRW-BTC")
+                btc = round((now_btc / pos["btcAtEntry"] - 1) * 100, 2)
+        except Exception:
+            pass
+        now_vol = 0.0
+        try:
+            now_vol = avg_range_pct(Series(self.upbit.minute_candles(market, 31)[:-1]), 30)
+        except Exception:
+            pass
+        a = diagnose(pos, price, reason, btc, now_vol)
+        a.update({"strategy": pos.get("strategy", ""), "btWinrate": pos.get("btWinrate"), "btEdge": pos.get("btEdge")})
+        fs = self.state.setdefault("failStats", {})
+        for c in a["causes"]:
+            fs[c["code"]] = fs.get(c["code"], 0) + 1
+        save_state(self.state)
+        log(f"[실패 분석] {market.split('-')[1]} {pnl:+,.0f}원 · 주원인: {a['label']} · "
+            + " / ".join(f"{c['label']}({c['detail']})" for c in a["causes"]))
+        return a
+
+    def _record(self, side, market, price, krw, reason, pnl, analysis=None):
+        try:
+            data = {"mode": "live" if self.live else "paper", "side": side, "market": market,
+                    "price": float(price), "krw": round(krw), "reason": reason, "pnl": pnl,
+                    "at": int(time.time() * 1000)}
+            if analysis:
+                data["analysis"] = analysis
+            self.cloud.add_trade(data)
         except Exception as e:
             log(f"[경고] 거래 기록 업로드 실패: {e}")
 
@@ -870,6 +956,8 @@ class Bot:
             price = prices.get(mk)
             if not price:
                 continue
+            p["maxP"] = max(p.get("maxP", price), price)
+            p["minP"] = min(p.get("minP", price), price)
             if price >= p["tp"]:
                 self.exit(mk, price, "익절")
             elif price <= p["sl"]:
@@ -896,7 +984,7 @@ class Bot:
             if series.signal(spec)[-1]:
                 price = self.upbit.prices([mk]).get(mk)
                 if price:
-                    self.enter(mk, spec, price)
+                    self.enter(mk, spec, price, {"signalPrice": series.c[-1], "entryVol": round(avg_range_pct(series), 4)})
                     ok, _ = self.can_enter()
                     if not ok:
                         break
@@ -1009,7 +1097,9 @@ class Bot:
                                      "holdoutPct": s.get("holdoutPct")} for m, s in self.state["strategies"].items()],
                      "universe": self.state["universe"]["markets"],
                      "blocked": self.state["blocked"], "marketStats": self.state["marketStats"],
-                     "report": self.state["lastReport"]})
+                     "report": self.state["lastReport"],
+                     "failStats": [{"code": k, "label": FAIL_LABELS.get(k, k), "count": v}
+                                   for k, v in sorted(self.state.get("failStats", {}).items(), key=lambda x: -x[1])]})
         self.cloud.put_status(data)
         self.last_status = time.time()
 
