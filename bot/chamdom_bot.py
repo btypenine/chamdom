@@ -928,7 +928,9 @@ class Bot:
                 return cur
             if rb and rb["status"] == "testing" and rb["trades"] < RULE_EVAL_TRADES:
                 # 6시간 동안 한 번도 신호가 없던 규칙은 붙잡고 있지 않음 (기록은 장부에 남음)
-                if rb["trades"] > 0 or time.time() * 1000 - rb["firstAt"] < 6 * 3600 * 1000:
+                # 단, 이 규칙으로 산 코인을 아직 들고 있으면 신호가 났던 것 → 유지 (안 그러면 매도 후 1/5회에서 끊겨 판정 못 함)
+                holding = (self.state["positions"].get(market) or {}).get("rid") == rb["id"]
+                if rb["trades"] > 0 or holding or time.time() * 1000 - rb["firstAt"] < 6 * 3600 * 1000:
                     return cur
             if not rb:
                 return cur                                # 이전 버전에서 고른 규칙: 장부에 등록하고 검증 시작
@@ -939,6 +941,13 @@ class Bot:
                 avg = rb["sumPct"] / rb["trades"]
                 if best is None or avg > best[0]:
                     best = (avg, rb)
+        if not best:
+            # 실전 1~4회에서 끊긴 검증 중 규칙(종목이 상위권에서 잠시 빠졌다 돌아온 경우 등)은 5회를 마저 채움
+            for rb in self.state["ruleBook"].values():
+                if (rb["market"] == market and rb["status"] == "testing" and rb.get("spec")
+                        and 0 < rb["trades"] < RULE_EVAL_TRADES):
+                    if best is None or (rb.get("lastAt") or 0) > (best[1].get("lastAt") or 0):
+                        best = (0, rb)
         if best:
             rb = best[1]
             spec = dict(rb["spec"])
