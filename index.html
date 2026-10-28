@@ -24,6 +24,7 @@
   --warn: #b7791f;
   --stop: #c0392b;
   --chip: #eef0f3;
+  --ln-bb: #7a52c7; --ln-fast: #1f8a5b; --ln-slow: #b7791f; --ln-mid: #9aa1ab;
   --font: "Pretendard Variable", Pretendard, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
   color-scheme: light;
 }
@@ -32,6 +33,7 @@
     --bg: #111317; --surface: #1a1d22; --line: #2a2e35; --fg: #eceef1; --muted: #9aa1ab;
     --brand: #e8656e; --brand-ink: #1a0d0e; --up: #f06464; --down: #5b93ef; --ok: #3cb47c;
     --warn: #d9a046; --stop: #e5594b; --chip: #242830; color-scheme: dark;
+    --ln-bb: #a888e8; --ln-fast: #3cb47c; --ln-slow: #d9a046; --ln-mid: #6b727c;
   }
 }
 [hidden] { display: none !important; }
@@ -156,6 +158,25 @@ footer { font-size: 12px; color: var(--muted); text-align: center; }
 .pri.high { background: var(--stop); color: #fff; }
 .chg { font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: var(--chip); border-radius: 6px; padding: 4px 6px; overflow-wrap: anywhere; }
 .logbox { font: 12px/1.55 ui-monospace, Consolas, monospace; background: var(--chip); border-radius: 8px; padding: 10px; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-all; color: var(--fg); }
+/* 진입 근거 팝업 */
+.pos.tap { cursor: pointer; border-radius: 8px; }
+.pos.tap:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.pos .hint { font-size: 11px; color: var(--brand); font-weight: 650; }
+dialog.sheet { border: 1px solid var(--line); border-radius: 16px; padding: 0; background: var(--surface); color: var(--fg);
+  width: min(560px, calc(100% - 24px)); max-height: calc(100dvh - 32px); }
+dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
+.sheet-in { padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow: auto; max-height: calc(100dvh - 34px); }
+.sheet-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.sheet-head h3 { margin: 0; font-size: 17px; }
+.sheet-head .btn-text { font-size: 15px; padding: 2px 6px; white-space: nowrap; flex: none; }
+.chart svg { width: 100%; height: auto; display: block; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--muted); }
+.legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+.reasons { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.reasons li { background: var(--chip); border-radius: 8px; padding: 7px 10px; }
+.reasons li::before { content: "✓ "; color: var(--ok); font-weight: 800; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; text-align: right; }
 @media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
 </style>
 </head>
@@ -286,6 +307,16 @@ footer { font-size: 12px; color: var(--muted); text-align: center; }
     </footer>
   </div>
 </div>
+<dialog class="sheet" id="posSheet" aria-labelledby="sheetTitle">
+  <div class="sheet-in">
+    <div class="sheet-head"><div><h3 id="sheetTitle"></h3><div class="sub" id="sheetSub"></div></div>
+      <button class="btn-text" type="button" id="sheetClose" aria-label="닫기">닫기</button></div>
+    <div class="chart" id="sheetChart"></div>
+    <div class="legend" id="sheetLegend"></div>
+    <div><div class="label" style="margin-bottom:6px">진입 근거 (모든 조건이 동시에 충족된 순간 매수)</div><ul class="reasons" id="sheetReasons"></ul></div>
+    <dl class="kv num" id="sheetKv"></dl>
+  </div>
+</dialog>
 <div class="toast" id="toast" hidden></div>
 
 <script type="module">
@@ -380,6 +411,100 @@ onAuthStateChanged(auth, async (user) => {
 });
 
 /* ---------- 상태 표시 ---------- */
+
+// ---------- 진입 근거 팝업 ----------
+let openMarket = null;
+const SVGNS = "http://www.w3.org/2000/svg";
+const dec = (str, ref) => (str || "").split(",").filter((x) => x !== "").map((x) => ref * (1 + Number(x) / 10000));
+const LINE_VAR = { bb: "--ln-bb", mid: "--ln-mid", fast: "--ln-fast", slow: "--ln-slow", level: "--ln-slow" };
+function svgEl(tag, attrs) { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+function fmtP(v) { return v == null ? "-" : qty(+Number(v).toPrecision(6)); }
+
+function drawEntryChart(box, legend, p) {
+  box.textContent = ""; legend.textContent = "";
+  const e = p.entryInfo;
+  if (!e || !e.c) {
+    box.innerHTML = `<div class="empty">이 포지션은 차트 기록 기능이 생기기 전에 들어가서 진입 당시 차트가 없습니다. 다음 진입부터 표시됩니다.</div>`;
+    return;
+  }
+  const ref = e.ref, o = dec(e.o, ref), h = dec(e.h, ref), l = dec(e.l, ref), c = dec(e.c, ref);
+  const v = (e.v || "").split(",").map(Number);
+  const lines = (e.lines || []).map((x) => ({ ...x, y: dec(x.vals, ref) }));
+  const n = c.length;
+  const levels = [{ name: "익절", v: p.tp, col: "--up" }, { name: "진입가", v: p.unit, col: "--fg" }, { name: "손절", v: p.sl, col: "--down" }];
+  let lo = Math.min(...l), hi = Math.max(...h);
+  for (const x of levels) { lo = Math.min(lo, x.v); hi = Math.max(hi, x.v); }
+  for (const x of lines) for (const y of x.y) { if (isFinite(y)) { lo = Math.min(lo, y); hi = Math.max(hi, y); } }
+  const padv = (hi - lo) * 0.06 || hi * 0.001; lo -= padv; hi += padv;
+  const W = 520, PH = 220, VH = 44, R = 64, T = 6, H = T + PH + 8 + VH + 18;
+  const cw = (W - R) / (n + 1), x = (i) => cw * (i + 0.5), y = (val) => T + (hi - val) / (hi - lo) * PH;
+  const css = getComputedStyle(document.documentElement), col = (k) => css.getPropertyValue(k).trim();
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${p.coin} 진입 직전 ${n}분 1분봉 차트` });
+  // 신호 봉 강조
+  svg.append(svgEl("rect", { x: x(n - 1) - cw * 0.7, y: T, width: cw * 1.4, height: PH + 8 + VH, fill: col("--brand"), opacity: 0.12 }));
+  // 기준선(익절·진입·손절)
+  for (const lv of levels) {
+    svg.append(svgEl("line", { x1: 0, x2: W - R, y1: y(lv.v), y2: y(lv.v), stroke: col(lv.col), "stroke-width": 1, "stroke-dasharray": lv.name === "진입가" ? "" : "4 3", opacity: 0.8 }));
+    const t = svgEl("text", { x: W - R + 4, y: y(lv.v) + 4, "font-size": 11, fill: col(lv.col) }); t.textContent = lv.name; svg.append(t);
+  }
+  // 지표선
+  for (const ln of lines) {
+    const d = ln.y.map((val, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(val).toFixed(1)}`).join("");
+    svg.append(svgEl("path", { d, fill: "none", stroke: col(LINE_VAR[ln.kind] || "--muted"), "stroke-width": 1.6, "stroke-dasharray": ln.kind === "mid" ? "3 3" : "" }));
+  }
+  // 캔들
+  const bw = Math.max(1.5, cw * 0.62);
+  for (let i = 0; i < n; i++) {
+    const up = c[i] >= o[i], k = up ? col("--up") : col("--down");
+    svg.append(svgEl("line", { x1: x(i), x2: x(i), y1: y(h[i]), y2: y(l[i]), stroke: k, "stroke-width": 1 }));
+    const top = y(Math.max(o[i], c[i])), bot = y(Math.min(o[i], c[i]));
+    svg.append(svgEl("rect", { x: x(i) - bw / 2, y: top, width: bw, height: Math.max(1, bot - top), fill: k }));
+    const vh = (v[i] || 0) / 100 * VH;
+    svg.append(svgEl("rect", { x: x(i) - bw / 2, y: T + PH + 8 + VH - vh, width: bw, height: Math.max(0.5, vh), fill: k, opacity: 0.45 }));
+  }
+  // 시간 축
+  const t0 = e.endAt - (n - 1) * 60000;
+  for (const i of [0, Math.floor(n / 2), n - 1]) {
+    const t = svgEl("text", { x: x(i), y: H - 4, "font-size": 11, fill: col("--muted"), "text-anchor": i === 0 ? "start" : i === n - 1 ? "end" : "middle" });
+    t.textContent = i === n - 1 ? hm(t0 + i * 60000) + " 신호" : hm(t0 + i * 60000); svg.append(t);
+  }
+  const vt = svgEl("text", { x: W - R + 4, y: T + PH + 8 + VH, "font-size": 11, fill: col("--muted") }); vt.textContent = "거래량"; svg.append(vt);
+  box.append(svg);
+  const items = [["--up", "익절선"], ["--fg", "진입가"], ["--down", "손절선"], ...lines.map((ln) => [LINE_VAR[ln.kind] || "--muted", ln.name])];
+  for (const [k, name] of items) { const s = document.createElement("span"); s.innerHTML = `<i style="background:var(${k})"></i>`; s.append(name); legend.append(s); }
+  const s = document.createElement("span"); s.innerHTML = `<i style="background:var(--brand);opacity:.35"></i>`; s.append("신호 봉"); legend.append(s);
+}
+
+function openPos(p) {
+  openMarket = p.market;
+  $("sheetTitle").textContent = `${p.coin} · ${hm(p.at)} 매수`;
+  $("sheetSub").textContent = p.strategy || "";
+  drawEntryChart($("sheetChart"), $("sheetLegend"), p);
+  const ul = $("sheetReasons"); ul.textContent = "";
+  const rs = (p.entryInfo && p.entryInfo.reasons) || [];
+  if (!rs.length) { const li = document.createElement("li"); li.textContent = (p.strategy || "").split(" / ")[0] + " 조건 충족 (세부 값 기록 없음)"; ul.append(li); }
+  for (const r of rs) { const li = document.createElement("li"); li.textContent = r; ul.append(li); }
+  const kv = [];
+  const slip = p.signalPrice && p.unit ? (p.unit / p.signalPrice - 1) * 100 : null;
+  if (p.signalPrice) kv.push(["신호가 → 실제 매수 단가", `${fmtP(p.signalPrice)} → ${fmtP(p.unit)}` + (slip == null ? "" : ` (${slip > 0 ? "+" : ""}${slip.toFixed(2)}%, 수수료 포함)`)]);
+  else kv.push(["매수 단가 (수수료 포함)", fmtP(p.unit)]);
+  kv.push(["익절 / 손절", `${fmtP(p.tp)} / ${fmtP(p.sl)}`]);
+  kv.push(["현재가 · 손익", `${fmtP(p.price)} · ${p.pnlPct == null ? "-" : (p.pnlPct > 0 ? "+" : "") + p.pnlPct.toFixed(2) + "%"}`]);
+  kv.push(["남은 보유 시간", `${Math.max(0, Math.round((p.deadline - Date.now()) / 60000))}분`]);
+  if (p.btWinrate != null) kv.push(["백테스트 예상", `승률 ${Math.round(p.btWinrate * 100)}% · 거래당 ${p.btEdge == null ? "-" : (p.btEdge > 0 ? "+" : "") + Number(p.btEdge).toFixed(2) + "%"}`]);
+  if (p.rule) {
+    const st = { testing: "실전 검증 중", proven: "실전 통과", retired: "퇴출" }[p.rule.status] || p.rule.status;
+    kv.push(["규칙 장부", `${st} · ${p.rule.trades}회 승 ${p.rule.wins}` + (p.rule.avgPct == null ? "" : ` · 거래당 ${p.rule.avgPct > 0 ? "+" : ""}${p.rule.avgPct.toFixed(2)}%`)]);
+    if (p.rid) kv.push(["규칙 번호", p.rid]);
+  }
+  const dl = $("sheetKv"); dl.textContent = "";
+  for (const [k, val] of kv) { const dt = document.createElement("dt"); dt.textContent = k; const dd = document.createElement("dd"); dd.textContent = val; dl.append(dt, dd); }
+  if (!$("posSheet").open) $("posSheet").showModal();
+}
+$("sheetClose").addEventListener("click", () => $("posSheet").close());
+$("posSheet").addEventListener("click", (e) => { if (e.target === $("posSheet")) $("posSheet").close(); });
+$("posSheet").addEventListener("close", () => { openMarket = null; });
+
 function renderStatus() {
   const s = lastStatus;
   const dot = $("stateDot");
@@ -471,7 +596,10 @@ function renderMore(s, stale) {
   $("posCard").hidden = !ps.length;
   const pbox = $("positions"); pbox.textContent = "";
   for (const p of ps) {
-    const el = document.createElement("div"); el.className = "pos";
+    const el = document.createElement("div"); el.className = "pos tap";
+    el.tabIndex = 0; el.setAttribute("role", "button"); el.setAttribute("aria-label", `${p.coin} 진입 근거 보기`);
+    el.addEventListener("click", () => openPos(p));
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPos(p); } });
     const lo = p.sl, hi = p.tp, span = hi - lo;
     const at = (v) => Math.max(0, Math.min(100, ((v - lo) / span) * 100));
     el.innerHTML = `<div class="pos-top"><span class="coin"></span><span class="num pnl" style="font-weight:700"></span></div>
@@ -489,6 +617,9 @@ function renderMore(s, stale) {
     el.querySelector(".r").textContent = "익절 " + qty(+p.tp.toPrecision(6));
     const left = Math.max(0, Math.round((p.deadline - Date.now()) / 60000));
     el.querySelector(".info").textContent = `${hm(p.at)} 매수 · 최대 ${left}분 더 보유 · ${p.strategy}`;
+    const hint = document.createElement("div"); hint.className = "hint"; hint.textContent = "눌러서 진입 근거·차트 보기";
+    el.append(hint);
+    if (openMarket === p.market && $("posSheet").open) openPos(p);   // 열려 있으면 새 시세로 갱신
     pbox.append(el);
   }
 

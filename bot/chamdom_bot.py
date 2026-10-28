@@ -583,6 +583,58 @@ def rule_id(market, spec):
 
 
 SPEC_KEYS = ("conds", "tp", "sl", "hold")
+ENTRY_CHART_BARS = 60            # 대시보드 '진입 근거' 팝업에 보여줄 진입 직전 1분봉 수
+
+
+def _enc(vals, ref):
+    """가격 목록 → 기준가 대비 0.01% 단위 정수를 쉼표로 이은 문자열 (Firestore 용량 절약, 대시보드에서 되돌림)"""
+    return ",".join(str(round((x / ref - 1) * 10000)) for x in vals)
+
+
+def entry_snapshot(series, spec):
+    """진입 순간 근거: 조건별 실제 값 + 진입 직전 1분봉·지표선 (대시보드 팝업용, 매매에는 영향 없음)"""
+    n, c, last = series.n, series.c, series.n - 1
+    a = max(0, n - ENTRY_CHART_BARS)
+    ref = c[last]
+    reasons, lines = [], []
+    for name, p in spec["conds"]:
+        if name == "rsi_below":
+            v = rsi(c, p["n"])[last]
+            reasons.append(f"RSI({p['n']}) {v:.1f} < {p['t']} → 과매도")
+        elif name == "bb_below":
+            m, sd = sma(c, p["n"]), stdev(c, p["n"])
+            low = [m[i] - p["k"] * sd[i] for i in range(n)]
+            reasons.append(f"종가 {ref:.6g} < 볼린저 하단({p['n']}, {p['k']}σ) {low[last]:.6g}")
+            lines.append({"name": f"볼린저 하단 {p['k']}σ", "kind": "bb", "vals": _enc(low[a:], ref)})
+            lines.append({"name": f"볼린저 중심 {p['n']}", "kind": "mid", "vals": _enc(m[a:], ref)})
+        elif name in ("ema_up", "ema_cross"):
+            f, s = ema(c, p["f"]), ema(c, p["s"])
+            if name == "ema_up":
+                reasons.append(f"EMA{p['f']} {f[last]:.6g} > EMA{p['s']} {s[last]:.6g} → 상승추세")
+            else:
+                reasons.append(f"EMA{p['f']} 선이 EMA{p['s']} 선을 아래에서 위로 뚫음 (골든크로스)")
+            names = [l["name"] for l in lines]
+            if f"EMA{p['f']}" not in names:
+                lines.append({"name": f"EMA{p['f']}", "kind": "fast", "vals": _enc(f[a:], ref)})
+            if f"EMA{p['s']}" not in names:
+                lines.append({"name": f"EMA{p['s']}", "kind": "slow", "vals": _enc(s[a:], ref)})
+        elif name == "drop":
+            hi = max(c[last - p["lb"]:last])
+            reasons.append(f"최근 {p['lb']}분 고점 {hi:.6g} 대비 {(ref / hi - 1) * 100:+.2f}% (기준 -{p['p']}%) → 단기급락")
+        elif name == "breakout":
+            hi = max(series.h[last - p["lb"]:last])
+            reasons.append(f"종가 {ref:.6g} > 직전 {p['lb']}분 고가 {hi:.6g} → 고점돌파")
+            lines.append({"name": f"{p['lb']}분 고점", "kind": "level", "vals": _enc([hi] * (n - a), ref)})
+        elif name == "vol_spike":
+            avg = sma(series.v, p["n"])[last - 1]
+            reasons.append(f"거래량 평균의 {series.v[last] / avg:.1f}배 (기준 {p['m']}배) → 거래량급증" if avg else "거래량급증")
+        elif name == "green":
+            reasons.append(f"양봉 (시가 {series.o[last]:.6g} → 종가 {ref:.6g})")
+    vmax = max(series.v[a:]) or 1
+    return {"reasons": reasons, "lines": lines, "ref": ref,
+            "o": _enc(series.o[a:], ref), "h": _enc(series.h[a:], ref), "l": _enc(series.l[a:], ref), "c": _enc(c[a:], ref),
+            "v": ",".join(str(round(x / vmax * 100)) for x in series.v[a:]),
+            "endAt": int((time.time() // 60 - 1) * 60 * 1000)}   # 마지막(신호) 봉 시작 시각
 
 
 class Series:
@@ -1228,7 +1280,12 @@ class Bot:
             if series.signal(spec)[-1]:
                 price = self.upbit.prices([mk]).get(mk)
                 if price:
-                    self.enter(mk, spec, price, {"signalPrice": series.c[-1], "entryVol": round(avg_range_pct(series), 4)})
+                    ctx = {"signalPrice": series.c[-1], "entryVol": round(avg_range_pct(series), 4)}
+                    try:
+                        ctx["entryInfo"] = entry_snapshot(series, spec)
+                    except Exception as e:                # 팝업용 기록 실패가 매수를 막으면 안 됨
+                        log(f"[경고] {mk} 진입 근거 기록 실패: {e}")
+                    self.enter(mk, spec, price, ctx)
                     ok, _ = self.can_enter()
                     if not ok:
                         break
@@ -1279,6 +1336,13 @@ class Bot:
         except Exception:
             pass
 
+    def rule_brief(self, rid):
+        rb = self.state["ruleBook"].get(rid) if rid else None
+        if not rb:
+            return None
+        return {"status": rb["status"], "trades": rb["trades"], "wins": rb["wins"],
+                "avgPct": round(rb["sumPct"] / rb["trades"], 3) if rb["trades"] else None}
+
     def positions_detail(self):
         pos = self.state["positions"]
         if not pos:
@@ -1293,6 +1357,8 @@ class Bot:
             out.append({"market": mk, "coin": mk.split("-")[1], "cost": round(p["cost"]), "unit": p["unit"],
                         "tp": p["tp"], "sl": p["sl"], "price": price, "at": p["at"],
                         "deadline": p["deadline"] * 1000, "strategy": p.get("strategy", ""),
+                        "signalPrice": p.get("signalPrice"), "btWinrate": p.get("btWinrate"), "btEdge": p.get("btEdge"),
+                        "rid": p.get("rid"), "rule": self.rule_brief(p.get("rid")), "entryInfo": p.get("entryInfo"),
                         "pnlPct": round((price * (1 - FEE_RATE) / p["unit"] - 1) * 100, 2) if price else None})
         return out
 
