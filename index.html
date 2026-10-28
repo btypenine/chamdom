@@ -181,6 +181,15 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
 .gate-mode.active { background: var(--ok); color: #fff; }
 .gate-now { font-weight: 650; }
 .gate-now.hit { color: var(--stop); }
+.appr { display: flex; flex-direction: column; gap: 6px; padding-block: 10px; border-top: 1px solid var(--line); font-size: 13px; }
+.appr:first-child { border-top: none; padding-top: 0; }
+.appr .t { display: flex; justify-content: space-between; gap: 8px; font-weight: 700; font-size: 14px; }
+.appr .src { font-size: 11px; font-weight: 650; padding: 1px 7px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
+.appr .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.appr .btns button { min-height: 40px; padding: 8px; }
+.appr .ok.armed { background: var(--ok); color: #fff; border-color: var(--ok); }
+.appr .no.armed { background: var(--stop); color: #fff; border-color: var(--stop); }
+.appr a { color: var(--brand); }
 @media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
 </style>
 </head>
@@ -215,6 +224,12 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
       <div class="msg" id="stateMsg" hidden></div>
     </section>
 
+    <section class="card" id="apprCard" hidden>
+      <div class="head-row"><h2>승인 대기</h2><span class="pri high" id="apprCount"></span></div>
+      <div class="sub">봇과 AI가 스스로 찾은 개선안임. 근거를 보고 승인하면 반영되고, 거절하면 지금 상태를 유지함. (두 번 눌러 실행)</div>
+      <div class="list" id="apprList"></div>
+    </section>
+
     <section class="card" id="perfCard" hidden>
       <div class="head-row"><h2>오늘 성과 <span class="sub">(09시 기준)</span></h2><span class="mode" id="mode"></span></div>
       <div class="stats">
@@ -230,8 +245,8 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
     </section>
 
     <section class="card" id="gateCard" hidden>
-      <h2>시장 판단 관문</h2>
-      <div class="sub">종목 전략과 별개로 '지금 새로 사도 되는 시장인가'를 봄. 새 관문은 관찰로 시작해, 막았을 거래가 실제로 더 나빴다는 기록이 쌓이면 스스로 적용으로 바뀜.</div>
+      <h2>시장 판단 · 청산 판단</h2>
+      <div class="sub">종목 전략과 별개로 '지금 새로 사도 되는가', '들고 있는 걸 일찍 정리할까'를 봄. 모두 관찰로 시작하고, 실전 기록으로 효과가 확인되면 '승인 대기'에 올라옴 → 승인해야 적용됨.</div>
       <div class="list" id="gates"></div>
     </section>
 
@@ -515,6 +530,59 @@ $("sheetClose").addEventListener("click", () => $("posSheet").close());
 $("posSheet").addEventListener("click", (e) => { if (e.target === $("posSheet")) $("posSheet").close(); });
 $("posSheet").addEventListener("close", () => { openMarket = null; });
 
+
+// ---------- 승인 대기 (봇 제안 + AI 코드 제안) ----------
+let aiProps = [];
+async function loadAiProposals() {
+  try {
+    const r = await fetch("proposals.json?t=" + Date.now(), { cache: "no-store" });
+    if (r.ok) { const j = await r.json(); aiProps = Array.isArray(j.proposals) ? j.proposals : []; }
+  } catch (e) { /* 없으면 봇 제안만 표시 */ }
+  renderApprovals();
+}
+const sentDecisions = {};
+function renderApprovals() {
+  const s = lastStatus || {};
+  const dec = s.aiDecisions || {};
+  const items = [];
+  for (const p of (s.proposals || [])) if (p.status === "pending") items.push({ src: "봇 학습", id: p.id, title: p.title, body: p.why, extra: "승인하면 봇이 바로 반영함" });
+  for (const p of aiProps) if (p.status === "pending" && !dec[p.id]) items.push({ src: "AI 개선안", id: p.id, title: p.title, body: p.summary, why: p.why, risk: p.risk, pr: p.pr, extra: "승인하면 다음 AI 점검(3시간 이내) 때 반영됨" });
+  $("apprCard").hidden = !items.length;
+  $("apprCount").textContent = items.length ? items.length + "건" : "";
+  const box = $("apprList"); box.textContent = "";
+  for (const it of items) {
+    const el = document.createElement("div"); el.className = "appr";
+    el.innerHTML = `<div class="t"><span class="tt"></span><span class="src"></span></div><div class="b"></div><div class="sub w" hidden></div><div class="sub r" hidden></div><div class="sub x"></div><div class="btns"><button type="button" class="ok">승인</button><button type="button" class="no">거절</button></div>`;
+    el.querySelector(".tt").textContent = it.title; el.querySelector(".src").textContent = it.src;
+    el.querySelector(".b").textContent = it.body || "";
+    if (it.why) { const w = el.querySelector(".w"); w.hidden = false; w.textContent = "근거: " + it.why; }
+    if (it.risk) { const r = el.querySelector(".r"); r.hidden = false; r.textContent = "영향·위험: " + it.risk; }
+    const x = el.querySelector(".x"); x.textContent = it.extra;
+    if (it.pr && /^https:\/\/github\.com\//.test(it.pr)) { x.append(" · "); const a = document.createElement("a"); a.href = it.pr; a.target = "_blank"; a.rel = "noopener"; a.textContent = "변경 내용 보기"; x.append(a); }
+    if (sentDecisions[it.id]) { el.querySelector(".btns").innerHTML = `<div class="sub">${sentDecisions[it.id]} 전달함 · 봇이 처리하면 사라짐</div>`; }
+    for (const [cls, verb] of [["ok", "approve"], ["no", "reject"]]) {
+      const btn = el.querySelector("." + cls); if (!btn) continue;
+      const label = btn.textContent;
+      btn.addEventListener("click", async () => {
+        if (!btn.classList.contains("armed")) {
+          el.querySelectorAll(".armed").forEach((b) => { b.classList.remove("armed"); b.textContent = b.dataset.label; });
+          btn.dataset.label = label; btn.classList.add("armed"); btn.textContent = "한 번 더 눌러 " + label;
+          clearTimeout(btn._t); btn._t = setTimeout(() => { btn.classList.remove("armed"); btn.textContent = label; }, 4000);
+          return;
+        }
+        btn.disabled = true;
+        try {
+          await addDoc(collection(db, "users", auth.currentUser.uid, "commands"),
+            { type: `${verb}|${it.id}`, status: "pending", createdAt: serverTimestamp(), source: "web" });
+          sentDecisions[it.id] = label; toast(`${label} 전달함`); renderApprovals();
+        } catch (e) { toast("전송 실패: " + (e.code || e.message)); btn.disabled = false; }
+      });
+    }
+    box.append(el);
+  }
+}
+loadAiProposals(); setInterval(loadAiProposals, 5 * 60 * 1000);
+
 function renderStatus() {
   const s = lastStatus;
   const dot = $("stateDot");
@@ -643,7 +711,7 @@ function renderMore(s, stale) {
     el.innerHTML = `<div class="head-row"><b></b><span class="gate-mode"></span></div><div class="gate-now"></div><div class="sub d"></div><div class="num st"></div>`;
     el.querySelector("b").textContent = g.name;
     const m = el.querySelector(".gate-mode");
-    m.textContent = g.mode === "active" ? "적용 중" : "관찰 중"; if (g.mode === "active") m.classList.add("active");
+    m.textContent = g.pending ? "승인 대기" : (g.mode === "active" ? "적용 중" : "관찰 중"); if (g.mode === "active") m.classList.add("active");
     const nw = el.querySelector(".gate-now");
     nw.textContent = (g.now ? (g.mode === "active" ? "지금 막는 중 · " : "지금 감지(표시만) · ") : "지금 통과 · ") + (g.reading || "");
     if (g.now) nw.classList.add("hit");
@@ -653,6 +721,22 @@ function renderMore(s, stale) {
       + ` · ${g.episodes}개 시간대` + (left ? ` · 판정까지 ${left}건` : "") + (g.ghosts ? ` · 가상 거래 추적 ${g.ghosts}건` : "");
     gbox.append(el);
   }
+
+  // 청산 판단 (보유 중)
+  for (const r of (Array.isArray(s.exitRules) ? s.exitRules : [])) {
+    $("gateCard").hidden = false;
+    const el = document.createElement("div"); el.className = "li stack";
+    el.innerHTML = `<div class="head-row"><b></b><span class="gate-mode"></span></div><div class="gate-now"></div><div class="sub d"></div><div class="num st"></div>`;
+    el.querySelector("b").textContent = "청산 · " + r.name;
+    const m = el.querySelector(".gate-mode");
+    m.textContent = r.pending ? "승인 대기" : (r.mode === "active" ? "적용 중" : "관찰 중"); if (r.mode === "active") m.classList.add("active");
+    el.querySelector(".gate-now").textContent = r.marked ? `지금 보유 중 ${r.marked}종목이 조건에 걸림(관찰 기록 중)` : "지금 걸린 보유 종목 없음";
+    el.querySelector(".d").textContent = r.desc;
+    const left = Math.max(0, (r.nextEval || 20) - r.n);
+    el.querySelector(".st").textContent = `조기 정리했다면 ${r.n}건 평균 ${pctTxt(r.avgDiff)}p (${r.better}건 더 나음) · ${r.episodes}개 시간대` + (left ? ` · 판정까지 ${left}건` : "") + (r.ghosts ? ` · 가상 추적 ${r.ghosts}건` : "");
+    gbox.append(el);
+  }
+  renderApprovals();
 
   // 전략
   const st = Array.isArray(s.strategies) ? s.strategies : [];
@@ -748,7 +832,7 @@ function renderCmds(items) {
   for (const c of items) {
     const el = document.createElement("div"); el.className = "cmd";
     el.innerHTML = "<span><b></b> · <span></span></span><span></span>";
-    el.querySelector("b").textContent = CMD_NAMES[c.type] || c.type;
+    el.querySelector("b").textContent = CMD_NAMES[c.type] || (String(c.type).startsWith("approve|") ? "승인" : String(c.type).startsWith("reject|") ? "거절" : c.type);
     el.querySelector("span span").textContent = CMD_STATUS[c.status] || c.status;
     el.lastChild.textContent = fmtTime(c.createdAt);
     box.append(el);

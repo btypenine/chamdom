@@ -1,0 +1,4 @@
+{
+ "_설명": "AI 정기 점검이 올리는 개선안 목록. 대시보드 승인 대기 카드가 읽음. status: pending|merged|rejected. 코드 변경은 ai/ 브랜치 PR로 올리고, 승인(대시보드 또는 GitHub에서 병합) 후에만 main에 반영",
+ "proposals": []
+}

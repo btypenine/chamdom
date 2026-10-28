@@ -862,9 +862,39 @@ def gate_event(bot):
     return False, "등록된 일정 없음"
 
 
+VOLATILE_HOURS = (23, 0, 17)     # 변동 큰 시간대(한국시간): 미국장 시작 23~00시, 유럽장 17시 (bt-lab 10-29: 평소의 1.4~1.8배)
+
+
+def gate_volatile_hours(bot):
+    h = datetime.now(KST).hour
+    return h in VOLATILE_HOURS, f"지금 {h:02d}시 · 변동 큰 시간대 {', '.join(f'{x:02d}시' for x in VOLATILE_HOURS)}"
+
+
 MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
     {"id": "event", "name": "경제 일정", "desc": "FOMC·미국 물가(CPI) 발표 등 정해진 일정 앞뒤로 새로 사지 않음 (일정표: bot/events.json)", "fn": gate_event},
+    {"id": "volatile_hours", "name": "변동 큰 시간대", "desc": "미국장 시작(23~00시)·유럽장 시작(17시)에는 새로 사지 않음", "fn": gate_volatile_hours},
+]
+
+# ---- 청산 판단 (보유 중) — 관문과 같은 '관찰 → 승인 → 적용' 구조 ----
+# 관찰: 조건이 걸린 순간 '지금 정리했다면 몇 %'를 기록해 두고, 실제로 끝난 결과와 비교(조기 정리가 나았는지)
+# 적용(승인 후): 그 순간 실제로 정리하고, 원래 규칙대로 들고 있었다면 어땠을지를 가상으로 끝까지 추적
+EXIT_EVAL_MIN = 20               # 판정에 필요한 표본 수
+EXIT_MARGIN = 0.15               # 조기 정리가 평균 이만큼(%p) 이상 나아야 적용 제안
+BTC_EXIT_PCT = -0.5              # 매수 후 BTC가 이만큼 빠졌고 포지션이 손실 중이면 조기 정리 대상
+
+
+def exit_btc_drop(bot, pos, price):
+    c = bot.btc_closes()
+    if not c or not pos.get("btcAtEntry"):
+        return False, ""
+    chg = (c[-1] / pos["btcAtEntry"] - 1) * 100
+    pnl = (price * (1 - FEE_RATE) / pos["unit"] - 1) * 100
+    return (chg <= BTC_EXIT_PCT and pnl < 0), f"매수 후 BTC {chg:+.2f}% · 포지션 {pnl:+.2f}%"
+
+
+EXIT_RULES = [
+    {"id": "btc_exit", "name": "보유 중 BTC 하락 정리", "desc": f"들고 있는 동안 BTC가 {BTC_EXIT_PCT}% 이상 빠지고 손실 중이면 일찍 정리", "fn": exit_btc_drop},
 ]
 
 
@@ -1228,6 +1258,10 @@ class Bot:
         self.learn(market, pnl, reason)
         self.cond_record(pos, pnl)
         self.rule_record(pos, pnl)
+        actual_pct = pnl / pos["cost"] * 100
+        for rid, mk_ in (pos.get("exitMarks") or {}).items():
+            if self.exit_stat(rid)["mode"] != "active" or reason != next((r["name"] for r in EXIT_RULES if r["id"] == rid), ""):
+                self.exit_record(rid, mk_["pct"], actual_pct, mk_["at"])   # 관찰: 그때 정리했다면 vs 실제
         if "gateHits" in pos:                             # 관문 기능 이후 산 거래만 관문 성적에 반영
             self.gate_record(pos["gateHits"], pnl / pos["cost"] * 100, pos["at"])
         analysis = None
@@ -1295,6 +1329,8 @@ class Bot:
                 continue
             p["maxP"] = max(p.get("maxP", price), price)
             p["minP"] = min(p.get("minP", price), price)
+            if price < p["tp"] and price > p["sl"] and self.exit_check(mk, p, price):
+                continue
             if price >= p["tp"]:
                 self.exit(mk, price, "익절")
             elif price <= p["sl"]:
@@ -1417,14 +1453,123 @@ class Bot:
             return                                         # 아직 판단 근거 부족 → 다음 거래에서 다시 봄
         st["nextEval"] = b["n"] + GATE_RECHECK
         ba, pa = b["sumPct"] / b["n"], p["sumPct"] / p["n"]
-        new = "active" if (ba < 0 and ba <= pa - GATE_MARGIN) else "shadow"
-        names = {"active": "적용", "shadow": "관찰"}
-        log(f"[관문 판정] {g['name']}: 막았을 거래 {b['n']}건 거래당 {ba:+.2f}% vs 통과 거래 {p['n']}건 {pa:+.2f}% "
-            f"({len(st['hours'])}개 시간대) → {names[new]}" + (" (바뀜)" if new != st["mode"] else " 유지"))
-        st.setdefault("history", []).append({"at": int(time.time() * 1000), "mode": new, "blockedAvg": round(ba, 3),
+        want = "active" if (ba < 0 and ba <= pa - GATE_MARGIN) else "shadow"
+        why = (f"막았을 거래 {b['n']}건 거래당 {ba:+.2f}% vs 통과 거래 {p['n']}건 {pa:+.2f}% ({len(st['hours'])}개 시간대)")
+        st.setdefault("history", []).append({"at": int(time.time() * 1000), "want": want, "blockedAvg": round(ba, 3),
                                              "passedAvg": round(pa, 3), "n": b["n"]})
         st["history"] = st["history"][-10:]
-        st["mode"] = new
+        log(f"[관문 판정] {g['name']}: {why} → " + ("적용이 낫다고 봄" if want == "active" else "관찰 유지가 낫다고 봄"))
+        if want != st["mode"]:
+            self.propose("gate", g["id"], g["name"], st["mode"], want, why)
+
+    # ---------- 승인 요청 (봇이 스스로 바꾸고 싶은 것) ----------
+    def propose(self, kind, target, name, cur, want, why):
+        props = self.state.setdefault("proposals", [])
+        for pr in props:
+            if pr["status"] == "pending" and pr["kind"] == kind and pr["target"] == target:
+                pr.update({"to": want, "why": why, "at": int(time.time() * 1000)})      # 같은 대상은 최신 근거로 갱신
+                break
+        else:
+            pid = f"bot-{kind}-{target}-{int(time.time())}"
+            verb = {"active": "적용", "shadow": "관찰로 되돌림"}[want]
+            props.append({"id": pid, "kind": kind, "target": target, "title": f"{name} → {verb}", "from": cur, "to": want,
+                          "why": why, "at": int(time.time() * 1000), "status": "pending"})
+            log(f"[승인 요청] {name} → {verb} · 근거: {why} · 대시보드 '승인 대기'에서 승인/거절")
+        self.state["proposals"] = [p for p in props if p["status"] == "pending"] + \
+            [p for p in props if p["status"] != "pending"][-10:]
+        save_state(self.state)
+
+    def decide(self, pid, approve):
+        """대시보드 승인/거절 처리. 봇 제안은 바로 반영, AI(코드) 제안은 기록만 → 다음 AI 점검 때 병합/닫기"""
+        for pr in self.state.get("proposals", []):
+            if pr["id"] == pid and pr["status"] == "pending":
+                pr["status"] = "approved" if approve else "rejected"
+                pr["decidedAt"] = int(time.time() * 1000)
+                if approve:
+                    st = self.gate_stat(pr["target"]) if pr["kind"] == "gate" else self.exit_stat(pr["target"])
+                    st["mode"] = pr["to"]
+                save_state(self.state)
+                return "done", f"{pr['title']} {'승인 → 지금부터 반영' if approve else '거절 → 지금 상태 유지(기록은 계속 쌓음)'}"
+        if pid.startswith("ai-"):
+            self.state.setdefault("aiDecisions", {})[pid] = {"decision": "approve" if approve else "reject",
+                                                             "at": int(time.time() * 1000)}
+            save_state(self.state)
+            return "done", ("승인 기록 → 다음 AI 점검(3시간 이내) 때 반영" if approve else "거절 기록 → 다음 AI 점검 때 제안 닫음")
+        return "rejected", "이미 처리됐거나 없는 제안"
+
+    # ---------- 청산 판단 ----------
+    def exit_stat(self, rid):
+        st = self.state.setdefault("exitRules", {}).setdefault(rid, {})
+        st.setdefault("mode", "shadow")
+        st.setdefault("n", 0)
+        st.setdefault("sumDiff", 0.0)
+        st.setdefault("better", 0)
+        st.setdefault("hours", [])
+        st.setdefault("nextEval", EXIT_EVAL_MIN)
+        return st
+
+    def exit_check(self, mk, p, price):
+        """보유 중 청산 규칙 확인. 적용 중 규칙이 걸리면 True(이미 정리함)"""
+        marks = p.setdefault("exitMarks", {})
+        for r in EXIT_RULES:
+            if r["id"] in marks:
+                continue
+            try:
+                hit, why = r["fn"](self, p, price)
+            except Exception:
+                continue
+            if not hit:
+                continue
+            early = (price * (1 - slip_for(price)) * (1 - FEE_RATE) / p["unit"] - 1) * 100
+            marks[r["id"]] = {"at": int(time.time() * 1000), "pct": round(early, 3), "why": why}
+            st = self.exit_stat(r["id"])
+            if st["mode"] == "active":
+                ghosts = self.state.setdefault("holdGhosts", {})
+                ghosts[mk] = {"rule": r["id"], "early": early, "unit": p["unit"], "tp": p["tp"], "sl": p["sl"],
+                              "deadline": p["deadline"], "at": marks[r["id"]]["at"]}
+                log(f"[청산 판단] {mk.split('-')[1]} {r['name']} 적용 → 지금 정리 ({why}) · 계속 들고 있었다면 어땠을지 가상 추적")
+                self.exit(mk, price, r["name"])
+                return True
+            log(f"[청산 판단] {mk.split('-')[1]} {r['name']} 조건 걸림({why}) · 관찰 중 → 정리했다면 {early:+.2f}%, 실제 결과와 나중에 비교")
+        return False
+
+    def exit_record(self, rid, early, actual, at_ms):
+        r = next((x for x in EXIT_RULES if x["id"] == rid), None)
+        if not r:
+            return
+        st = self.exit_stat(rid)
+        diff = early - actual
+        st["n"] += 1
+        st["sumDiff"] += diff
+        st["better"] += diff > 0
+        hk = datetime.fromtimestamp(at_ms / 1000, KST).strftime("%m%d%H")
+        if hk not in st["hours"]:
+            st["hours"] = (st["hours"] + [hk])[-50:]
+        if st["n"] >= st["nextEval"] and len(st["hours"]) >= GATE_EVAL_EPISODES:
+            st["nextEval"] = st["n"] + GATE_RECHECK
+            avg = st["sumDiff"] / st["n"]
+            want = "active" if avg >= EXIT_MARGIN else "shadow"
+            why = f"조기 정리했다면 {st['n']}건 평균 {avg:+.2f}%p ({st['better']}건 더 나음, {len(st['hours'])}개 시간대)"
+            log(f"[청산 판정] {r['name']}: {why} → " + ("적용이 낫다고 봄" if want == "active" else "관찰 유지가 낫다고 봄"))
+            if want != st["mode"]:
+                self.propose("exit", rid, r["name"], st["mode"], want, why)
+
+    def manage_hold_ghosts(self):
+        gs = self.state.get("holdGhosts") or {}
+        if not gs:
+            return
+        prices = self.upbit.prices(list(gs.keys()))
+        for mk, g in list(gs.items()):
+            price = prices.get(mk)
+            if not price:
+                continue
+            if price >= g["tp"] or price <= g["sl"] or time.time() >= g["deadline"]:
+                held = (price * (1 - slip_for(price)) * (1 - FEE_RATE) / g["unit"] - 1) * 100
+                del gs[mk]
+                self.exit_record(g["rule"], g["early"], held, g["at"])
+                log(f"[가상 거래] {mk.split('-')[1]} 계속 들고 있었다면 {held:+.2f}% (실제 조기 정리 {g['early']:+.2f}%) → "
+                    + ("조기 정리가 나았음" if g["early"] > held else "들고 있는 게 나았음"))
+        save_state(self.state)
 
     def gate_entry(self, mk, spec, price, ctx):
         """매수 직전 관문 확인. 막으면 False(가상 거래 등록), 통과면 True (관찰 관문 기록은 ctx 에 남김)"""
@@ -1463,6 +1608,18 @@ class Bot:
                 + ("막아서 손실을 피함" if pct <= 0 else "막지 않았으면 이익이었음"))
         save_state(self.state)
 
+    def exits_view(self):
+        out = []
+        for r in EXIT_RULES:
+            st = self.exit_stat(r["id"])
+            watching = sum(1 for p in self.state["positions"].values() if r["id"] in (p.get("exitMarks") or {}))
+            out.append({"id": r["id"], "name": r["name"], "desc": r["desc"], "mode": st["mode"], "n": st["n"],
+                        "avgDiff": round(st["sumDiff"] / st["n"], 3) if st["n"] else None, "better": st["better"],
+                        "episodes": len(st["hours"]), "nextEval": st["nextEval"], "marked": watching,
+                        "ghosts": sum(1 for g in (self.state.get("holdGhosts") or {}).values() if g["rule"] == r["id"]),
+                        "pending": any(p["status"] == "pending" and p["target"] == r["id"] for p in self.state.get("proposals", []))})
+        return out
+
     def gates_view(self):
         now = getattr(self, "_gate_now", {})
         out = []
@@ -1475,7 +1632,8 @@ class Bot:
                         "blockedWins": b["wins"], "passedN": p["n"],
                         "passedAvg": round(p["sumPct"] / p["n"], 3) if p["n"] else None,
                         "episodes": len(st["hours"]), "nextEval": st["nextEval"],
-                        "ghosts": sum(1 for x in (self.state.get("ghosts") or {}).values() if g["id"] in x["gates"])})
+                        "ghosts": sum(1 for x in (self.state.get("ghosts") or {}).values() if g["id"] in x["gates"]),
+                        "pending": any(p["status"] == "pending" and p["target"] == g["id"] for p in self.state.get("proposals", []))})
         return out
 
     # ---------- 화면용 상태 ----------
@@ -1694,6 +1852,9 @@ class Bot:
                      "blocked": self.state["blocked"], "marketStats": self.state["marketStats"],
                      "ruleBook": self.rulebook_view(),
                      "marketGates": self.gates_view(),
+                     "exitRules": self.exits_view(),
+                     "proposals": self.state.get("proposals", []),
+                     "aiDecisions": self.state.get("aiDecisions", {}),
                      "explore": EXPLORE_MODE,
                      "condStats": [{"name": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3)}
                                    for k, v in self.state.get("condStats", {}).items() if v["n"]],
@@ -1776,6 +1937,8 @@ class Bot:
                     status, result = "done", "재개됨"
                 elif ctype == "close_bot_positions":
                     status, result = self.close_bot_positions()
+                elif isinstance(ctype, str) and (ctype.startswith("approve|") or ctype.startswith("reject|")):
+                    status, result = self.decide(ctype.split("|", 1)[1], ctype.startswith("approve|"))
                 else:
                     status, result = "rejected", "알 수 없는 명령"
             except UpbitError as e:
@@ -1840,6 +2003,7 @@ class Bot:
                 self.handle_commands()
                 self.manage_positions()
                 self.manage_ghosts()
+                self.manage_hold_ghosts()
                 self.gate_check()
                 if not self.error:
                     self.scan_entries()
