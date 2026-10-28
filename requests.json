@@ -1,4 +1,16 @@
 {
  "_설명": "대시보드 '요청하기'로 들어온 사용자 요청에 대한 AI 점검의 처리 상태·답변. 키는 요청 id(req-...). status: working|proposed|done|answered|declined, proposalId 는 연결된 개선안",
- "responses": {}
+ "responses": {
+  "req-vsevvfdgsewl": {
+   "status": "done",
+   "reply": "상단(요청하기·닉네임·보기 전환)이 스크롤해도 고정되고, '요약'(핵심만 박스로)과 '전체' 보기를 토글로 고를 수 있게 반영됨(090c441). 선택은 기기에 기억됨.",
+   "at": "2026-10-29T06:05:00+09:00"
+  },
+  "req-vsfblqx066qi": {
+   "status": "proposed",
+   "reply": "'오늘 성과' 아래에 손익 흐름 카드를 만듦: 누적 손익 선 + 구간별 손익 막대, 10분·1시간·3시간·1일·3일·1주 단위 전환. 승인 대기에서 승인하면 반영됨.",
+   "proposalId": "ai-20261029-pnl-chart",
+   "at": "2026-10-29T06:05:00+09:00"
+  }
+ }
 }

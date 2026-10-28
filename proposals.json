@@ -11,6 +11,18 @@
    "branch": "ai/20261029-stale-exit",
    "createdAt": "2026-10-29T03:13:00+09:00",
    "status": "pending"
+  },
+  {
+   "id": "ai-20261029-pnl-chart",
+   "title": "대시보드에 손익 흐름 그래프 추가 (10분~1주 단위)",
+   "summary": "누적 손익 선 + 구간별 손익 막대. 10분·1시간·3시간·1일·3일·1주 단위 전환, 그래프를 훑으면 구간 내용 표시.",
+   "why": "사용자 요청: 손익 흐름을 10분·시간·3시간·일·3일·주 단위로 보고 싶음",
+   "risk": "화면(index.html)만 변경, 매매 영향 없음. 고른 기간만큼 거래 기록을 한 번 더 읽음",
+   "pr": "https://github.com/btypenine/chamdom/pull/2",
+   "branch": "ai/20261029-pnl-chart",
+   "createdAt": "2026-10-29T06:05:00+09:00",
+   "status": "pending",
+   "requestId": "req-vsfblqx066qi"
   }
  ]
 }
