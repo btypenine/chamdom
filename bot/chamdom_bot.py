@@ -83,7 +83,7 @@ BT_HOLDOUT_MIN_WINRATE = 0.80    # 최근 검증 구간 최소 승률
 BT_SLIPPAGE = 0.001              # (고정값 쓸 때) 시장가 체결 미끄러짐 0.1% (매수·매도 각각)
 BT_SLIP_BASE = 0.0003            # 종목별 미끄러짐 = 0.03% + 호가 한 칸/가격 (BTC≈0.03%, 100원대 코인≈0.5~1%)
 EXPLORE_MIN_TRADES = 6           # 탐험 모드: 학습 구간 최소 거래 수
-EXPLORE_MIN_EDGE = 0.0           # 탐험 모드: 학습 구간 거래당 순익(비용 포함) 최소 %
+EXPLORE_MIN_EDGE = 0.20          # 탐험 모드: 학습 구간 거래당 순익(비용 포함) 최소 % (bt-lab 10-28: 0%→-0.09%/건, 0.2%→+0.22%/건, 거래 수 약 절반)
 EXPLORE_HOLDOUT_FLOOR = -0.10    # 탐험 모드: 검증 구간 거래당 순익이 이보다 나쁘면 탈락
 COND_LEARN_MIN = 10              # 조건별 실전 기록이 이만큼 쌓이면 무작위 전략 생성 확률에 반영
 BT_MIN_WINRATE = 0.90            # (참고용) 이전 고정 기준
@@ -426,6 +426,25 @@ class Cloud:
         self._auth()
         return self.uid
 
+    def inbox_items(self):
+        """대시보드가 남긴 요청·승인 (status/inbox 문서, 없으면 사용자 문서의 inbox 필드). 명령 컬렉션은 보안 규칙상 정해진 명령만 허용돼서 따로 둠"""
+        h = self._auth()
+        out = {}
+        for url, key in ((f"{FS_BASE}/users/{self.uid}/status/inbox", None), (f"{FS_BASE}/users/{self.uid}", "inbox")):
+            try:
+                res = requests.get(url, headers=h, timeout=10)
+                if res.status_code != 200:
+                    continue
+                fields = {k: from_fs(v) for k, v in res.json().get("fields", {}).items()}
+                if key:
+                    fields = fields.get(key) or {}
+                for k, v in fields.items():
+                    if isinstance(v, dict) and v.get("kind"):
+                        out[k] = v
+            except Exception:
+                continue
+        return out
+
     def put_status(self, data, partial=False):
         h = self._auth()
         url = f"{FS_BASE}/users/{self.uid}/status/current"
@@ -583,6 +602,58 @@ def rule_id(market, spec):
 
 
 SPEC_KEYS = ("conds", "tp", "sl", "hold")
+ENTRY_CHART_BARS = 60            # 대시보드 '진입 근거' 팝업에 보여줄 진입 직전 1분봉 수
+
+
+def _enc(vals, ref):
+    """가격 목록 → 기준가 대비 0.01% 단위 정수를 쉼표로 이은 문자열 (Firestore 용량 절약, 대시보드에서 되돌림)"""
+    return ",".join(str(round((x / ref - 1) * 10000)) for x in vals)
+
+
+def entry_snapshot(series, spec):
+    """진입 순간 근거: 조건별 실제 값 + 진입 직전 1분봉·지표선 (대시보드 팝업용, 매매에는 영향 없음)"""
+    n, c, last = series.n, series.c, series.n - 1
+    a = max(0, n - ENTRY_CHART_BARS)
+    ref = c[last]
+    reasons, lines = [], []
+    for name, p in spec["conds"]:
+        if name == "rsi_below":
+            v = rsi(c, p["n"])[last]
+            reasons.append(f"RSI({p['n']}) {v:.1f} < {p['t']} → 과매도")
+        elif name == "bb_below":
+            m, sd = sma(c, p["n"]), stdev(c, p["n"])
+            low = [m[i] - p["k"] * sd[i] for i in range(n)]
+            reasons.append(f"종가 {ref:.6g} < 볼린저 하단({p['n']}, {p['k']}σ) {low[last]:.6g}")
+            lines.append({"name": f"볼린저 하단 {p['k']}σ", "kind": "bb", "vals": _enc(low[a:], ref)})
+            lines.append({"name": f"볼린저 중심 {p['n']}", "kind": "mid", "vals": _enc(m[a:], ref)})
+        elif name in ("ema_up", "ema_cross"):
+            f, s = ema(c, p["f"]), ema(c, p["s"])
+            if name == "ema_up":
+                reasons.append(f"EMA{p['f']} {f[last]:.6g} > EMA{p['s']} {s[last]:.6g} → 상승추세")
+            else:
+                reasons.append(f"EMA{p['f']} 선이 EMA{p['s']} 선을 아래에서 위로 뚫음 (골든크로스)")
+            names = [l["name"] for l in lines]
+            if f"EMA{p['f']}" not in names:
+                lines.append({"name": f"EMA{p['f']}", "kind": "fast", "vals": _enc(f[a:], ref)})
+            if f"EMA{p['s']}" not in names:
+                lines.append({"name": f"EMA{p['s']}", "kind": "slow", "vals": _enc(s[a:], ref)})
+        elif name == "drop":
+            hi = max(c[last - p["lb"]:last])
+            reasons.append(f"최근 {p['lb']}분 고점 {hi:.6g} 대비 {(ref / hi - 1) * 100:+.2f}% (기준 -{p['p']}%) → 단기급락")
+        elif name == "breakout":
+            hi = max(series.h[last - p["lb"]:last])
+            reasons.append(f"종가 {ref:.6g} > 직전 {p['lb']}분 고가 {hi:.6g} → 고점돌파")
+            lines.append({"name": f"{p['lb']}분 고점", "kind": "level", "vals": _enc([hi] * (n - a), ref)})
+        elif name == "vol_spike":
+            avg = sma(series.v, p["n"])[last - 1]
+            reasons.append(f"거래량 평균의 {series.v[last] / avg:.1f}배 (기준 {p['m']}배) → 거래량급증" if avg else "거래량급증")
+        elif name == "green":
+            reasons.append(f"양봉 (시가 {series.o[last]:.6g} → 종가 {ref:.6g})")
+    vmax = max(series.v[a:]) or 1
+    return {"reasons": reasons, "lines": lines, "ref": ref,
+            "o": _enc(series.o[a:], ref), "h": _enc(series.h[a:], ref), "l": _enc(series.l[a:], ref), "c": _enc(c[a:], ref),
+            "v": ",".join(str(round(x / vmax * 100)) for x in series.v[a:]),
+            "endAt": int((time.time() // 60 - 1) * 60 * 1000)}   # 마지막(신호) 봉 시작 시각
 
 
 class Series:
@@ -765,6 +836,85 @@ def evaluate(series, spec):
             "edgePct": round(tr["edge"], 3), "pf": round(min(tr["pf"], 99), 2),
             "holdoutPct": round(ho["total"], 2), "holdoutTrades": ho["n"], "holdoutWinrate": round(ho["winrate"], 3),
             "holdoutEdgePct": round(ho["edge"], 3), "score": round(min(tr["edge"], ho["edge"]), 4)}
+
+
+# ======================= 시장 판단 관문 =======================
+# 종목별 전략(조건·익절·손절)과 별개로 '지금 시장 전체가 새로 사도 되는 상황인가'를 보는 층.
+# 원칙: 새 관문은 항상 '관찰'로 시작함 → 실전에서 '이 관문이 막았을 거래'와 '통과시킨 거래'의 거래당 순익을 비교
+#       → 막았을 거래가 확실히 더 나쁘면 스스로 '적용'으로 올라가고, 효과가 사라지면 '관찰'로 돌아감.
+#       적용 중에 막은 매수는 '가상 거래'로 익절·손절·시간까지 끝까지 따라가서 막은 게 맞았는지 계속 잼.
+# 새 관문 추가: gate_xxx(bot) -> (막을지 bool, 지금 상태 설명 str) 함수를 만들고 MARKET_GATES 에 한 줄 추가.
+GATE_EVAL_MIN = 20               # 판정에 필요한 '막았을 거래' 수
+GATE_EVAL_EPISODES = 3           # 그 거래들이 나온 서로 다른 시간대(1시간 단위) 수 — 급락 한 번만 보고 판단하지 않음
+GATE_PASS_MIN = 20               # 비교 대상 '통과 거래' 최소 수
+GATE_MARGIN = 0.15               # 막았을 거래가 통과 거래보다 거래당 이만큼(%p) 이상 나쁘고, 그 자체도 손실이어야 적용
+GATE_RECHECK = 20                # 이후 막았을 거래가 이만큼 더 쌓일 때마다 재판정
+BTC_DROP_MIN = 30                # BTC 급락 관문: 최근 몇 분
+BTC_DROP_PCT = -0.5              # 이 % 이하로 빠졌으면 막음
+EVENTS_URL = "https://raw.githubusercontent.com/btypenine/chamdom/main/bot/events.json"
+EVENTS_REFRESH = 30 * 60         # 일정표 다시 받는 간격(초) — 코드 재시작 없이 일정만 갱신 가능
+
+
+def gate_btc_drop(bot):
+    c = bot.btc_closes()
+    if len(c) < BTC_DROP_MIN + 1:
+        return False, "BTC 시세 확인 중"
+    chg = (c[-1] / c[-1 - BTC_DROP_MIN] - 1) * 100
+    return chg <= BTC_DROP_PCT, f"BTC {BTC_DROP_MIN}분 {chg:+.2f}% (기준 {BTC_DROP_PCT}%)"
+
+
+def gate_event(bot):
+    now = time.time()
+    nxt = None
+    for e in bot.events():
+        try:
+            at = datetime.fromisoformat(e["at"]).timestamp()
+        except Exception:
+            continue
+        lo, hi = at - float(e.get("before_h", 2)) * 3600, at + float(e.get("after_h", 2)) * 3600
+        if lo <= now <= hi:
+            return True, f"{e['name']} {datetime.fromtimestamp(at, KST).strftime('%m-%d %H:%M')} 전후 (앞 {e.get('before_h', 2)}시간·뒤 {e.get('after_h', 2)}시간)"
+        if lo > now and (nxt is None or lo < nxt[0]):
+            nxt = (lo, e, at)
+    if nxt:
+        return False, f"다음: {nxt[1]['name']} {datetime.fromtimestamp(nxt[2], KST).strftime('%m-%d %H:%M')}"
+    return False, "등록된 일정 없음"
+
+
+VOLATILE_HOURS = (23, 0, 17)     # 변동 큰 시간대(한국시간): 미국장 시작 23~00시, 유럽장 17시 (bt-lab 10-29: 평소의 1.4~1.8배)
+
+
+def gate_volatile_hours(bot):
+    h = datetime.now(KST).hour
+    return h in VOLATILE_HOURS, f"지금 {h:02d}시 · 변동 큰 시간대 {', '.join(f'{x:02d}시' for x in VOLATILE_HOURS)}"
+
+
+MARKET_GATES = [
+    {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
+    {"id": "event", "name": "경제 일정", "desc": "FOMC·미국 물가(CPI) 발표 등 정해진 일정 앞뒤로 새로 사지 않음 (일정표: bot/events.json)", "fn": gate_event},
+    {"id": "volatile_hours", "name": "변동 큰 시간대", "desc": "미국장 시작(23~00시)·유럽장 시작(17시)에는 새로 사지 않음", "fn": gate_volatile_hours},
+]
+
+# ---- 청산 판단 (보유 중) — 관문과 같은 '관찰 → 승인 → 적용' 구조 ----
+# 관찰: 조건이 걸린 순간 '지금 정리했다면 몇 %'를 기록해 두고, 실제로 끝난 결과와 비교(조기 정리가 나았는지)
+# 적용(승인 후): 그 순간 실제로 정리하고, 원래 규칙대로 들고 있었다면 어땠을지를 가상으로 끝까지 추적
+EXIT_EVAL_MIN = 20               # 판정에 필요한 표본 수
+EXIT_MARGIN = 0.15               # 조기 정리가 평균 이만큼(%p) 이상 나아야 적용 제안
+BTC_EXIT_PCT = -0.5              # 매수 후 BTC가 이만큼 빠졌고 포지션이 손실 중이면 조기 정리 대상
+
+
+def exit_btc_drop(bot, pos, price):
+    c = bot.btc_closes()
+    if not c or not pos.get("btcAtEntry"):
+        return False, ""
+    chg = (c[-1] / pos["btcAtEntry"] - 1) * 100
+    pnl = (price * (1 - FEE_RATE) / pos["unit"] - 1) * 100
+    return (chg <= BTC_EXIT_PCT and pnl < 0), f"매수 후 BTC {chg:+.2f}% · 포지션 {pnl:+.2f}%"
+
+
+EXIT_RULES = [
+    {"id": "btc_exit", "name": "보유 중 BTC 하락 정리", "desc": f"들고 있는 동안 BTC가 {BTC_EXIT_PCT}% 이상 빠지고 손실 중이면 일찍 정리", "fn": exit_btc_drop},
+]
 
 
 # ======================= 봇 =======================
@@ -1127,6 +1277,12 @@ class Bot:
         self.learn(market, pnl, reason)
         self.cond_record(pos, pnl)
         self.rule_record(pos, pnl)
+        actual_pct = pnl / pos["cost"] * 100
+        for rid, mk_ in (pos.get("exitMarks") or {}).items():
+            if self.exit_stat(rid)["mode"] != "active" or reason != next((r["name"] for r in EXIT_RULES if r["id"] == rid), ""):
+                self.exit_record(rid, mk_["pct"], actual_pct, mk_["at"])   # 관찰: 그때 정리했다면 vs 실제
+        if "gateHits" in pos:                             # 관문 기능 이후 산 거래만 관문 성적에 반영
+            self.gate_record(pos["gateHits"], pnl / pos["cost"] * 100, pos["at"])
         analysis = None
         if pnl <= 0:
             analysis = self.post_mortem(market, pos, price, reason, pnl)
@@ -1192,6 +1348,8 @@ class Bot:
                 continue
             p["maxP"] = max(p.get("maxP", price), price)
             p["minP"] = min(p.get("minP", price), price)
+            if price < p["tp"] and price > p["sl"] and self.exit_check(mk, p, price):
+                continue
             if price >= p["tp"]:
                 self.exit(mk, price, "익절")
             elif price <= p["sl"]:
@@ -1228,11 +1386,274 @@ class Bot:
             if series.signal(spec)[-1]:
                 price = self.upbit.prices([mk]).get(mk)
                 if price:
-                    self.enter(mk, spec, price, {"signalPrice": series.c[-1], "entryVol": round(avg_range_pct(series), 4)})
+                    ctx = {"signalPrice": series.c[-1], "entryVol": round(avg_range_pct(series), 4)}
+                    try:
+                        ctx["entryInfo"] = entry_snapshot(series, spec)
+                    except Exception as e:                # 팝업용 기록 실패가 매수를 막으면 안 됨
+                        log(f"[경고] {mk} 진입 근거 기록 실패: {e}")
+                    if not self.gate_entry(mk, spec, price, ctx):
+                        continue
+                    self.enter(mk, spec, price, ctx)
                     ok, _ = self.can_enter()
                     if not ok:
                         break
         save_state(self.state)
+
+    # ---------- 시장 판단 관문 ----------
+    def btc_closes(self):
+        now_min = int(time.time() // 60)
+        if getattr(self, "_btc_min", None) != now_min:
+            try:
+                self._btc_c = [c["trade_price"] for c in self.upbit.minute_candles("KRW-BTC", BTC_DROP_MIN + 3)[:-1]]
+                self._btc_min = now_min
+            except Exception:
+                return getattr(self, "_btc_c", [])
+        return self._btc_c
+
+    def events(self):
+        if time.time() - getattr(self, "_events_at", 0) >= EVENTS_REFRESH:
+            self._events_at = time.time()
+            try:
+                res = requests.get(EVENTS_URL, params={"t": int(time.time())}, timeout=10)
+                if res.status_code == 200:
+                    ev = res.json().get("events", [])
+                    if isinstance(ev, list):
+                        self.state["eventsCache"] = ev
+            except Exception:
+                pass
+        return self.state.get("eventsCache", [])
+
+    def gate_stat(self, gid):
+        g = self.state.setdefault("marketGates", {}).setdefault(gid, {})
+        g.setdefault("mode", "shadow")
+        g.setdefault("blocked", {"n": 0, "wins": 0, "sumPct": 0.0})
+        g.setdefault("passed", {"n": 0, "wins": 0, "sumPct": 0.0})
+        g.setdefault("hours", [])
+        g.setdefault("nextEval", GATE_EVAL_MIN)
+        return g
+
+    def gate_check(self):
+        """1분에 한 번 모든 관문을 평가 → {gid: (막을지, 설명)}"""
+        now_min = int(time.time() // 60)
+        if getattr(self, "_gate_min", None) == now_min:
+            return self._gate_now
+        out = {}
+        for g in MARKET_GATES:
+            try:
+                out[g["id"]] = g["fn"](self)
+            except Exception as e:
+                out[g["id"]] = (False, f"확인 실패: {e}")
+            prev = getattr(self, "_gate_now", {}).get(g["id"], (False, ""))[0]
+            if out[g["id"]][0] != prev:
+                st = self.gate_stat(g["id"])
+                how = "적용 중 → 새 매수 보류(가상 거래로 추적)" if st["mode"] == "active" else "관찰 중 → 매수는 하되 '막았을 거래'로 표시"
+                log(f"[시장 판단] {g['name']} {'감지' if out[g['id']][0] else '해제'}: {out[g['id']][1]}" + (f" · {how}" if out[g["id"]][0] else ""))
+        self._gate_min, self._gate_now = now_min, out
+        return out
+
+    def gate_record(self, gids, pct, at_ms):
+        """거래 결과를 관문 성적에 반영. gids = 이 거래를 막았을(막은) 관문들"""
+        for g in MARKET_GATES:
+            st = self.gate_stat(g["id"])
+            side = st["blocked"] if g["id"] in gids else st["passed"]
+            side["n"] += 1
+            side["sumPct"] += pct
+            side["wins"] += pct > 0
+            if g["id"] in gids:
+                hk = datetime.fromtimestamp(at_ms / 1000, KST).strftime("%m%d%H")
+                if hk not in st["hours"]:
+                    st["hours"] = (st["hours"] + [hk])[-50:]
+                if st["blocked"]["n"] >= st["nextEval"]:
+                    self.gate_judge(g, st)
+
+    def gate_judge(self, g, st):
+        b, p = st["blocked"], st["passed"]
+        if len(st["hours"]) < GATE_EVAL_EPISODES or p["n"] < GATE_PASS_MIN:
+            return                                         # 아직 판단 근거 부족 → 다음 거래에서 다시 봄
+        st["nextEval"] = b["n"] + GATE_RECHECK
+        ba, pa = b["sumPct"] / b["n"], p["sumPct"] / p["n"]
+        want = "active" if (ba < 0 and ba <= pa - GATE_MARGIN) else "shadow"
+        why = (f"막았을 거래 {b['n']}건 거래당 {ba:+.2f}% vs 통과 거래 {p['n']}건 {pa:+.2f}% ({len(st['hours'])}개 시간대)")
+        st.setdefault("history", []).append({"at": int(time.time() * 1000), "want": want, "blockedAvg": round(ba, 3),
+                                             "passedAvg": round(pa, 3), "n": b["n"]})
+        st["history"] = st["history"][-10:]
+        log(f"[관문 판정] {g['name']}: {why} → " + ("적용이 낫다고 봄" if want == "active" else "관찰 유지가 낫다고 봄"))
+        if want != st["mode"]:
+            self.propose("gate", g["id"], g["name"], st["mode"], want, why)
+
+    # ---------- 승인 요청 (봇이 스스로 바꾸고 싶은 것) ----------
+    def propose(self, kind, target, name, cur, want, why):
+        props = self.state.setdefault("proposals", [])
+        for pr in props:
+            if pr["status"] == "pending" and pr["kind"] == kind and pr["target"] == target:
+                pr.update({"to": want, "why": why, "at": int(time.time() * 1000)})      # 같은 대상은 최신 근거로 갱신
+                break
+        else:
+            pid = f"bot-{kind}-{target}-{int(time.time())}"
+            verb = {"active": "적용", "shadow": "관찰로 되돌림"}[want]
+            props.append({"id": pid, "kind": kind, "target": target, "title": f"{name} → {verb}", "from": cur, "to": want,
+                          "why": why, "at": int(time.time() * 1000), "status": "pending"})
+            log(f"[승인 요청] {name} → {verb} · 근거: {why} · 대시보드 '승인 대기'에서 승인/거절")
+        self.state["proposals"] = [p for p in props if p["status"] == "pending"] + \
+            [p for p in props if p["status"] != "pending"][-10:]
+        save_state(self.state)
+
+    def decide(self, pid, approve):
+        """대시보드 승인/거절 처리. 봇 제안은 바로 반영, AI(코드) 제안은 기록만 → 다음 AI 점검 때 병합/닫기"""
+        for pr in self.state.get("proposals", []):
+            if pr["id"] == pid and pr["status"] == "pending":
+                pr["status"] = "approved" if approve else "rejected"
+                pr["decidedAt"] = int(time.time() * 1000)
+                if approve:
+                    st = self.gate_stat(pr["target"]) if pr["kind"] == "gate" else self.exit_stat(pr["target"])
+                    st["mode"] = pr["to"]
+                save_state(self.state)
+                return "done", f"{pr['title']} {'승인 → 지금부터 반영' if approve else '거절 → 지금 상태 유지(기록은 계속 쌓음)'}"
+        if pid.startswith("ai-"):
+            self.state.setdefault("aiDecisions", {})[pid] = {"decision": "approve" if approve else "reject",
+                                                             "at": int(time.time() * 1000)}
+            save_state(self.state)
+            return "done", ("승인 기록 → 다음 AI 점검(3시간 이내) 때 반영" if approve else "거절 기록 → 다음 AI 점검 때 제안 닫음")
+        return "rejected", "이미 처리됐거나 없는 제안"
+
+    # ---------- 청산 판단 ----------
+    def exit_stat(self, rid):
+        st = self.state.setdefault("exitRules", {}).setdefault(rid, {})
+        st.setdefault("mode", "shadow")
+        st.setdefault("n", 0)
+        st.setdefault("sumDiff", 0.0)
+        st.setdefault("better", 0)
+        st.setdefault("hours", [])
+        st.setdefault("nextEval", EXIT_EVAL_MIN)
+        return st
+
+    def exit_check(self, mk, p, price):
+        """보유 중 청산 규칙 확인. 적용 중 규칙이 걸리면 True(이미 정리함)"""
+        marks = p.setdefault("exitMarks", {})
+        for r in EXIT_RULES:
+            if r["id"] in marks:
+                continue
+            try:
+                hit, why = r["fn"](self, p, price)
+            except Exception:
+                continue
+            if not hit:
+                continue
+            early = (price * (1 - slip_for(price)) * (1 - FEE_RATE) / p["unit"] - 1) * 100
+            marks[r["id"]] = {"at": int(time.time() * 1000), "pct": round(early, 3), "why": why}
+            st = self.exit_stat(r["id"])
+            if st["mode"] == "active":
+                ghosts = self.state.setdefault("holdGhosts", {})
+                ghosts[mk] = {"rule": r["id"], "early": early, "unit": p["unit"], "tp": p["tp"], "sl": p["sl"],
+                              "deadline": p["deadline"], "at": marks[r["id"]]["at"]}
+                log(f"[청산 판단] {mk.split('-')[1]} {r['name']} 적용 → 지금 정리 ({why}) · 계속 들고 있었다면 어땠을지 가상 추적")
+                self.exit(mk, price, r["name"])
+                return True
+            log(f"[청산 판단] {mk.split('-')[1]} {r['name']} 조건 걸림({why}) · 관찰 중 → 정리했다면 {early:+.2f}%, 실제 결과와 나중에 비교")
+        return False
+
+    def exit_record(self, rid, early, actual, at_ms):
+        r = next((x for x in EXIT_RULES if x["id"] == rid), None)
+        if not r:
+            return
+        st = self.exit_stat(rid)
+        diff = early - actual
+        st["n"] += 1
+        st["sumDiff"] += diff
+        st["better"] += diff > 0
+        hk = datetime.fromtimestamp(at_ms / 1000, KST).strftime("%m%d%H")
+        if hk not in st["hours"]:
+            st["hours"] = (st["hours"] + [hk])[-50:]
+        if st["n"] >= st["nextEval"] and len(st["hours"]) >= GATE_EVAL_EPISODES:
+            st["nextEval"] = st["n"] + GATE_RECHECK
+            avg = st["sumDiff"] / st["n"]
+            want = "active" if avg >= EXIT_MARGIN else "shadow"
+            why = f"조기 정리했다면 {st['n']}건 평균 {avg:+.2f}%p ({st['better']}건 더 나음, {len(st['hours'])}개 시간대)"
+            log(f"[청산 판정] {r['name']}: {why} → " + ("적용이 낫다고 봄" if want == "active" else "관찰 유지가 낫다고 봄"))
+            if want != st["mode"]:
+                self.propose("exit", rid, r["name"], st["mode"], want, why)
+
+    def manage_hold_ghosts(self):
+        gs = self.state.get("holdGhosts") or {}
+        if not gs:
+            return
+        prices = self.upbit.prices(list(gs.keys()))
+        for mk, g in list(gs.items()):
+            price = prices.get(mk)
+            if not price:
+                continue
+            if price >= g["tp"] or price <= g["sl"] or time.time() >= g["deadline"]:
+                held = (price * (1 - slip_for(price)) * (1 - FEE_RATE) / g["unit"] - 1) * 100
+                del gs[mk]
+                self.exit_record(g["rule"], g["early"], held, g["at"])
+                log(f"[가상 거래] {mk.split('-')[1]} 계속 들고 있었다면 {held:+.2f}% (실제 조기 정리 {g['early']:+.2f}%) → "
+                    + ("조기 정리가 나았음" if g["early"] > held else "들고 있는 게 나았음"))
+        save_state(self.state)
+
+    def gate_entry(self, mk, spec, price, ctx):
+        """매수 직전 관문 확인. 막으면 False(가상 거래 등록), 통과면 True (관찰 관문 기록은 ctx 에 남김)"""
+        now = self.gate_check()
+        hits = [gid for gid, (blk, _) in now.items() if blk]
+        active = [gid for gid in hits if self.gate_stat(gid)["mode"] == "active"]
+        if active:
+            ghosts = self.state.setdefault("ghosts", {})
+            if mk not in ghosts:
+                unit = price * (1 + slip_for(price)) * (1 + FEE_RATE)
+                ghosts[mk] = {"gates": hits, "unit": unit, "tp": target_price(unit, spec.get("tp", TARGET_NET_PCT)),
+                              "sl": unit * (1 + spec["sl"] / 100), "deadline": int(time.time()) + spec["hold"] * 60,
+                              "at": int(time.time() * 1000), "strategy": describe(spec)}
+                names = ", ".join(g["name"] for g in MARKET_GATES if g["id"] in active)
+                log(f"[시장 판단] {mk.split('-')[1]} 매수 신호 → {names} 관문 적용 중이라 보류 (가상 거래로 결과 추적)")
+            return False
+        ctx["gateHits"] = hits                             # 관찰 중 관문이 막았을 거래인지 표시
+        return True
+
+    def manage_ghosts(self):
+        ghosts = self.state.get("ghosts") or {}
+        if not ghosts:
+            return
+        prices = self.upbit.prices(list(ghosts.keys()))
+        for mk, g in list(ghosts.items()):
+            price = prices.get(mk)
+            if not price:
+                continue
+            reason = "익절" if price >= g["tp"] else "손절" if price <= g["sl"] else "보유시간 초과" if time.time() >= g["deadline"] else None
+            if not reason:
+                continue
+            pct = (price * (1 - slip_for(price)) * (1 - FEE_RATE) / g["unit"] - 1) * 100
+            del ghosts[mk]
+            self.gate_record(g["gates"], pct, g["at"])
+            log(f"[가상 거래] {mk.split('-')[1]} {pct:+.2f}% ({reason}) · 관문이 막은 매수의 결과 → "
+                + ("막아서 손실을 피함" if pct <= 0 else "막지 않았으면 이익이었음"))
+        save_state(self.state)
+
+    def exits_view(self):
+        out = []
+        for r in EXIT_RULES:
+            st = self.exit_stat(r["id"])
+            watching = sum(1 for p in self.state["positions"].values() if r["id"] in (p.get("exitMarks") or {}))
+            out.append({"id": r["id"], "name": r["name"], "desc": r["desc"], "mode": st["mode"], "n": st["n"],
+                        "avgDiff": round(st["sumDiff"] / st["n"], 3) if st["n"] else None, "better": st["better"],
+                        "episodes": len(st["hours"]), "nextEval": st["nextEval"], "marked": watching,
+                        "ghosts": sum(1 for g in (self.state.get("holdGhosts") or {}).values() if g["rule"] == r["id"]),
+                        "pending": any(p["status"] == "pending" and p["target"] == r["id"] for p in self.state.get("proposals", []))})
+        return out
+
+    def gates_view(self):
+        now = getattr(self, "_gate_now", {})
+        out = []
+        for g in MARKET_GATES:
+            st = self.gate_stat(g["id"])
+            b, p = st["blocked"], st["passed"]
+            blk, reading = now.get(g["id"], (False, "확인 전"))
+            out.append({"id": g["id"], "name": g["name"], "desc": g["desc"], "mode": st["mode"], "now": blk, "reading": reading,
+                        "blockedN": b["n"], "blockedAvg": round(b["sumPct"] / b["n"], 3) if b["n"] else None,
+                        "blockedWins": b["wins"], "passedN": p["n"],
+                        "passedAvg": round(p["sumPct"] / p["n"], 3) if p["n"] else None,
+                        "episodes": len(st["hours"]), "nextEval": st["nextEval"],
+                        "ghosts": sum(1 for x in (self.state.get("ghosts") or {}).values() if g["id"] in x["gates"]),
+                        "pending": any(p["status"] == "pending" and p["target"] == g["id"] for p in self.state.get("proposals", []))})
+        return out
 
     # ---------- 화면용 상태 ----------
     def snapshot(self):
@@ -1279,6 +1700,13 @@ class Bot:
         except Exception:
             pass
 
+    def rule_brief(self, rid):
+        rb = self.state["ruleBook"].get(rid) if rid else None
+        if not rb:
+            return None
+        return {"status": rb["status"], "trades": rb["trades"], "wins": rb["wins"],
+                "avgPct": round(rb["sumPct"] / rb["trades"], 3) if rb["trades"] else None}
+
     def positions_detail(self):
         pos = self.state["positions"]
         if not pos:
@@ -1293,6 +1721,8 @@ class Bot:
             out.append({"market": mk, "coin": mk.split("-")[1], "cost": round(p["cost"]), "unit": p["unit"],
                         "tp": p["tp"], "sl": p["sl"], "price": price, "at": p["at"],
                         "deadline": p["deadline"] * 1000, "strategy": p.get("strategy", ""),
+                        "signalPrice": p.get("signalPrice"), "btWinrate": p.get("btWinrate"), "btEdge": p.get("btEdge"),
+                        "rid": p.get("rid"), "rule": self.rule_brief(p.get("rid")), "entryInfo": p.get("entryInfo"),
                         "pnlPct": round((price * (1 - FEE_RATE) / p["unit"] - 1) * 100, 2) if price else None})
         return out
 
@@ -1440,6 +1870,11 @@ class Bot:
                      "universe": self.state["universe"]["markets"],
                      "blocked": self.state["blocked"], "marketStats": self.state["marketStats"],
                      "ruleBook": self.rulebook_view(),
+                     "marketGates": self.gates_view(),
+                     "exitRules": self.exits_view(),
+                     "proposals": self.state.get("proposals", []),
+                     "aiDecisions": self.state.get("aiDecisions", {}),
+                     "userRequests": self.state.get("userRequests", [])[-20:],
                      "explore": EXPLORE_MODE,
                      "condStats": [{"name": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3)}
                                    for k, v in self.state.get("condStats", {}).items() if v["n"]],
@@ -1501,6 +1936,32 @@ class Bot:
             done.append(mk.split("-")[1])
         return "done", "매도: " + ", ".join(done) + " · 봇은 일시정지됨"
 
+    def handle_inbox(self):
+        if time.time() - getattr(self, "_inbox_at", 0) < 20:
+            return
+        self._inbox_at = time.time()
+        seen = self.state.setdefault("inboxSeen", [])
+        changed = False
+        for iid, it in sorted(self.cloud.inbox_items().items(), key=lambda x: x[1].get("at") or 0):
+            if iid in seen:
+                continue
+            seen.append(iid)
+            changed = True
+            kind = it.get("kind")
+            if kind == "request":
+                reqs = self.state.setdefault("userRequests", [])
+                reqs.append({"id": "req-" + iid[-12:], "text": str(it.get("text", ""))[:600],
+                             "at": int(it.get("at") or time.time() * 1000)})
+                del reqs[:-30]
+                log(f"요청 접수: {str(it.get('text', ''))[:60]} → 다음 AI 점검에서 검토")
+            elif kind in ("approve", "reject") and it.get("target"):
+                st, msg = self.decide(str(it["target"]), kind == "approve")
+                log(f"{'승인' if kind == 'approve' else '거절'} 처리: {msg}")
+        if changed:
+            del seen[:-300]
+            save_state(self.state)
+            self.upload_status()
+
     def handle_commands(self):
         for c in self.cloud.pending_commands():
             ctype, created, age = c.get("type"), c.get("createdAt"), None
@@ -1510,7 +1971,16 @@ class Bot:
                 except ValueError:
                     pass
             try:
-                if age is not None and age > COMMAND_MAX_AGE:
+                if isinstance(ctype, str) and ctype.startswith("request|"):
+                    # 사용자 요청은 늦게 받아도 버리지 않음 → 장부에 남기면 AI 점검이 읽어 처리
+                    reqs = self.state.setdefault("userRequests", [])
+                    rid = "req-" + c["_name"].rsplit("/", 1)[-1][:12]
+                    if not any(r["id"] == rid for r in reqs):
+                        reqs.append({"id": rid, "text": ctype.split("|", 1)[1][:600], "at": int(time.time() * 1000)})
+                        del reqs[:-30]
+                    save_state(self.state)
+                    status, result = "done", "요청 접수 → 다음 AI 점검(3시간 이내)에서 검토"
+                elif age is not None and age > COMMAND_MAX_AGE:
                     status, result = "rejected", "10분이 지난 명령이라 실행하지 않았습니다"
                 elif ctype == "pause":
                     self.state["paused"] = True
@@ -1522,6 +1992,8 @@ class Bot:
                     status, result = "done", "재개됨"
                 elif ctype == "close_bot_positions":
                     status, result = self.close_bot_positions()
+                elif isinstance(ctype, str) and (ctype.startswith("approve|") or ctype.startswith("reject|")):
+                    status, result = self.decide(ctype.split("|", 1)[1], ctype.startswith("approve|"))
                 else:
                     status, result = "rejected", "알 수 없는 명령"
             except UpbitError as e:
@@ -1584,7 +2056,14 @@ class Bot:
                     save_state(self.state)
                     self.upload_status()
                 self.handle_commands()
+                try:
+                    self.handle_inbox()
+                except Exception as e:
+                    log(f"[경고] 요청함 확인 실패: {e}")
                 self.manage_positions()
+                self.manage_ghosts()
+                self.manage_hold_ghosts()
+                self.gate_check()
                 if not self.error:
                     self.scan_entries()
                 if time.time() - self.last_status >= STATUS_EVERY:
