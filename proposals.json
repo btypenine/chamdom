@@ -10,7 +10,7 @@
    "pr": "https://github.com/btypenine/chamdom/pull/1",
    "branch": "ai/20261029-stale-exit",
    "createdAt": "2026-10-29T03:13:00+09:00",
-   "status": "pending"
+   "status": "merged"
   },
   {
    "id": "ai-20261029-pnl-chart",
@@ -21,7 +21,7 @@
    "pr": "https://github.com/btypenine/chamdom/pull/2",
    "branch": "ai/20261029-pnl-chart",
    "createdAt": "2026-10-29T06:05:00+09:00",
-   "status": "pending",
+   "status": "merged",
    "requestId": "req-vsfblqx066qi"
   }
  ]
