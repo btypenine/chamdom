@@ -55,7 +55,9 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 750; font-size: 18px; letter-spacing: -0.01em; }
 .mark { width: 28px; height: 28px; border-radius: 8px; background: var(--brand); display: grid; place-items: center; }
 .mark svg { width: 18px; height: 18px; fill: var(--brand-ink); }
-.who { font-size: 13px; color: var(--muted); text-align: right; min-width: 0; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: none; border: 1px dashed transparent; border-radius: 8px; padding: 4px 8px; min-height: 0; font-weight: 600; }
+.hdr-r { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.req-btn { min-height: 34px; padding: 6px 12px; font-size: 13px; border-radius: 99px; background: var(--brand); color: var(--brand-ink); border-color: var(--brand); white-space: nowrap; flex: none; }
+.who { font-size: 13px; color: var(--muted); text-align: right; min-width: 0; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: none; border: 1px dashed transparent; border-radius: 8px; padding: 4px 8px; min-height: 0; font-weight: 600; }
 .who:hover { border-color: var(--line); }
 .who::after { content: " ✎"; font-size: 11px; opacity: .6; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
@@ -207,7 +209,10 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
       <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12c3-5 9-7 14-4l4-3v14l-4-3c-5 3-11 1-14-4zm13-1.2a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4z"/></svg></span>
       참돔 트레이드
     </div>
-    <button type="button" class="who" id="who" hidden aria-label="닉네임 바꾸기" title="눌러서 닉네임 바꾸기"></button>
+    <div class="hdr-r">
+      <button type="button" class="req-btn" id="reqOpen" hidden>요청하기</button>
+      <button type="button" class="who" id="who" hidden aria-label="닉네임 바꾸기" title="눌러서 닉네임 바꾸기"></button>
+    </div>
   </header>
 
   <!-- 로그인 전 -->
@@ -235,14 +240,6 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
       <div class="head-row"><h2>승인 대기</h2><span class="pri high" id="apprCount"></span></div>
       <div class="sub">봇과 AI가 스스로 찾은 개선안임. 근거를 보고 승인하면 반영되고, 거절하면 지금 상태를 유지함. (두 번 눌러 실행)</div>
       <div class="list" id="apprList"></div>
-    </section>
-
-    <section class="card" id="reqCard">
-      <h2>요청하기</h2>
-      <div class="sub">바꾸고 싶은 점이나 새 기능을 적어 보내면, AI 점검(3시간마다)이 검토해 개선안으로 만들어 '승인 대기'에 올리거나 답을 남김. 돈·안전 설정은 직접 바꾸지 않고 제안만 함.</div>
-      <textarea class="inp" id="reqText" rows="3" maxlength="600" placeholder="예) 보유 종목 카드에 매수 후 경과 시간을 크게 보여줘"></textarea>
-      <div class="head-row"><span class="sub" id="reqCount">0/600</span><button type="button" class="btn-primary" id="reqSend">보내기</button></div>
-      <div class="list" id="reqList"></div>
     </section>
 
     <section class="card" id="perfCard" hidden>
@@ -347,6 +344,16 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
     </footer>
   </div>
 </div>
+<dialog class="sheet" id="reqSheet" aria-labelledby="reqTitle">
+  <div class="sheet-in">
+    <div class="sheet-head"><h3 id="reqTitle">요청하기</h3><button class="btn-text" type="button" id="reqClose">닫기</button></div>
+    <div class="sub">바꾸고 싶은 점이나 새 기능을 적어 보내면 AI 점검이 검토해 개선안으로 만들어 '승인 대기'에 올리거나 답을 남김. 돈·안전 설정은 제안만 함.</div>
+    <textarea class="inp" id="reqText" rows="5" maxlength="600" placeholder="예) 보유 종목 카드에 매수 후 경과 시간을 크게 보여줘"></textarea>
+    <div class="head-row"><span class="sub" id="reqCount">0/600</span><button type="button" class="btn-primary" id="reqSend">보내기</button></div>
+    <div class="label">보낸 요청</div>
+    <div class="list" id="reqList"><div class="empty">아직 보낸 요청이 없음</div></div>
+  </div>
+</dialog>
 <dialog class="sheet" id="nickSheet" aria-labelledby="nickTitle">
   <form class="sheet-in" method="dialog" id="nickForm">
     <div class="sheet-head"><h3 id="nickTitle">닉네임 바꾸기</h3><button class="btn-text" type="button" id="nickClose">닫기</button></div>
@@ -437,7 +444,7 @@ onAuthStateChanged(auth, async (user) => {
   unsubs.forEach((u) => u()); unsubs = [];
   $("loginView").hidden = !!user;
   $("appView").hidden = !user;
-  $("who").hidden = !user;
+  $("who").hidden = !user; $("reqOpen").hidden = !user;
   $("who").textContent = user ? nickOf(user) : "";
   $("codeArea").hidden = true; $("codeText").value = "";
   if (!user) return;
@@ -591,6 +598,7 @@ function renderRequests() {
   const s = lastStatus || {};
   const list = (s.userRequests || []).slice().reverse();
   const box = $("reqList"); box.textContent = "";
+  if (!list.length) box.innerHTML = '<div class="empty">아직 보낸 요청이 없음</div>';
   for (const r of list.slice(0, 8)) {
     const rep = aiReplies[r.id] || {};
     const [label, cls] = REQ_ST[rep.status || "new"] || REQ_ST.new;
@@ -603,6 +611,9 @@ function renderRequests() {
     box.append(el);
   }
 }
+$("reqOpen").addEventListener("click", () => { renderRequests(); $("reqSheet").showModal(); setTimeout(() => $("reqText").focus(), 50); });
+$("reqClose").addEventListener("click", () => $("reqSheet").close());
+$("reqSheet").addEventListener("click", (e) => { if (e.target === $("reqSheet")) $("reqSheet").close(); });
 $("reqText").addEventListener("input", () => { $("reqCount").textContent = $("reqText").value.length + "/600"; });
 $("reqSend").addEventListener("click", async () => {
   const text = $("reqText").value.trim().replace(/\s+/g, " ").slice(0, 600);
