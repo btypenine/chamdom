@@ -1855,6 +1855,7 @@ class Bot:
                      "exitRules": self.exits_view(),
                      "proposals": self.state.get("proposals", []),
                      "aiDecisions": self.state.get("aiDecisions", {}),
+                     "userRequests": self.state.get("userRequests", [])[-20:],
                      "explore": EXPLORE_MODE,
                      "condStats": [{"name": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3)}
                                    for k, v in self.state.get("condStats", {}).items() if v["n"]],
@@ -1925,7 +1926,16 @@ class Bot:
                 except ValueError:
                     pass
             try:
-                if age is not None and age > COMMAND_MAX_AGE:
+                if isinstance(ctype, str) and ctype.startswith("request|"):
+                    # 사용자 요청은 늦게 받아도 버리지 않음 → 장부에 남기면 AI 점검이 읽어 처리
+                    reqs = self.state.setdefault("userRequests", [])
+                    rid = "req-" + c["_name"].rsplit("/", 1)[-1][:12]
+                    if not any(r["id"] == rid for r in reqs):
+                        reqs.append({"id": rid, "text": ctype.split("|", 1)[1][:600], "at": int(time.time() * 1000)})
+                        del reqs[:-30]
+                    save_state(self.state)
+                    status, result = "done", "요청 접수 → 다음 AI 점검(3시간 이내)에서 검토"
+                elif age is not None and age > COMMAND_MAX_AGE:
                     status, result = "rejected", "10분이 지난 명령이라 실행하지 않았습니다"
                 elif ctype == "pause":
                     self.state["paused"] = True

@@ -1,0 +1,4 @@
+{
+ "_설명": "대시보드 '요청하기'로 들어온 사용자 요청에 대한 AI 점검의 처리 상태·답변. 키는 요청 id(req-...). status: working|proposed|done|answered|declined, proposalId 는 연결된 개선안",
+ "responses": {}
+}

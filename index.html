@@ -55,7 +55,9 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 750; font-size: 18px; letter-spacing: -0.01em; }
 .mark { width: 28px; height: 28px; border-radius: 8px; background: var(--brand); display: grid; place-items: center; }
 .mark svg { width: 18px; height: 18px; fill: var(--brand-ink); }
-.who { font-size: 13px; color: var(--muted); text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who { font-size: 13px; color: var(--muted); text-align: right; min-width: 0; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: none; border: 1px dashed transparent; border-radius: 8px; padding: 4px 8px; min-height: 0; font-weight: 600; }
+.who:hover { border-color: var(--line); }
+.who::after { content: " ✎"; font-size: 11px; opacity: .6; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 .label { font-size: 12px; color: var(--muted); letter-spacing: 0.02em; }
 h2 { font-size: 15px; margin: 0; font-weight: 700; }
@@ -190,6 +192,11 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
 .appr .ok.armed { background: var(--ok); color: #fff; border-color: var(--ok); }
 .appr .no.armed { background: var(--stop); color: #fff; border-color: var(--stop); }
 .appr a { color: var(--brand); }
+.inp { width: 100%; font: inherit; font-size: 15px; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; resize: vertical; }
+.inp:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+.req-st { align-self: start; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
+.req-st.done { background: var(--ok); color: #fff; } .req-st.prop { background: var(--warn); color: #fff; }
+.req-reply { font-size: 12px; background: var(--chip); border-radius: 6px; padding: 6px 8px; grid-column: 1 / -1; }
 @media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
 </style>
 </head>
@@ -200,7 +207,7 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
       <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12c3-5 9-7 14-4l4-3v14l-4-3c-5 3-11 1-14-4zm13-1.2a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4z"/></svg></span>
       참돔 트레이드
     </div>
-    <div class="who" id="who"></div>
+    <button type="button" class="who" id="who" hidden aria-label="닉네임 바꾸기" title="눌러서 닉네임 바꾸기"></button>
   </header>
 
   <!-- 로그인 전 -->
@@ -228,6 +235,14 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
       <div class="head-row"><h2>승인 대기</h2><span class="pri high" id="apprCount"></span></div>
       <div class="sub">봇과 AI가 스스로 찾은 개선안임. 근거를 보고 승인하면 반영되고, 거절하면 지금 상태를 유지함. (두 번 눌러 실행)</div>
       <div class="list" id="apprList"></div>
+    </section>
+
+    <section class="card" id="reqCard">
+      <h2>요청하기</h2>
+      <div class="sub">바꾸고 싶은 점이나 새 기능을 적어 보내면, AI 점검(3시간마다)이 검토해 개선안으로 만들어 '승인 대기'에 올리거나 답을 남김. 돈·안전 설정은 직접 바꾸지 않고 제안만 함.</div>
+      <textarea class="inp" id="reqText" rows="3" maxlength="600" placeholder="예) 보유 종목 카드에 매수 후 경과 시간을 크게 보여줘"></textarea>
+      <div class="head-row"><span class="sub" id="reqCount">0/600</span><button type="button" class="btn-primary" id="reqSend">보내기</button></div>
+      <div class="list" id="reqList"></div>
     </section>
 
     <section class="card" id="perfCard" hidden>
@@ -332,6 +347,14 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
     </footer>
   </div>
 </div>
+<dialog class="sheet" id="nickSheet" aria-labelledby="nickTitle">
+  <form class="sheet-in" method="dialog" id="nickForm">
+    <div class="sheet-head"><h3 id="nickTitle">닉네임 바꾸기</h3><button class="btn-text" type="button" id="nickClose">닫기</button></div>
+    <label class="label" for="nickInput">화면 오른쪽 위에 보일 이름 (구글 계정 이름은 바뀌지 않음)</label>
+    <input id="nickInput" class="inp" maxlength="20" autocomplete="nickname" required>
+    <div class="ctrl"><button type="button" id="nickReset">구글 이름으로</button><button type="submit" class="btn-primary">저장</button></div>
+  </form>
+</dialog>
 <dialog class="sheet" id="posSheet" aria-labelledby="sheetTitle">
   <div class="sheet-in">
     <div class="sheet-head"><div><h3 id="sheetTitle"></h3><div class="sub" id="sheetSub"></div></div>
@@ -346,7 +369,7 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut }
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut, updateProfile }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, serverTimestamp, query, orderBy, limit }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
@@ -414,12 +437,13 @@ onAuthStateChanged(auth, async (user) => {
   unsubs.forEach((u) => u()); unsubs = [];
   $("loginView").hidden = !!user;
   $("appView").hidden = !user;
-  $("who").textContent = user ? (user.displayName || user.email || "") : "";
+  $("who").hidden = !user;
+  $("who").textContent = user ? nickOf(user) : "";
   $("codeArea").hidden = true; $("codeText").value = "";
   if (!user) return;
 
   // 계정 기본 정보 기록
-  try { await setDoc(doc(db, "users", user.uid), { name: user.displayName || "", lastLogin: serverTimestamp() }, { merge: true }); }
+  try { await setDoc(doc(db, "users", user.uid), { name: nickOf(user), lastLogin: serverTimestamp() }, { merge: true }); }
   catch (e) { toast("계정 정보 저장 실패: " + (e.code || e.message)); }
 
   unsubs.push(onSnapshot(doc(db, "users", user.uid, "status", "current"),
@@ -530,6 +554,69 @@ $("sheetClose").addEventListener("click", () => $("posSheet").close());
 $("posSheet").addEventListener("click", (e) => { if (e.target === $("posSheet")) $("posSheet").close(); });
 $("posSheet").addEventListener("close", () => { openMarket = null; });
 
+
+
+// ---------- 닉네임 ----------
+function nickOf(user) {
+  let n = ""; try { n = localStorage.getItem("nick:" + user.uid) || ""; } catch (e) {}
+  return n || user.displayName || user.email || "";
+}
+$("who").addEventListener("click", () => {
+  const u = auth.currentUser; if (!u) return;
+  $("nickInput").value = nickOf(u); $("nickSheet").showModal(); $("nickInput").select();
+});
+$("nickClose").addEventListener("click", () => $("nickSheet").close());
+async function saveNick(name) {
+  const u = auth.currentUser; if (!u) return;
+  try { if (name) localStorage.setItem("nick:" + u.uid, name); else localStorage.removeItem("nick:" + u.uid); } catch (e) {}
+  try { await updateProfile(u, { displayName: name || null }); } catch (e) {}
+  try { await setDoc(doc(db, "users", u.uid), { name: nickOf(u) }, { merge: true }); } catch (e) {}
+  $("who").textContent = nickOf(u); $("nickSheet").close(); toast("닉네임을 바꿨습니다");
+}
+$("nickForm").addEventListener("submit", (e) => { e.preventDefault(); const v = $("nickInput").value.trim().slice(0, 20); if (v) saveNick(v); });
+$("nickReset").addEventListener("click", () => {
+  const u = auth.currentUser; if (!u) return;
+  const g = (u.providerData.find((p) => p.providerId === "google.com") || {}).displayName || "";
+  saveNick(g);
+});
+
+// ---------- 요청하기 ----------
+let aiReplies = {};
+async function loadReplies() {
+  try { const r = await fetch("requests.json?t=" + Date.now(), { cache: "no-store" }); if (r.ok) aiReplies = (await r.json()).responses || {}; } catch (e) {}
+  renderRequests();
+}
+const REQ_ST = { new: ["접수됨", ""], working: ["검토 중", ""], proposed: ["승인 대기", "prop"], done: ["반영 완료", "done"], answered: ["답변", "done"], declined: ["보류", ""] };
+function renderRequests() {
+  const s = lastStatus || {};
+  const list = (s.userRequests || []).slice().reverse();
+  const box = $("reqList"); box.textContent = "";
+  for (const r of list.slice(0, 8)) {
+    const rep = aiReplies[r.id] || {};
+    const [label, cls] = REQ_ST[rep.status || "new"] || REQ_ST.new;
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = `<span class="t"></span><span class="req-st"></span><span class="sub"></span>`;
+    el.querySelector(".t").textContent = r.text;
+    const st = el.querySelector(".req-st"); st.textContent = label; if (cls) st.classList.add(cls);
+    el.querySelector(".sub").textContent = fmtTime(r.at);
+    if (rep.reply) { const d = document.createElement("div"); d.className = "req-reply"; d.textContent = "AI: " + rep.reply; el.append(d); }
+    box.append(el);
+  }
+}
+$("reqText").addEventListener("input", () => { $("reqCount").textContent = $("reqText").value.length + "/600"; });
+$("reqSend").addEventListener("click", async () => {
+  const text = $("reqText").value.trim().replace(/\s+/g, " ").slice(0, 600);
+  if (!text) { toast("내용을 적어 주세요"); return; }
+  $("reqSend").disabled = true;
+  try {
+    await addDoc(collection(db, "users", auth.currentUser.uid, "commands"),
+      { type: "request|" + text, status: "pending", createdAt: serverTimestamp(), source: "web" });
+    $("reqText").value = ""; $("reqCount").textContent = "0/600";
+    toast("요청을 보냈습니다. 봇이 받아 두면 다음 AI 점검 때 검토합니다");
+  } catch (e) { toast("전송 실패: " + (e.code || e.message)); }
+  finally { $("reqSend").disabled = false; }
+});
+loadReplies(); setInterval(loadReplies, 5 * 60 * 1000);
 
 // ---------- 승인 대기 (봇 제안 + AI 코드 제안) ----------
 let aiProps = [];
@@ -737,6 +824,7 @@ function renderMore(s, stale) {
     gbox.append(el);
   }
   renderApprovals();
+  renderRequests();
 
   // 전략
   const st = Array.isArray(s.strategies) ? s.strategies : [];
@@ -832,7 +920,7 @@ function renderCmds(items) {
   for (const c of items) {
     const el = document.createElement("div"); el.className = "cmd";
     el.innerHTML = "<span><b></b> · <span></span></span><span></span>";
-    el.querySelector("b").textContent = CMD_NAMES[c.type] || (String(c.type).startsWith("approve|") ? "승인" : String(c.type).startsWith("reject|") ? "거절" : c.type);
+    el.querySelector("b").textContent = CMD_NAMES[c.type] || (String(c.type).startsWith("approve|") ? "승인" : String(c.type).startsWith("reject|") ? "거절" : String(c.type).startsWith("request|") ? "요청" : c.type);
     el.querySelector("span span").textContent = CMD_STATUS[c.status] || c.status;
     el.lastChild.textContent = fmtTime(c.createdAt);
     box.append(el);
