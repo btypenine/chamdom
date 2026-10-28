@@ -10,7 +10,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/1",
    "branch": "ai/20261029-stale-exit",
    "createdAt": "2026-10-29T03:13:00+09:00",
-   "status": "merged"
+   "status": "merged",
+   "mergedAt": "2026-10-29T08:55:00+09:00"
   },
   {
    "id": "ai-20261029-pnl-chart",
@@ -22,7 +23,19 @@
    "branch": "ai/20261029-pnl-chart",
    "createdAt": "2026-10-29T06:05:00+09:00",
    "status": "merged",
-   "requestId": "req-vsfblqx066qi"
+   "requestId": "req-vsfblqx066qi",
+   "mergedAt": "2026-10-29T08:55:00+09:00"
+  },
+  {
+   "id": "ai-20261029-chase-gate",
+   "title": "시장 판단에 '추격 매수' 관문 추가 (관찰로 시작)",
+   "summary": "매수 직전 현재가가 신호가보다 0.3% 이상 올라 있으면 '막았을 거래'로 표시해 성적을 비교함. 매매는 그대로, 판정 후 바꿔야 하면 승인 요청.",
+   "why": "실패 원인 2위 '신호 늦게 따라감' 18건(1위 힘 부족 45건은 #1로 관찰 중)",
+   "risk": "관찰 전용이라 매매 변화 없음. 로그 1줄씩 늘어남",
+   "pr": "https://github.com/btypenine/chamdom/pull/3",
+   "branch": "ai/20261029-chase-gate",
+   "createdAt": "2026-10-29T08:58:00+09:00",
+   "status": "pending"
   }
  ]
 }
