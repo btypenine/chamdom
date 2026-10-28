@@ -1,4 +1,16 @@
 {
  "_설명": "AI 정기 점검이 올리는 개선안 목록. 대시보드 승인 대기 카드가 읽음. status: pending|merged|rejected. 코드 변경은 ai/ 브랜치 PR로 올리고, 승인(대시보드 또는 GitHub에서 병합) 후에만 main에 반영",
- "proposals": []
+ "proposals": [
+  {
+   "id": "ai-20261029-stale-exit",
+   "title": "청산 판단에 '힘 빠진 보유 정리' 추가 (관찰로 시작)",
+   "summary": "보유시간 절반이 지나도 익절까지 20%도 못 갔고 손실 중이면 '지금 정리했다면'을 기록해 실제 결과와 비교. 매매는 그대로, 판정 후 적용은 다시 승인 필요.",
+   "why": "실패 원인 1위가 '보유시간 안에 목표 미도달' 40건. bt-lab 다음 6시간: 거래당 +0.090% → +0.126% (조기정리 9건, 표본 작음)",
+   "risk": "관찰 전용이라 매매 영향 없음. 로그·상태 기록만 늘어남",
+   "pr": "https://github.com/btypenine/chamdom/pull/1",
+   "branch": "ai/20261029-stale-exit",
+   "createdAt": "2026-10-29T03:35:00+09:00",
+   "status": "pending"
+  }
+ ]
 }
