@@ -81,7 +81,7 @@ BT_MIN_TRADES = 20               # 채택 최소 거래 수 (6회는 우연과 �
 BT_HOLDOUT_MIN_TRADES = 5        # 최근 검증 구간 최소 거래 수
 BT_HOLDOUT_MIN_WINRATE = 0.80    # 최근 검증 구간 최소 승률
 BT_SLIPPAGE = 0.001              # (고정값 쓸 때) 시장가 체결 미끄러짐 0.1% (매수·매도 각각)
-BT_SLIP_BASE = 0.0003            # 종목별 미끄러짐 = 0.03% + 호가 한 칸/가격 (BTC≈0.03%, 100원대 코인≈0.13%)
+BT_SLIP_BASE = 0.0003            # 종목별 미끄러짐 = 0.03% + 호가 한 칸/가격 (BTC≈0.03%, 100원대 코인≈0.5~1%)
 EXPLORE_MIN_TRADES = 6           # 탐험 모드: 학습 구간 최소 거래 수
 EXPLORE_MIN_EDGE = 0.0           # 탐험 모드: 학습 구간 거래당 순익(비용 포함) 최소 %
 EXPLORE_HOLDOUT_FLOOR = -0.10    # 탐험 모드: 검증 구간 거래당 순익이 이보다 나쁘면 탈락
@@ -534,12 +534,14 @@ HOLD_CHOICES = [30, 60, 120, 240]
 
 def tick_size(price):
     """업비트 원화마켓 호가 단위"""
-    for floor, tick in ((2000000, 1000), (1000000, 500), (500000, 100), (100000, 50), (10000, 10),
-                        (1000, 1), (100, 0.1), (10, 0.01), (1, 0.001), (0.1, 0.0001), (0.01, 0.00001),
-                        (0.001, 0.000001), (0.0001, 0.0000001)):
+    # 2026-10-28 업비트 /v1/orderbook/instruments 실제 값과 54종목 대조해 맞춤 (기존 표는 100~1,000원대를 0.1원으로 봐서
+    # 미끄러짐을 1/10로 과소 추정 → 비용에 지는 규칙이 대거 채택됐음)
+    for floor, tick in ((2000000, 1000), (1000000, 1000), (500000, 500), (100000, 100), (50000, 50), (10000, 10),
+                        (5000, 5), (1000, 1), (100, 1), (10, 0.1), (1, 0.01), (0.1, 0.001), (0.01, 0.0001),
+                        (0.001, 0.00001), (0.0001, 0.000001)):
         if price >= floor:
             return tick
-    return 0.00000001
+    return 0.0000001
 
 
 def slip_for(price):
@@ -926,7 +928,9 @@ class Bot:
                 return cur
             if rb and rb["status"] == "testing" and rb["trades"] < RULE_EVAL_TRADES:
                 # 6시간 동안 한 번도 신호가 없던 규칙은 붙잡고 있지 않음 (기록은 장부에 남음)
-                if rb["trades"] > 0 or time.time() * 1000 - rb["firstAt"] < 6 * 3600 * 1000:
+                # 단, 이 규칙으로 산 코인을 아직 들고 있으면 신호가 났던 것 → 유지 (안 그러면 매도 후 1/5회에서 끊겨 판정 못 함)
+                holding = (self.state["positions"].get(market) or {}).get("rid") == rb["id"]
+                if rb["trades"] > 0 or holding or time.time() * 1000 - rb["firstAt"] < 6 * 3600 * 1000:
                     return cur
             if not rb:
                 return cur                                # 이전 버전에서 고른 규칙: 장부에 등록하고 검증 시작
@@ -937,6 +941,13 @@ class Bot:
                 avg = rb["sumPct"] / rb["trades"]
                 if best is None or avg > best[0]:
                     best = (avg, rb)
+        if not best:
+            # 실전 1~4회에서 끊긴 검증 중 규칙(종목이 상위권에서 잠시 빠졌다 돌아온 경우 등)은 5회를 마저 채움
+            for rb in self.state["ruleBook"].values():
+                if (rb["market"] == market and rb["status"] == "testing" and rb.get("spec")
+                        and 0 < rb["trades"] < RULE_EVAL_TRADES):
+                    if best is None or (rb.get("lastAt") or 0) > (best[1].get("lastAt") or 0):
+                        best = (0, rb)
         if best:
             rb = best[1]
             spec = dict(rb["spec"])
