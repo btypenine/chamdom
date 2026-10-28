@@ -426,6 +426,25 @@ class Cloud:
         self._auth()
         return self.uid
 
+    def inbox_items(self):
+        """대시보드가 남긴 요청·승인 (status/inbox 문서, 없으면 사용자 문서의 inbox 필드). 명령 컬렉션은 보안 규칙상 정해진 명령만 허용돼서 따로 둠"""
+        h = self._auth()
+        out = {}
+        for url, key in ((f"{FS_BASE}/users/{self.uid}/status/inbox", None), (f"{FS_BASE}/users/{self.uid}", "inbox")):
+            try:
+                res = requests.get(url, headers=h, timeout=10)
+                if res.status_code != 200:
+                    continue
+                fields = {k: from_fs(v) for k, v in res.json().get("fields", {}).items()}
+                if key:
+                    fields = fields.get(key) or {}
+                for k, v in fields.items():
+                    if isinstance(v, dict) and v.get("kind"):
+                        out[k] = v
+            except Exception:
+                continue
+        return out
+
     def put_status(self, data, partial=False):
         h = self._auth()
         url = f"{FS_BASE}/users/{self.uid}/status/current"
@@ -1917,6 +1936,32 @@ class Bot:
             done.append(mk.split("-")[1])
         return "done", "매도: " + ", ".join(done) + " · 봇은 일시정지됨"
 
+    def handle_inbox(self):
+        if time.time() - getattr(self, "_inbox_at", 0) < 20:
+            return
+        self._inbox_at = time.time()
+        seen = self.state.setdefault("inboxSeen", [])
+        changed = False
+        for iid, it in sorted(self.cloud.inbox_items().items(), key=lambda x: x[1].get("at") or 0):
+            if iid in seen:
+                continue
+            seen.append(iid)
+            changed = True
+            kind = it.get("kind")
+            if kind == "request":
+                reqs = self.state.setdefault("userRequests", [])
+                reqs.append({"id": "req-" + iid[-12:], "text": str(it.get("text", ""))[:600],
+                             "at": int(it.get("at") or time.time() * 1000)})
+                del reqs[:-30]
+                log(f"요청 접수: {str(it.get('text', ''))[:60]} → 다음 AI 점검에서 검토")
+            elif kind in ("approve", "reject") and it.get("target"):
+                st, msg = self.decide(str(it["target"]), kind == "approve")
+                log(f"{'승인' if kind == 'approve' else '거절'} 처리: {msg}")
+        if changed:
+            del seen[:-300]
+            save_state(self.state)
+            self.upload_status()
+
     def handle_commands(self):
         for c in self.cloud.pending_commands():
             ctype, created, age = c.get("type"), c.get("createdAt"), None
@@ -2011,6 +2056,10 @@ class Bot:
                     save_state(self.state)
                     self.upload_status()
                 self.handle_commands()
+                try:
+                    self.handle_inbox()
+                except Exception as e:
+                    log(f"[경고] 요청함 확인 실패: {e}")
                 self.manage_positions()
                 self.manage_ghosts()
                 self.manage_hold_ghosts()

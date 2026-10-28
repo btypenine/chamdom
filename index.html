@@ -199,11 +199,27 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
 .req-st { align-self: start; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
 .req-st.done { background: var(--ok); color: #fff; } .req-st.prop { background: var(--warn); color: #fff; }
 .req-reply { font-size: 12px; background: var(--chip); border-radius: 6px; padding: 6px 8px; grid-column: 1 / -1; }
+/* 상단 고정 + 요약 보기 */
+.topbar { position: sticky; top: 0; z-index: 20; background: var(--bg); margin: -16px calc(-1 * max(16px, env(safe-area-inset-left, 0px))) 0; padding: calc(10px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-left, 0px)) 10px; display: flex; flex-direction: column; gap: 8px; }
+.topbar.scrolled { border-bottom: 1px solid var(--line); box-shadow: 0 6px 12px -10px rgb(0 0 0 / .35); }
+.seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--chip); border-radius: 10px; padding: 3px; gap: 3px; }
+.seg button { min-height: 34px; padding: 4px; border: none; background: transparent; color: var(--muted); font-size: 13px; border-radius: 8px; }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgb(0 0 0 / .15); }
+.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.tile { text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; min-height: 76px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); font-weight: 500; }
+.tile .k { font-size: 12px; color: var(--muted); }
+.tile .v { font-size: 18px; font-weight: 750; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tile .s { font-size: 12px; color: var(--muted); }
+.tile.alert { border-color: var(--stop); }
+.tile.alert .v { color: var(--stop); }
+body.compact #appView > section.card:not(#sumCard):not(#apprCard) { display: none !important; }
+body.compact #sumCard { display: flex !important; }
 @media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
 </style>
 </head>
 <body>
 <div class="wrap">
+  <div class="topbar">
   <header>
     <div class="brand">
       <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12c3-5 9-7 14-4l4-3v14l-4-3c-5 3-11 1-14-4zm13-1.2a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4z"/></svg></span>
@@ -214,6 +230,11 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
       <button type="button" class="who" id="who" hidden aria-label="닉네임 바꾸기" title="눌러서 닉네임 바꾸기"></button>
     </div>
   </header>
+  <div class="seg" id="viewSeg" role="group" aria-label="보기 방식" hidden>
+    <button type="button" data-view="compact" aria-pressed="false">요약</button>
+    <button type="button" data-view="full" aria-pressed="true">전체</button>
+  </div>
+  </div>
 
   <!-- 로그인 전 -->
   <section class="card login" id="loginView" hidden>
@@ -224,7 +245,12 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
 
   <!-- 로그인 후 -->
   <div id="appView" hidden style="display:contents">
-    <section class="card" aria-live="polite">
+    <section class="card" id="sumCard" hidden>
+      <div class="tiles" id="tiles"></div>
+      <div class="sub">칸을 누르면 그 항목의 전체 내용으로 이동함</div>
+    </section>
+
+    <section class="card" id="stateCard" aria-live="polite">
       <div class="state">
         <span class="dot offline" id="stateDot"></span>
         <div class="state-text">
@@ -278,17 +304,17 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
       </div>
     </section>
 
-    <section class="card">
+    <section class="card" id="assetCard">
       <h2>보유 자산</h2>
       <div class="rows" id="holdings"><div class="empty">PC 봇이 연결되면 보유 코인이 여기에 표시됩니다.</div></div>
     </section>
 
-    <section class="card">
+    <section class="card" id="stratCard">
       <div class="head-row"><h2>거래 대상 전략</h2><span class="sub" id="optTime"></span></div>
       <div class="list" id="strategies"><div class="empty">PC 봇이 전략을 고르면 여기에 표시됩니다.</div></div>
     </section>
 
-    <section class="card">
+    <section class="card" id="ruleCard">
       <h2>규칙 장부 (실전 성적)</h2>
       <div class="sub">종목+규칙마다 실전 결과를 날짜와 상관없이 쌓습니다. 5회를 채우면 거래당 평균 순수익(수수료 포함)으로 판정 → 플러스면 계속, 마이너스면 퇴출. 10·20·40회에 다시 판정.</div>
       <div class="list" id="ruleBook"><div class="empty">아직 기록된 규칙이 없습니다.</div></div>
@@ -306,17 +332,17 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
       <div class="list" id="failStats"></div>
     </section>
 
-    <section class="card">
+    <section class="card" id="tradeCard">
       <h2>최근 거래</h2>
       <div class="list" id="trades"><div class="empty">아직 거래가 없습니다.</div></div>
     </section>
 
-    <section class="card">
+    <section class="card" id="logCard">
       <h2>실시간 기록</h2>
       <div class="logbox" id="activity">PC 봇 기록이 여기에 표시됩니다.</div>
     </section>
 
-    <section class="card">
+    <section class="card" id="ctrlCard">
       <h2>비상 제어</h2>
       <div class="ctrl">
         <button class="btn-pause" type="button" data-cmd="pause">일시정지</button>
@@ -444,7 +470,7 @@ onAuthStateChanged(auth, async (user) => {
   unsubs.forEach((u) => u()); unsubs = [];
   $("loginView").hidden = !!user;
   $("appView").hidden = !user;
-  $("who").hidden = !user; $("reqOpen").hidden = !user;
+  $("who").hidden = !user; $("reqOpen").hidden = !user; $("viewSeg").hidden = !user;
   $("who").textContent = user ? nickOf(user) : "";
   $("codeArea").hidden = true; $("codeText").value = "";
   if (!user) return;
@@ -563,6 +589,76 @@ $("posSheet").addEventListener("close", () => { openMarket = null; });
 
 
 
+
+
+// ---------- 상단 고정 · 요약/전체 보기 ----------
+let lastTrades = [];
+const VIEW_KEY = "chamdomView";
+function setView(v, save = true) {
+  document.body.classList.toggle("compact", v === "compact");
+  document.querySelectorAll("#viewSeg [data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === v)));
+  if (save) { try { localStorage.setItem(VIEW_KEY, v); } catch (e) {} }
+  if (v === "compact") renderTiles();
+}
+document.querySelectorAll("#viewSeg [data-view]").forEach((b) => b.addEventListener("click", () => { setView(b.dataset.view); window.scrollTo({ top: 0 }); }));
+try { if (localStorage.getItem(VIEW_KEY) === "compact") setView("compact", false); } catch (e) {}
+window.addEventListener("scroll", () => document.querySelector(".topbar").classList.toggle("scrolled", window.scrollY > 4), { passive: true });
+function goCard(id) {
+  setView("full");
+  requestAnimationFrame(() => {
+    const el = $(id); if (!el || el.hidden) return;
+    const top = el.getBoundingClientRect().top + window.scrollY - document.querySelector(".topbar").offsetHeight - 8;
+    window.scrollTo({ top, behavior: "smooth" });
+  });
+}
+function renderTiles() {
+  if (!document.body.classList.contains("compact") || !lastStatus) return;
+  const s = lastStatus || {}, lg = s.ledger || {}, box = $("tiles");
+  const stale = !s.updatedAt || Date.now() - s.updatedAt > OFFLINE_MS;
+  const ps = Array.isArray(s.positions) ? s.positions : [];
+  const avg = ps.length ? ps.reduce((a, p) => a + (p.pnlPct || 0), 0) / ps.length : null;
+  const pend = (s.proposals || []).filter((p) => p.status === "pending").length + aiProps.filter((p) => p.status === "pending" && !(s.aiDecisions || {})[p.id]).length;
+  const gs = [...(s.marketGates || []), ...(s.exitRules || [])];
+  const rb = Array.isArray(s.ruleBook) ? s.ruleBook : [];
+  const cnt = (st) => rb.filter((r) => r.status === st).length;
+  const sell = lastTrades.find((t) => t.side === "sell");
+  const pct = (v) => v == null ? "-" : (v > 0 ? "+" : "") + v.toFixed(2) + "%";
+  const tiles = [
+    { k: "봇 상태", v: stale ? "연결 끊김" : ({ running: "실행 중", paused: "일시정지", error: "오류" }[s.botState] || "-"), s: s.updatedAt ? ago(s.updatedAt) : "", go: "stateCard", alert: stale || s.botState === "error" },
+    { k: "오늘 손익", v: signed(lg.dayPnl), s: `${lg.dayTrades || 0}회 · 익절 ${lg.dayWins || 0}`, go: "perfCard", cls: lg.dayPnl > 0 ? "up" : lg.dayPnl < 0 ? "down" : "" },
+    { k: "승률 (오늘)", v: lg.dayTrades ? Math.round(lg.dayWins / lg.dayTrades * 100) + "%" : "-", s: lg.tradesTotal ? `누적 ${Math.round(lg.winsTotal / lg.tradesTotal * 100)}% · ${lg.tradesTotal}회` : "", go: "perfCard" },
+    { k: "시드", v: won(lg.seed), s: `잠긴 수익 ${won(lg.locked)}`, go: "perfCard" },
+    { k: "보유 중", v: ps.length + "종목", s: avg == null ? "없음" : "평균 " + pct(avg), go: "posCard" },
+    { k: "승인 대기", v: pend + "건", s: pend ? "눌러서 확인" : "없음", go: "apprCard", alert: pend > 0 },
+    { k: "시장·청산 판단", v: `${gs.filter((g) => g.now || g.marked).length}개 감지`, s: `적용 ${gs.filter((g) => g.mode === "active").length} · 관찰 ${gs.filter((g) => g.mode !== "active").length}`, go: "gateCard" },
+    { k: "규칙 장부", v: `통과 ${cnt("proven")}`, s: `검증 중 ${cnt("testing")} · 퇴출 ${cnt("retired")}`, go: "ruleCard" },
+    { k: "최근 매도", v: sell ? signed(sell.pnl) : "-", s: sell ? `${(sell.market || "").split("-")[1] || ""} · ${sell.reason || ""}` : "", go: "tradeCard", cls: sell && sell.pnl > 0 ? "up" : sell && sell.pnl < 0 ? "down" : "" },
+    { k: "비상 제어", v: "열기", s: "일시정지 · 재개 · 모두 매도", go: "ctrlCard" },
+  ];
+  box.textContent = "";
+  for (const t of tiles) {
+    const b = document.createElement("button"); b.type = "button"; b.className = "tile" + (t.alert ? " alert" : "");
+    b.innerHTML = `<span class="k"></span><span class="v"></span><span class="s"></span>`;
+    b.querySelector(".k").textContent = t.k; const v = b.querySelector(".v"); v.textContent = t.v; if (t.cls) v.classList.add(t.cls);
+    b.querySelector(".s").textContent = t.s;
+    b.addEventListener("click", () => t.go === "apprCard" ? $("apprCard").scrollIntoView({ behavior: "smooth" }) : goCard(t.go));
+    box.append(b);
+  }
+}
+
+// ---------- 요청함 (요청·승인 전달) ----------
+// 명령 컬렉션은 보안 규칙상 정해진 명령(일시정지 등)만 허용 → 요청·승인은 status/inbox 문서에 남기고 봇이 20초마다 읽음
+async function sendInbox(item) {
+  const uid = auth.currentUser.uid;
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const body = { ...item, at: Date.now() };
+  try { await setDoc(doc(db, "users", uid, "status", "inbox"), { [id]: body }, { merge: true }); return id; }
+  catch (e1) {
+    try { await setDoc(doc(db, "users", uid), { inbox: { [id]: body } }, { merge: true }); return id; }
+    catch (e2) { throw e2; }
+  }
+}
+
 // ---------- 닉네임 ----------
 function nickOf(user) {
   let n = ""; try { n = localStorage.getItem("nick:" + user.uid) || ""; } catch (e) {}
@@ -620,11 +716,10 @@ $("reqSend").addEventListener("click", async () => {
   if (!text) { toast("내용을 적어 주세요"); return; }
   $("reqSend").disabled = true;
   try {
-    await addDoc(collection(db, "users", auth.currentUser.uid, "commands"),
-      { type: "request|" + text, status: "pending", createdAt: serverTimestamp(), source: "web" });
+    await sendInbox({ kind: "request", text });
     $("reqText").value = ""; $("reqCount").textContent = "0/600";
-    toast("요청을 보냈습니다. 봇이 받아 두면 다음 AI 점검 때 검토합니다");
-  } catch (e) { toast("전송 실패: " + (e.code || e.message)); }
+    toast("요청을 보냈습니다. 봇이 20초 안에 받아 두고, AI 점검이 검토합니다");
+  } catch (e) { toast("전송 실패: " + (e.code || e.message) + " — 보안 규칙 확인 필요"); }
   finally { $("reqSend").disabled = false; }
 });
 loadReplies(); setInterval(loadReplies, 5 * 60 * 1000);
@@ -670,8 +765,7 @@ function renderApprovals() {
         }
         btn.disabled = true;
         try {
-          await addDoc(collection(db, "users", auth.currentUser.uid, "commands"),
-            { type: `${verb}|${it.id}`, status: "pending", createdAt: serverTimestamp(), source: "web" });
+          await sendInbox({ kind: verb, target: it.id });
           sentDecisions[it.id] = label; toast(`${label} 전달함`); renderApprovals();
         } catch (e) { toast("전송 실패: " + (e.code || e.message)); btn.disabled = false; }
       });
@@ -836,6 +930,7 @@ function renderMore(s, stale) {
   }
   renderApprovals();
   renderRequests();
+  renderTiles();
 
   // 전략
   const st = Array.isArray(s.strategies) ? s.strategies : [];
@@ -904,6 +999,7 @@ function renderMore(s, stale) {
 }
 
 function renderTrades(items) {
+  lastTrades = items; renderTiles();
   const box = $("trades"); box.textContent = "";
   if (!items.length) { box.innerHTML = '<div class="empty">아직 거래가 없습니다.</div>'; return; }
   for (const t of items) {
