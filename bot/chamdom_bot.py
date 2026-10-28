@@ -819,6 +819,55 @@ def evaluate(series, spec):
             "holdoutEdgePct": round(ho["edge"], 3), "score": round(min(tr["edge"], ho["edge"]), 4)}
 
 
+# ======================= 시장 판단 관문 =======================
+# 종목별 전략(조건·익절·손절)과 별개로 '지금 시장 전체가 새로 사도 되는 상황인가'를 보는 층.
+# 원칙: 새 관문은 항상 '관찰'로 시작함 → 실전에서 '이 관문이 막았을 거래'와 '통과시킨 거래'의 거래당 순익을 비교
+#       → 막았을 거래가 확실히 더 나쁘면 스스로 '적용'으로 올라가고, 효과가 사라지면 '관찰'로 돌아감.
+#       적용 중에 막은 매수는 '가상 거래'로 익절·손절·시간까지 끝까지 따라가서 막은 게 맞았는지 계속 잼.
+# 새 관문 추가: gate_xxx(bot) -> (막을지 bool, 지금 상태 설명 str) 함수를 만들고 MARKET_GATES 에 한 줄 추가.
+GATE_EVAL_MIN = 20               # 판정에 필요한 '막았을 거래' 수
+GATE_EVAL_EPISODES = 3           # 그 거래들이 나온 서로 다른 시간대(1시간 단위) 수 — 급락 한 번만 보고 판단하지 않음
+GATE_PASS_MIN = 20               # 비교 대상 '통과 거래' 최소 수
+GATE_MARGIN = 0.15               # 막았을 거래가 통과 거래보다 거래당 이만큼(%p) 이상 나쁘고, 그 자체도 손실이어야 적용
+GATE_RECHECK = 20                # 이후 막았을 거래가 이만큼 더 쌓일 때마다 재판정
+BTC_DROP_MIN = 30                # BTC 급락 관문: 최근 몇 분
+BTC_DROP_PCT = -0.5              # 이 % 이하로 빠졌으면 막음
+EVENTS_URL = "https://raw.githubusercontent.com/btypenine/chamdom/main/bot/events.json"
+EVENTS_REFRESH = 30 * 60         # 일정표 다시 받는 간격(초) — 코드 재시작 없이 일정만 갱신 가능
+
+
+def gate_btc_drop(bot):
+    c = bot.btc_closes()
+    if len(c) < BTC_DROP_MIN + 1:
+        return False, "BTC 시세 확인 중"
+    chg = (c[-1] / c[-1 - BTC_DROP_MIN] - 1) * 100
+    return chg <= BTC_DROP_PCT, f"BTC {BTC_DROP_MIN}분 {chg:+.2f}% (기준 {BTC_DROP_PCT}%)"
+
+
+def gate_event(bot):
+    now = time.time()
+    nxt = None
+    for e in bot.events():
+        try:
+            at = datetime.fromisoformat(e["at"]).timestamp()
+        except Exception:
+            continue
+        lo, hi = at - float(e.get("before_h", 2)) * 3600, at + float(e.get("after_h", 2)) * 3600
+        if lo <= now <= hi:
+            return True, f"{e['name']} {datetime.fromtimestamp(at, KST).strftime('%m-%d %H:%M')} 전후 (앞 {e.get('before_h', 2)}시간·뒤 {e.get('after_h', 2)}시간)"
+        if lo > now and (nxt is None or lo < nxt[0]):
+            nxt = (lo, e, at)
+    if nxt:
+        return False, f"다음: {nxt[1]['name']} {datetime.fromtimestamp(nxt[2], KST).strftime('%m-%d %H:%M')}"
+    return False, "등록된 일정 없음"
+
+
+MARKET_GATES = [
+    {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
+    {"id": "event", "name": "경제 일정", "desc": "FOMC·미국 물가(CPI) 발표 등 정해진 일정 앞뒤로 새로 사지 않음 (일정표: bot/events.json)", "fn": gate_event},
+]
+
+
 # ======================= 봇 =======================
 class Bot:
     def __init__(self, cfg):
@@ -1179,6 +1228,8 @@ class Bot:
         self.learn(market, pnl, reason)
         self.cond_record(pos, pnl)
         self.rule_record(pos, pnl)
+        if "gateHits" in pos:                             # 관문 기능 이후 산 거래만 관문 성적에 반영
+            self.gate_record(pos["gateHits"], pnl / pos["cost"] * 100, pos["at"])
         analysis = None
         if pnl <= 0:
             analysis = self.post_mortem(market, pos, price, reason, pnl)
@@ -1285,11 +1336,147 @@ class Bot:
                         ctx["entryInfo"] = entry_snapshot(series, spec)
                     except Exception as e:                # 팝업용 기록 실패가 매수를 막으면 안 됨
                         log(f"[경고] {mk} 진입 근거 기록 실패: {e}")
+                    if not self.gate_entry(mk, spec, price, ctx):
+                        continue
                     self.enter(mk, spec, price, ctx)
                     ok, _ = self.can_enter()
                     if not ok:
                         break
         save_state(self.state)
+
+    # ---------- 시장 판단 관문 ----------
+    def btc_closes(self):
+        now_min = int(time.time() // 60)
+        if getattr(self, "_btc_min", None) != now_min:
+            try:
+                self._btc_c = [c["trade_price"] for c in self.upbit.minute_candles("KRW-BTC", BTC_DROP_MIN + 3)[:-1]]
+                self._btc_min = now_min
+            except Exception:
+                return getattr(self, "_btc_c", [])
+        return self._btc_c
+
+    def events(self):
+        if time.time() - getattr(self, "_events_at", 0) >= EVENTS_REFRESH:
+            self._events_at = time.time()
+            try:
+                res = requests.get(EVENTS_URL, params={"t": int(time.time())}, timeout=10)
+                if res.status_code == 200:
+                    ev = res.json().get("events", [])
+                    if isinstance(ev, list):
+                        self.state["eventsCache"] = ev
+            except Exception:
+                pass
+        return self.state.get("eventsCache", [])
+
+    def gate_stat(self, gid):
+        g = self.state.setdefault("marketGates", {}).setdefault(gid, {})
+        g.setdefault("mode", "shadow")
+        g.setdefault("blocked", {"n": 0, "wins": 0, "sumPct": 0.0})
+        g.setdefault("passed", {"n": 0, "wins": 0, "sumPct": 0.0})
+        g.setdefault("hours", [])
+        g.setdefault("nextEval", GATE_EVAL_MIN)
+        return g
+
+    def gate_check(self):
+        """1분에 한 번 모든 관문을 평가 → {gid: (막을지, 설명)}"""
+        now_min = int(time.time() // 60)
+        if getattr(self, "_gate_min", None) == now_min:
+            return self._gate_now
+        out = {}
+        for g in MARKET_GATES:
+            try:
+                out[g["id"]] = g["fn"](self)
+            except Exception as e:
+                out[g["id"]] = (False, f"확인 실패: {e}")
+            prev = getattr(self, "_gate_now", {}).get(g["id"], (False, ""))[0]
+            if out[g["id"]][0] != prev:
+                st = self.gate_stat(g["id"])
+                how = "적용 중 → 새 매수 보류(가상 거래로 추적)" if st["mode"] == "active" else "관찰 중 → 매수는 하되 '막았을 거래'로 표시"
+                log(f"[시장 판단] {g['name']} {'감지' if out[g['id']][0] else '해제'}: {out[g['id']][1]}" + (f" · {how}" if out[g["id"]][0] else ""))
+        self._gate_min, self._gate_now = now_min, out
+        return out
+
+    def gate_record(self, gids, pct, at_ms):
+        """거래 결과를 관문 성적에 반영. gids = 이 거래를 막았을(막은) 관문들"""
+        for g in MARKET_GATES:
+            st = self.gate_stat(g["id"])
+            side = st["blocked"] if g["id"] in gids else st["passed"]
+            side["n"] += 1
+            side["sumPct"] += pct
+            side["wins"] += pct > 0
+            if g["id"] in gids:
+                hk = datetime.fromtimestamp(at_ms / 1000, KST).strftime("%m%d%H")
+                if hk not in st["hours"]:
+                    st["hours"] = (st["hours"] + [hk])[-50:]
+                if st["blocked"]["n"] >= st["nextEval"]:
+                    self.gate_judge(g, st)
+
+    def gate_judge(self, g, st):
+        b, p = st["blocked"], st["passed"]
+        if len(st["hours"]) < GATE_EVAL_EPISODES or p["n"] < GATE_PASS_MIN:
+            return                                         # 아직 판단 근거 부족 → 다음 거래에서 다시 봄
+        st["nextEval"] = b["n"] + GATE_RECHECK
+        ba, pa = b["sumPct"] / b["n"], p["sumPct"] / p["n"]
+        new = "active" if (ba < 0 and ba <= pa - GATE_MARGIN) else "shadow"
+        names = {"active": "적용", "shadow": "관찰"}
+        log(f"[관문 판정] {g['name']}: 막았을 거래 {b['n']}건 거래당 {ba:+.2f}% vs 통과 거래 {p['n']}건 {pa:+.2f}% "
+            f"({len(st['hours'])}개 시간대) → {names[new]}" + (" (바뀜)" if new != st["mode"] else " 유지"))
+        st.setdefault("history", []).append({"at": int(time.time() * 1000), "mode": new, "blockedAvg": round(ba, 3),
+                                             "passedAvg": round(pa, 3), "n": b["n"]})
+        st["history"] = st["history"][-10:]
+        st["mode"] = new
+
+    def gate_entry(self, mk, spec, price, ctx):
+        """매수 직전 관문 확인. 막으면 False(가상 거래 등록), 통과면 True (관찰 관문 기록은 ctx 에 남김)"""
+        now = self.gate_check()
+        hits = [gid for gid, (blk, _) in now.items() if blk]
+        active = [gid for gid in hits if self.gate_stat(gid)["mode"] == "active"]
+        if active:
+            ghosts = self.state.setdefault("ghosts", {})
+            if mk not in ghosts:
+                unit = price * (1 + slip_for(price)) * (1 + FEE_RATE)
+                ghosts[mk] = {"gates": hits, "unit": unit, "tp": target_price(unit, spec.get("tp", TARGET_NET_PCT)),
+                              "sl": unit * (1 + spec["sl"] / 100), "deadline": int(time.time()) + spec["hold"] * 60,
+                              "at": int(time.time() * 1000), "strategy": describe(spec)}
+                names = ", ".join(g["name"] for g in MARKET_GATES if g["id"] in active)
+                log(f"[시장 판단] {mk.split('-')[1]} 매수 신호 → {names} 관문 적용 중이라 보류 (가상 거래로 결과 추적)")
+            return False
+        ctx["gateHits"] = hits                             # 관찰 중 관문이 막았을 거래인지 표시
+        return True
+
+    def manage_ghosts(self):
+        ghosts = self.state.get("ghosts") or {}
+        if not ghosts:
+            return
+        prices = self.upbit.prices(list(ghosts.keys()))
+        for mk, g in list(ghosts.items()):
+            price = prices.get(mk)
+            if not price:
+                continue
+            reason = "익절" if price >= g["tp"] else "손절" if price <= g["sl"] else "보유시간 초과" if time.time() >= g["deadline"] else None
+            if not reason:
+                continue
+            pct = (price * (1 - slip_for(price)) * (1 - FEE_RATE) / g["unit"] - 1) * 100
+            del ghosts[mk]
+            self.gate_record(g["gates"], pct, g["at"])
+            log(f"[가상 거래] {mk.split('-')[1]} {pct:+.2f}% ({reason}) · 관문이 막은 매수의 결과 → "
+                + ("막아서 손실을 피함" if pct <= 0 else "막지 않았으면 이익이었음"))
+        save_state(self.state)
+
+    def gates_view(self):
+        now = getattr(self, "_gate_now", {})
+        out = []
+        for g in MARKET_GATES:
+            st = self.gate_stat(g["id"])
+            b, p = st["blocked"], st["passed"]
+            blk, reading = now.get(g["id"], (False, "확인 전"))
+            out.append({"id": g["id"], "name": g["name"], "desc": g["desc"], "mode": st["mode"], "now": blk, "reading": reading,
+                        "blockedN": b["n"], "blockedAvg": round(b["sumPct"] / b["n"], 3) if b["n"] else None,
+                        "blockedWins": b["wins"], "passedN": p["n"],
+                        "passedAvg": round(p["sumPct"] / p["n"], 3) if p["n"] else None,
+                        "episodes": len(st["hours"]), "nextEval": st["nextEval"],
+                        "ghosts": sum(1 for x in (self.state.get("ghosts") or {}).values() if g["id"] in x["gates"])})
+        return out
 
     # ---------- 화면용 상태 ----------
     def snapshot(self):
@@ -1506,6 +1693,7 @@ class Bot:
                      "universe": self.state["universe"]["markets"],
                      "blocked": self.state["blocked"], "marketStats": self.state["marketStats"],
                      "ruleBook": self.rulebook_view(),
+                     "marketGates": self.gates_view(),
                      "explore": EXPLORE_MODE,
                      "condStats": [{"name": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3)}
                                    for k, v in self.state.get("condStats", {}).items() if v["n"]],
@@ -1651,6 +1839,8 @@ class Bot:
                     self.upload_status()
                 self.handle_commands()
                 self.manage_positions()
+                self.manage_ghosts()
+                self.gate_check()
                 if not self.error:
                     self.scan_entries()
                 if time.time() - self.last_status >= STATUS_EVERY:

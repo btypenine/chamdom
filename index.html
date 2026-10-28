@@ -177,6 +177,10 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
 .reasons li::before { content: "✓ "; color: var(--ok); font-weight: 800; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
 .kv dt { color: var(--muted); } .kv dd { margin: 0; text-align: right; }
+.gate-mode { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
+.gate-mode.active { background: var(--ok); color: #fff; }
+.gate-now { font-weight: 650; }
+.gate-now.hit { color: var(--stop); }
 @media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
 </style>
 </head>
@@ -223,6 +227,12 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
       </div>
       <div class="sub" id="perfNote"></div>
       <div class="msg" id="reportBox" hidden></div>
+    </section>
+
+    <section class="card" id="gateCard" hidden>
+      <h2>시장 판단 관문</h2>
+      <div class="sub">종목 전략과 별개로 '지금 새로 사도 되는 시장인가'를 봄. 새 관문은 관찰로 시작해, 막았을 거래가 실제로 더 나빴다는 기록이 쌓이면 스스로 적용으로 바뀜.</div>
+      <div class="list" id="gates"></div>
     </section>
 
     <section class="card" id="posCard" hidden>
@@ -621,6 +631,27 @@ function renderMore(s, stale) {
     el.append(hint);
     if (openMarket === p.market && $("posSheet").open) openPos(p);   // 열려 있으면 새 시세로 갱신
     pbox.append(el);
+  }
+
+  // 시장 판단 관문
+  const gs = Array.isArray(s.marketGates) ? s.marketGates : [];
+  $("gateCard").hidden = !gs.length;
+  const gbox = $("gates"); gbox.textContent = "";
+  const pctTxt = (v) => v == null ? "-" : (v > 0 ? "+" : "") + Number(v).toFixed(2) + "%";
+  for (const g of gs) {
+    const el = document.createElement("div"); el.className = "li stack";
+    el.innerHTML = `<div class="head-row"><b></b><span class="gate-mode"></span></div><div class="gate-now"></div><div class="sub d"></div><div class="num st"></div>`;
+    el.querySelector("b").textContent = g.name;
+    const m = el.querySelector(".gate-mode");
+    m.textContent = g.mode === "active" ? "적용 중" : "관찰 중"; if (g.mode === "active") m.classList.add("active");
+    const nw = el.querySelector(".gate-now");
+    nw.textContent = (g.now ? (g.mode === "active" ? "지금 막는 중 · " : "지금 감지(표시만) · ") : "지금 통과 · ") + (g.reading || "");
+    if (g.now) nw.classList.add("hit");
+    el.querySelector(".d").textContent = g.desc;
+    const left = Math.max(0, (g.nextEval || 20) - g.blockedN);
+    el.querySelector(".st").textContent = `막았을 거래 ${g.blockedN}건 ${pctTxt(g.blockedAvg)}/건 vs 통과 거래 ${g.passedN}건 ${pctTxt(g.passedAvg)}/건`
+      + ` · ${g.episodes}개 시간대` + (left ? ` · 판정까지 ${left}건` : "") + (g.ghosts ? ` · 가상 거래 추적 ${g.ghosts}건` : "");
+    gbox.append(el);
   }
 
   // 전략
