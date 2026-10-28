@@ -212,6 +212,12 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
 .tile .s { font-size: 12px; color: var(--muted); }
 .tile.alert { border-color: var(--stop); }
 .tile.alert .v { color: var(--stop); }
+.seg.seg6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.seg.seg6 button { font-size: 12px; padding: 2px; }
+.pnl-chart svg { width: 100%; height: auto; display: block; touch-action: pan-y; }
+.pnl-chart .ax { font-size: 10px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.pnl-tip { font-size: 12px; min-height: 18px; color: var(--fg); font-variant-numeric: tabular-nums; }
+.pnl-tip .up { color: var(--up); } .pnl-tip .down { color: var(--down); }
 body.compact #appView > section.card:not(#sumCard):not(#apprCard) { display: none !important; }
 body.compact #sumCard { display: flex !important; }
 @media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
@@ -280,6 +286,21 @@ body.compact #sumCard { display: flex !important; }
       </div>
       <div class="sub" id="perfNote"></div>
       <div class="msg" id="reportBox" hidden></div>
+    </section>
+
+    <section class="card" id="pnlCard" hidden>
+      <div class="head-row"><h2>손익 흐름</h2><span class="sub" id="pnlSum"></span></div>
+      <div class="seg seg6" id="pnlSeg" role="group" aria-label="묶는 단위">
+        <button type="button" data-p="10m" aria-pressed="false">10분</button>
+        <button type="button" data-p="1h" aria-pressed="true">1시간</button>
+        <button type="button" data-p="3h" aria-pressed="false">3시간</button>
+        <button type="button" data-p="1d" aria-pressed="false">1일</button>
+        <button type="button" data-p="3d" aria-pressed="false">3일</button>
+        <button type="button" data-p="1w" aria-pressed="false">1주</button>
+      </div>
+      <div class="pnl-chart" id="pnlChart"><div class="empty">불러오는 중…</div></div>
+      <div class="pnl-tip" id="pnlTip" aria-live="polite"></div>
+      <div class="sub">위: 누적 손익(실매매 매도 기준, 모의 제외) · 아래: 구간별 손익(빨강 이익·파랑 손실). 1일 이상은 09시 기준으로 묶음. 그래프를 누르거나 손가락으로 훑으면 구간 내용이 보임.</div>
     </section>
 
     <section class="card" id="gateCard" hidden>
@@ -404,7 +425,7 @@ body.compact #sumCard { display: flex !important; }
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut, updateProfile }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, serverTimestamp, query, orderBy, limit }
+import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, serverTimestamp, query, orderBy, limit, where, getDocs }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -486,6 +507,8 @@ onAuthStateChanged(auth, async (user) => {
   const tq = query(collection(db, "users", user.uid, "trades"), orderBy("at", "desc"), limit(30));
   unsubs.push(onSnapshot(tq, (snap) => renderTrades(snap.docs.map((d) => d.data())),
     (e) => toast("거래 기록 불러오기 실패: " + e.code)));
+
+  pnlUid = user.uid; pnlCache = { since: Infinity, items: [] }; loadPnl();
 
   const q = query(collection(db, "users", user.uid, "commands"), orderBy("createdAt", "desc"), limit(5));
   unsubs.push(onSnapshot(q, (snap) => renderCmds(snap.docs.map((d) => d.data())),
@@ -999,7 +1022,7 @@ function renderMore(s, stale) {
 }
 
 function renderTrades(items) {
-  lastTrades = items; renderTiles();
+  lastTrades = items; renderTiles(); mergePnl(items);
   const box = $("trades"); box.textContent = "";
   if (!items.length) { box.innerHTML = '<div class="empty">아직 거래가 없습니다.</div>'; return; }
   for (const t of items) {
@@ -1032,6 +1055,141 @@ function renderCmds(items) {
     el.lastChild.textContent = fmtTime(c.createdAt);
     box.append(el);
   }
+}
+
+
+// ---------- 손익 흐름 그래프 (10분·1시간·3시간·1일·3일·1주) ----------
+const MIN = 60000, HOUR = 60 * MIN, DAY = 24 * HOUR;
+const KST = 9 * HOUR, DAY_START = 9 * HOUR;          // 1일 이상은 한국시간 09시 기준(봇의 '오늘'과 같음)
+const PNL_P = {
+  "10m": { size: 10 * MIN, n: 36, lab: "10분" }, "1h": { size: HOUR, n: 48, lab: "1시간" },
+  "3h": { size: 3 * HOUR, n: 40, lab: "3시간" }, "1d": { size: DAY, n: 30, lab: "1일" },
+  "3d": { size: 3 * DAY, n: 30, lab: "3일" }, "1w": { size: 7 * DAY, n: 26, lab: "1주" },
+};
+const PNL_KEY = "chamdomPnlP";
+let pnlP = "1h", pnlUid = null, pnlCache = { since: Infinity, items: [] }, pnlLoading = false, pnlBuckets = [];
+try { const v = localStorage.getItem(PNL_KEY); if (PNL_P[v]) pnlP = v; } catch (e) {}
+const bucketStart = (t, size) => {
+  if (size < DAY) return Math.floor(t / size) * size;
+  const off = KST - DAY_START;                          // 09시 KST = 00시 UTC
+  return Math.floor((t + off) / size) * size - off;
+};
+const pad2 = (n) => String(n).padStart(2, "0");
+const kd = (t) => { const d = new Date(t + KST); return { mo: d.getUTCMonth() + 1, d: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes() }; };
+const fmtB = (t, size) => { const k = kd(t); return size < DAY ? `${k.mo}/${k.d} ${pad2(k.h)}:${pad2(k.mi)}` : `${k.mo}/${k.d}`; };
+function isSell(t) { return t && t.side === "sell" && t.mode !== "paper" && typeof t.at === "number" && typeof t.pnl === "number"; }
+function mergePnl(items) {
+  if (!pnlCache.items.length && pnlCache.since === Infinity) return;
+  const seen = new Set(pnlCache.items.map((t) => t.at + "|" + t.market));
+  let add = false;
+  for (const t of items) if (isSell(t) && t.at >= pnlCache.since && !seen.has(t.at + "|" + t.market)) { pnlCache.items.push(t); add = true; }
+  if (add) { pnlCache.items.sort((a, b) => a.at - b.at); renderPnl(); }
+}
+async function loadPnl() {
+  if (!pnlUid || pnlLoading) return;
+  const P = PNL_P[pnlP];
+  const since = bucketStart(Date.now(), P.size) - (P.n - 1) * P.size;
+  $("pnlCard").hidden = false;
+  if (since >= pnlCache.since) { renderPnl(); return; }
+  pnlLoading = true;
+  if (!pnlCache.items.length) $("pnlChart").innerHTML = '<div class="empty">불러오는 중…</div>';
+  try {
+    const qy = query(collection(db, "users", pnlUid, "trades"), where("at", ">=", since), orderBy("at", "asc"), limit(5000));
+    const snap = await getDocs(qy);
+    pnlCache = { since, items: snap.docs.map((d) => d.data()).filter(isSell) };
+  } catch (e) { toast("손익 흐름 불러오기 실패: " + (e.code || e.message)); }
+  pnlLoading = false;
+  renderPnl();
+}
+document.querySelectorAll("#pnlSeg [data-p]").forEach((b) => b.addEventListener("click", () => {
+  pnlP = b.dataset.p; try { localStorage.setItem(PNL_KEY, pnlP); } catch (e) {}
+  loadPnl();
+}));
+function pnlEl(tag, attrs, parent) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  if (parent) parent.append(el); return el;
+}
+function niceTicks(lo, hi) {
+  const span = hi - lo || 1, raw = span / 3, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map((m) => m * mag).find((x) => x >= raw);
+  const out = []; for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(v);
+  return out;
+}
+const shortWon = (v) => { const a = Math.abs(v); const s = v < 0 ? "-" : v > 0 ? "+" : "";
+  return a >= 10000 ? s + (a / 10000).toFixed(a % 10000 ? 1 : 0) + "만" : s + Math.round(a).toLocaleString("ko-KR"); };
+function renderPnl() {
+  document.querySelectorAll("#pnlSeg [data-p]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.p === pnlP)));
+  const P = PNL_P[pnlP], box = $("pnlChart");
+  const first = bucketStart(Date.now(), P.size) - (P.n - 1) * P.size;
+  const B = Array.from({ length: P.n }, (_, i) => ({ t: first + i * P.size, pnl: 0, n: 0, w: 0, cum: 0 }));
+  for (const t of pnlCache.items) {
+    const i = Math.floor((bucketStart(t.at, P.size) - first) / P.size);
+    if (i < 0 || i >= P.n) continue;
+    B[i].pnl += t.pnl; B[i].n++; if (t.pnl > 0) B[i].w++;
+  }
+  // 기록이 시작되기 전의 빈 칸은 잘라냄 (최소 6칸은 보여 줌)
+  const f0 = B.findIndex((b) => b.n > 0);
+  if (f0 > 0) B.splice(0, Math.min(f0, P.n - 6));
+  let c = 0; for (const b of B) { c += b.pnl; b.cum = c; }
+  pnlBuckets = B;
+  const tot = B.reduce((a, b) => a + b.n, 0), wins = B.reduce((a, b) => a + b.w, 0);
+  const sumEl = $("pnlSum");
+  sumEl.textContent = tot ? `${P.lab}×${B.length} · ${tot}회 · 승률 ${Math.round(wins / tot * 100)}% · ${signed(Math.round(c))}` : "";
+  sumEl.className = "sub num " + (c > 0 ? "up" : c < 0 ? "down" : "");
+  box.textContent = ""; $("pnlTip").textContent = "";
+  if (!tot) { box.innerHTML = `<div class="empty">이 기간(${P.lab} 단위 ${P.n}칸)에 실매매 매도 기록이 없습니다.</div>`; return; }
+  const W = 360, L = 44, R = 8, H1 = 130, G = 14, H2 = 64, XH = 18, H = H1 + G + H2 + XH;
+  const pw = W - L - R, bw = pw / B.length, x = (i) => L + bw * (i + 0.5);
+  const svg = pnlEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `손익 흐름 ${P.lab} 단위, 기간 합계 ${Math.round(c)}원` }, box);
+  // 위: 누적
+  const cums = [0, ...B.map((b) => b.cum)];
+  let lo = Math.min(...cums), hi = Math.max(...cums); if (lo === hi) { lo -= 100; hi += 100; }
+  const padv = (hi - lo) * 0.08; lo -= padv; hi += padv;
+  const y1 = (v) => 6 + (H1 - 12) * (1 - (v - lo) / (hi - lo));
+  for (const v of niceTicks(lo, hi)) {
+    pnlEl("line", { x1: L, x2: W - R, y1: y1(v), y2: y1(v), stroke: "var(--line)", "stroke-width": v === 0 ? 1.5 : 1 }, svg);
+    pnlEl("text", { x: L - 4, y: y1(v) + 3, "text-anchor": "end", class: "ax" }, svg).textContent = shortWon(v);
+  }
+  const pts = [[L, y1(0)], ...B.map((b, i) => [x(i), y1(b.cum)])];
+  pnlEl("polyline", { points: pts.map((p) => p.map((n) => n.toFixed(1)).join(",")).join(" "), fill: "none",
+    stroke: c >= 0 ? "var(--up)" : "var(--down)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+  const lastI = B.length - 1;
+  pnlEl("circle", { cx: x(lastI), cy: y1(B[lastI].cum), r: 4, fill: c >= 0 ? "var(--up)" : "var(--down)", stroke: "var(--surface)", "stroke-width": 2 }, svg);
+  // 아래: 구간별
+  const top2 = H1 + G, m = Math.max(1, ...B.map((b) => Math.abs(b.pnl)));
+  const mid = top2 + H2 / 2, y2 = (v) => mid - (H2 / 2 - 2) * v / m;
+  pnlEl("line", { x1: L, x2: W - R, y1: mid, y2: mid, stroke: "var(--line)" }, svg);
+  pnlEl("text", { x: L - 4, y: top2 + 8, "text-anchor": "end", class: "ax" }, svg).textContent = shortWon(m);
+  pnlEl("text", { x: L - 4, y: top2 + H2, "text-anchor": "end", class: "ax" }, svg).textContent = shortWon(-m);
+  const barW = Math.max(1.5, bw - 2), rad = Math.min(4, barW / 2);
+  B.forEach((b, i) => {
+    if (!b.pnl) return;
+    const h = Math.max(1.5, Math.abs(y2(b.pnl) - mid)), up = b.pnl > 0, r = Math.min(rad, h);
+    const x0 = x(i) - barW / 2, x1 = x0 + barW, tip = up ? mid - h : mid + h, s = up ? 1 : -1;
+    pnlEl("path", { d: `M${x0},${mid} V${tip + s * r} Q${x0},${tip} ${x0 + r},${tip} H${x1 - r} Q${x1},${tip} ${x1},${tip + s * r} V${mid} Z`,
+      fill: up ? "var(--up)" : "var(--down)" }, svg);
+  });
+  // x 축 라벨 (양 끝 + 가운데)
+  for (const i of [0, Math.floor(lastI / 2), lastI])
+    pnlEl("text", { x: x(i), y: H - 4, "text-anchor": i === 0 ? "start" : i === lastI ? "end" : "middle", class: "ax" }, svg).textContent = fmtB(B[i].t, P.size);
+  // 훑어보기 (십자선 + 설명)
+  const cross = pnlEl("line", { y1: 4, y2: H - XH, stroke: "var(--muted)", "stroke-dasharray": "3 3", visibility: "hidden" }, svg);
+  const dot = pnlEl("circle", { r: 4, fill: "var(--fg)", stroke: "var(--surface)", "stroke-width": 2, visibility: "hidden" }, svg);
+  const hit = pnlEl("rect", { x: L, y: 0, width: pw, height: H, fill: "transparent" }, svg);
+  const show = (ev) => {
+    const r = svg.getBoundingClientRect(), px = (ev.clientX - r.left) * W / r.width;
+    const i = Math.max(0, Math.min(lastI, Math.floor((px - L) / bw))), b = B[i];
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y1(b.cum)); dot.setAttribute("visibility", "visible");
+    const tip = $("pnlTip"); tip.textContent = "";
+    const cls = (v) => v > 0 ? "up" : v < 0 ? "down" : "";
+    const sp = (txt, c2) => { const e = document.createElement("span"); e.textContent = txt; if (c2) e.className = c2; return e; };
+    tip.append(sp(`${fmtB(b.t, P.size)}~ · ${b.n}회${b.n ? ` (익절 ${b.w})` : ""} · 구간 `), sp(signed(Math.round(b.pnl)), cls(b.pnl)),
+      sp(" · 누적 "), sp(signed(Math.round(b.cum)), cls(b.cum)));
+  };
+  hit.addEventListener("pointermove", show); hit.addEventListener("pointerdown", show);
+  hit.addEventListener("pointerleave", (ev) => { if (ev.pointerType === "mouse") { cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); } });
 }
 
 /* ---------- 비상 제어 (두 번 눌러 실행) ---------- */
