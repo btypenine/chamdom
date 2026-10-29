@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
-"""이번 실험: 보유시간(최대 N분)별 '보지 않은 다음 6시간' 성적 (GitHub Actions에서 실행, 실제 주문 없음)
-배경: 실전 최근 60건 중 최대 30분 전략 6건 0승 거래당 -0.74%, 60분 19건 -0.41%, 240분 29건 -0.23% (표본 작음)
-질문: (1) 봇 기준대로 고른 전략을 보유시간별로 나누면 보지 않은 다음 6시간 성적이 다른가?
-      (2) '최대 30분 전략 매수 막기' 관문이었다면 전체 거래당 성적이 나아지는가? (막힌 거래는 안 한 것으로)
-      (3) 아예 30분 후보를 빼고 골랐다면(전략 생성 변경) 어떤가? — 참고용
+"""이번 실험: '검증 근거 약함' 관문 — 고른 전략의 검증구간(보지 않은 뒤 25%) 거래가 3회 미만이거나 거래당 +0.1% 미만이면 막기
+배경: 실전 163건(bot.log) 중 검증 3회 이상·거래당 +0.1% 이상 62건 거래당 -6원, 나머지 101건 -28.5원 (표본 작음·같은 기간 사후 분석)
+질문: 보지 않은 다음 6시간에서도 막힌 거래가 남은 거래보다 나쁜가? 기준값(회수 2·3·5, 거래당 0·0.1·0.2%)별로 비교
 - 롤링 워크포워드: 과거 3일로 현재 봇 기준대로 전략을 고르고 다음 6시간 성적, 10개 창. 같은 난수 → 공정 비교
 """
 import importlib.util, json, os, random, time
@@ -40,16 +38,14 @@ def pick(cands):
             continue
         score = tr["edge"] if not ho["n"] else (tr["edge"] * tr["n"] + ho["edge"] * ho["n"]) / (tr["n"] + ho["n"])
         if best is None or score > best[1]:
-            best = (sp, score)
-    return best[0] if best else None
+            best = (sp, score, ho)
+    return (best[0], best[2]) if best else (None, None)
 
 
 
 
-print("현재 봇 값:", bot.EXPLORE_MIN_TRADES, bot.EXPLORE_MIN_EDGE, bot.EXPLORE_HOLDOUT_FLOOR, "· 시험 수", bot.BT_TRIALS, "· 보유시간 후보", bot.HOLD_CHOICES, flush=True)
-byhold = {h: [] for h in bot.HOLD_CHOICES}
-byhold_hours = {h: set() for h in bot.HOLD_CHOICES}
-alt = {"30분 후보 제외": [], "60분 이하 후보 제외": []}
+print("현재 봇 값:", bot.EXPLORE_MIN_TRADES, bot.EXPLORE_MIN_EDGE, bot.EXPLORE_HOLDOUT_FLOOR, "· 시험 수", bot.BT_TRIALS, flush=True)
+rows = []   # (검증 거래수, 검증 거래당, 결과 리스트, 시간대)
 t0 = time.time()
 for mk in MARKETS:
     try:
@@ -80,33 +76,27 @@ for mk in MARKETS:
             ho = bot.stats(bot.backtest(sub, sp, start=split))
             cands.append((sp, tr, ho))
         stop = min(end + STEP, s.n)
-        sp = pick(cands)
+        sp, ho = pick(cands)
         if sp:
             res = bot.backtest(s, sp, start=end, end=stop)
-            byhold[sp["hold"]] += res; nt += len(res)
-            if res: byhold_hours[sp["hold"]].add(ts[end][:13])
-        for name, lim in (("30분 후보 제외", 30), ("60분 이하 후보 제외", 60)):
-            sp2 = pick([c for c in cands if c[0]["hold"] > lim])
-            if sp2:
-                alt[name] += bot.backtest(s, sp2, start=end, end=stop)
+            if res:
+                rows.append((ho["n"], ho["edge"] if ho["n"] else 0.0, res, mk + ts[end][:13]))
+                nt += len(res)
     print(f"== {mk} 거래 {nt} ({time.time() - t0:.0f}s)", flush=True)
 
 def line(name, r):
     st = bot.stats(r)
     return f"{name}: {st['n']}건 · 승률 {st['winrate'] * 100:.0f}% · 거래당 {st['edge']:+.3f}% · 합계 {st['total']:+.1f}%"
-allr = [x for h in byhold for x in byhold[h]]
+allr = [x for r in rows for x in r[2]]
 print(f"\n#### 합계 (보지 않은 다음 6시간 × {WINDOWS}개 창)")
 print(line("현재 봇 그대로", allr))
-out = {"all": bot.stats(allr), "byHold": {}, "gate": {}, "alt": {}}
-for h in bot.HOLD_CHOICES:
-    print(line(f"최대 {h}분 전략", byhold[h]) + f" · 시간대 {len(byhold_hours[h])}")
-    out["byHold"][h] = bot.stats(byhold[h])
-for lim in (30, 60):
-    keep = [x for h in byhold if h > lim for x in byhold[h]]
-    blocked = [x for h in byhold if h <= lim for x in byhold[h]]
-    st, bs = bot.stats(keep), bot.stats(blocked)
-    print(f"관문 '최대 {lim}분 이하 전략 매수 막기': 막힌 {bs['n']}건(거래당 {bs['edge']:+.3f}%) · 남은 {st['n']}건 거래당 {st['edge']:+.3f}% · 합계 {bot.stats(allr)['total']:+.1f}% → {st['total']:+.1f}%")
-    out["gate"][lim] = {"blocked": bs, "kept": st}
-for name, r in alt.items():
-    print(line(f"참고: 후보에서 {name} 후 다시 고름", r)); out["alt"][name] = bot.stats(r)
+out = {"all": bot.stats(allr), "gate": {}}
+for mn in (2, 3, 5):
+    for me in (0.0, 0.1, 0.2):
+        blk = [r for r in rows if r[0] < mn or r[1] < me]
+        keep = [r for r in rows if not (r[0] < mn or r[1] < me)]
+        b = [x for r in blk for x in r[2]]; k = [x for r in keep for x in r[2]]
+        bs, ks = bot.stats(b), bot.stats(k)
+        print(f"관문 '검증 {mn}회 미만 또는 거래당 {me:+.1f}% 미만 막기': 막힌 {bs['n']}건 거래당 {bs['edge']:+.3f}% (시간대·종목 {len(set(r[3] for r in blk))}) · 남은 {ks['n']}건 거래당 {ks['edge']:+.3f}% · 차이 {ks['edge'] - bs['edge']:+.3f}%p")
+        out["gate"][f"{mn}_{me}"] = {"blocked": bs, "kept": ks}
 json.dump(out, open("bt_summary.json", "w"), ensure_ascii=False, indent=1)
