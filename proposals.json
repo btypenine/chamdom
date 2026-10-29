@@ -72,6 +72,17 @@
    "createdAt": "2026-10-29T20:55:00+09:00",
    "status": "pending",
    "requestId": "req-vtfio37irwii"
+  },
+  {
+   "id": "ai-20261030-hour-stats",
+   "title": "시간대별 실전 성적 기록·표시",
+   "summary": "매수 시각(한국시간)별로 실전 성적을 쌓고 대시보드에 3시간 묶음 카드로 보여줌. 분석 전용, 매매 영향 없음.",
+   "why": "최근 60건 기준 09~11시 거래당 -0.82%, 18~23시 +0.6% 안팎으로 시간대 차가 큼(표본 작음). '변동 큰 시간대' 관문 기준을 데이터로 다듬을 근거 필요.",
+   "risk": "낮음 — 기록 실패해도 경고만 남고 매도 처리는 계속됨.",
+   "pr": "https://github.com/btypenine/chamdom/pull/7",
+   "branch": "ai/20261030-hour-stats",
+   "createdAt": "2026-10-30T00:30:00+09:00",
+   "status": "pending"
   }
  ]
 }
