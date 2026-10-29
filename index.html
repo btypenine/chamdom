@@ -347,6 +347,12 @@ body.compact #sumCard { display: flex !important; }
       <div class="list" id="condStats"></div>
     </section>
 
+    <section class="card" id="hourCard" hidden>
+      <h2>시간대별 실전 성적</h2>
+      <div class="sub">매수한 시각(한국시간) 기준 3시간 묶음별 결과입니다. 어느 시간대에 잘 되고 안 되는지 보는 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 10회 미만이라 참고만 하세요.</div>
+      <div class="list" id="hourStats"></div>
+    </section>
+
     <section class="card" id="failCard" hidden>
       <h2>실패 원인 통계</h2>
       <div class="sub">손해로 끝난 거래를 봇이 진단한 결과입니다. 한 거래에 원인이 여러 개일 수 있습니다.</div>
@@ -1003,6 +1009,22 @@ function renderMore(s, stale) {
     el.firstChild.textContent = CN[c.name] || c.name;
     el.lastChild.textContent = `${c.n}회 · 승률 ${Math.round(c.wins / c.n * 100)}% · 거래당 ${c.avgPct >= 0 ? "+" : ""}${c.avgPct.toFixed(2)}%`;
     cbox.append(el);
+  }
+
+  // 시간대별 실전 성적
+  const hst = (Array.isArray(s.hourStats) ? s.hourStats : []).filter(h => h && h.n > 0);
+  $("hourCard").hidden = !hst.length;
+  const hbox = $("hourStats"); hbox.textContent = "";
+  for (const h of hst) {
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = "<span></span><span class='num'></span>";
+    el.firstChild.textContent = `${String(h.from).padStart(2, "0")}~${String(h.to).padStart(2, "0")}시`;
+    el.firstChild.style.whiteSpace = "nowrap";
+    if (h.n < 10) el.style.opacity = "0.6";
+    const ap = h.avgPct == null ? 0 : h.avgPct;
+    el.lastChild.textContent = `${h.n}회 · 승 ${Math.round(h.wins / h.n * 100)}% · 평균 ${ap >= 0 ? "+" : ""}${ap.toFixed(2)}% · ${h.pnl >= 0 ? "+" : ""}${Number(h.pnl).toLocaleString()}원`;
+    if (ap) el.lastChild.classList.add(ap > 0 ? "up" : "down");
+    hbox.append(el);
   }
 
   // 실패 원인 통계
