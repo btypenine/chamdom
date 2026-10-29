@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""이번 실험: '힘 빠진 보유 일찍 정리' 청산 규칙 (GitHub Actions에서 실행, 실제 주문 없음)
-배경: 실전 실패 원인 1위가 '보유시간 안에 목표 미도달(힘 부족)' (40건, 2위 '신호 늦게 따라감' 14건)
-질문: 보유시간의 일정 비율이 지났는데 익절까지 진행률이 낮고 손실 중이면 그 자리에서 정리하는 게,
-      끝까지 들고 있는 것보다 '보지 않은 다음 6시간' 거래당 순익이 나은가?
-- 롤링 워크포워드: 과거 3일(4320분)로 현재 봇 기준(학습 최소 6회·거래당 0.20%·검증 바닥 -0.10%)으로 고르고 다음 6시간 성적, 6개 창
-- 미끄러짐: 업비트 실제 호가 단위 기준
-- 모든 변형이 같은 전략을 공유 → 차이는 청산 규칙에서만 나옴
+"""이번 실험: 'BTC 하락 추세' 시장 관문 (GitHub Actions에서 실행, 실제 주문 없음)
+배경: 10-29 10~11시(한국시간) BTC가 2시간 가까이 서서히 밀리는 동안 봇이 RSI과매도·단기급락 신호로 BTC·ETH·SOL·ONDO 등을 계속 삼
+      → 3시간 동안 실전 7건 중 6건이 '시장 전체 하락'으로 손실. 기존 'BTC 급락(30분 -0.5%)' 관문은 기준선 근처에서 켜졌다 꺼졌다 함
+질문: 매수 시점에 BTC가 최근 N분 동안 X% 이상 빠져 있으면 막는 관문이, '보지 않은 다음 6시간' 거래 중
+      막았을 거래(거래당 순익)가 통과 거래보다 확실히 나쁜가?
+- 롤링 워크포워드: 과거 3일(4320분)로 현재 봇 기준으로 전략을 고르고 다음 6시간 성적, 6개 창 (이전 실험과 동일)
+- 미끄러짐: 업비트 실제 호가 단위 기준. 매수 시각(분)으로 BTC 1분봉과 맞춰 BTC 변화율 계산
 """
 import importlib.util, json, os, random, time
 spec_ = importlib.util.spec_from_file_location("bot", os.path.join(os.path.dirname(__file__), "..", "bot", "chamdom_bot.py"))
@@ -21,15 +21,9 @@ TRAIN, STEP, WINDOWS = 4320, 360, 6
 TOTAL = TRAIN + WINDOWS * STEP
 up = bot.Upbit("x", "y")
 
-# (보유시간 경과 비율, 익절 진행률 상한) — 둘 다 만족 + 손실 중이면 그 봉 종가에 정리. None = 끝까지 보유(현재)
-VARIANTS = {
-    "현재(끝까지 보유)": None,
-    "절반·진행20%미만": (0.5, 0.20),
-    "절반·진행0%미만": (0.5, 0.0),
-    "1/3·진행20%미만": (0.33, 0.20),
-    "2/3·진행20%미만": (0.67, 0.20),
-    "절반·진행40%미만": (0.5, 0.40),
-}
+# (BTC 살펴볼 분, 이 % 이하면 막음)
+VARIANTS = {"30분 -0.5% (지금 BTC 급락 관문)": (30, -0.5), "60분 -0.7%": (60, -0.7), "120분 -1.0%": (120, -1.0),
+            "120분 -0.7%": (120, -0.7), "240분 -1.5%": (240, -1.5), "240분 -1.0%": (240, -1.0)}
 
 real_tick = {}
 for i in range(0, len(MARKETS), 20):
@@ -42,47 +36,35 @@ for i in range(0, len(MARKETS), 20):
     time.sleep(0.3)
 
 
-def backtest_v(series, spec, start, end, rule):
-    """bot.backtest 와 같고, rule 이 있으면 '힘 빠진 보유 정리'를 추가. 반환: (거래별 %, 조기정리 건수)"""
+def backtest_t(series, spec, start, end):
+    """bot.backtest 와 같고 (매수 봉 인덱스, %) 를 돌려줌"""
     sig = series.signal(spec)
-    results, early_n, i, cooldown_until = [], 0, start, -1
+    out, i, cooldown_until = [], start, -1
     slip = series.slip
     while i < end - 1:
         if i < cooldown_until or not sig[i]:
             i += 1
             continue
         j = i + 1
-        fill = series.o[j] * (1 + slip)
-        entry = fill * (1 + bot.FEE_RATE)
+        entry = series.o[j] * (1 + slip) * (1 + bot.FEE_RATE)
         tp, sl = bot.target_price(entry, spec.get("tp", bot.TARGET_NET_PCT)), entry * (1 + spec["sl"] / 100)
-        exit_price, k, hi = None, j, entry
+        exit_price, k = None, j
         while k < end:
             if series.l[k] <= sl:
-                exit_price = sl
-                break
+                exit_price = sl; break
             if series.h[k] >= tp:
-                exit_price = tp
-                break
+                exit_price = tp; break
             if k - j >= spec["hold"]:
-                exit_price = series.c[k]
-                break
-            hi = max(hi, series.h[k])
-            if rule and k - j >= spec["hold"] * rule[0]:
-                prog = (hi - entry) / (tp - entry) if tp > entry else 0
-                now_pct = series.c[k] * (1 - slip) * (1 - bot.FEE_RATE) / entry - 1
-                if prog < rule[1] and now_pct < 0:
-                    exit_price = series.c[k]
-                    early_n += 1
-                    break
+                exit_price = series.c[k]; break
             k += 1
         if exit_price is None:
             break
         pnl = (exit_price * (1 - slip) * (1 - bot.FEE_RATE) / entry - 1) * 100
-        results.append(pnl)
+        out.append((i, pnl))
         i = k + 1
         if pnl < 0:
             cooldown_until = i + bot.LOSS_COOLDOWN_MIN
-    return results, early_n
+    return out
 
 
 def pick(cands):
@@ -100,7 +82,21 @@ def pick(cands):
 
 
 print("현재 봇 값:", bot.EXPLORE_MIN_TRADES, bot.EXPLORE_MIN_EDGE, bot.EXPLORE_HOLDOUT_FLOOR, "· 시험 수", bot.BT_TRIALS, flush=True)
-summary = {k: {"trades": 0, "sum": 0.0, "wins": 0, "early": 0, "picked": 0} for k in VARIANTS}
+btc_c = up.minute_candles("KRW-BTC", TOTAL + 300)
+btc = {c["candle_date_time_utc"][:16]: c["trade_price"] for c in btc_c}
+btc_keys = sorted(btc)
+btc_idx = {k: n for n, k in enumerate(btc_keys)}
+
+
+def btc_chg(ts, mins):
+    n = btc_idx.get(ts)
+    if n is None or n < mins:
+        return None
+    return (btc[btc_keys[n]] / btc[btc_keys[n - mins]] - 1) * 100
+
+
+summary = {k: {"blocked": [0, 0.0, 0], "passed": [0, 0.0, 0], "hours": set()} for k in VARIANTS}
+allt = [0, 0.0]
 t0 = time.time()
 for mk in MARKETS:
     try:
@@ -108,11 +104,12 @@ for mk in MARKETS:
     except Exception as e:
         print(mk, "fail", e); continue
     s = bot.Series(candles)
+    ts = [c["candle_date_time_utc"][:16] for c in candles]
     if s.n < TOTAL - 50:
         print(mk, "short", s.n); continue
     price = s.c[-1]
     s.slip = bot.BT_SLIP_BASE + (real_tick.get(mk) or bot.tick_size(price)) / price
-    line = {k: [0, 0.0, 0] for k in VARIANTS}
+    nt = 0
     for w in range(WINDOWS):
         end = TRAIN + w * STEP
         sub = bot.Series.__new__(bot.Series)
@@ -132,19 +129,25 @@ for mk in MARKETS:
         sp = pick(cands)
         if not sp:
             continue
-        for k, rule in VARIANTS.items():
-            res, en = backtest_v(s, sp, end, min(end + STEP, s.n), rule)
-            d = summary[k]
-            d["picked"] += 1; d["trades"] += len(res); d["sum"] += sum(res); d["wins"] += sum(1 for x in res if x > 0); d["early"] += en
-            L = line[k]; L[0] += len(res); L[1] += sum(res); L[2] += en
-    print(f"== {mk} 미끄러짐 {s.slip * 100:.3f}% ({time.time() - t0:.0f}s)", flush=True)
-    for k, L in line.items():
-        print(f"  {k}: {L[0]}회 합 {L[1]:+.2f}% (조기정리 {L[2]})", flush=True)
+        for i, pnl in backtest_t(s, sp, end, min(end + STEP, s.n)):
+            nt += 1; allt[0] += 1; allt[1] += pnl
+            for k, (mins, th) in VARIANTS.items():
+                ch = btc_chg(ts[i], mins)
+                if ch is None:
+                    continue
+                side = "blocked" if ch <= th else "passed"
+                d = summary[k][side]; d[0] += 1; d[1] += pnl; d[2] += pnl > 0
+                if side == "blocked":
+                    summary[k]["hours"].add(ts[i][:13])
+    print(f"== {mk} 거래 {nt} ({time.time() - t0:.0f}s)", flush=True)
 
-print("\n#### 합계 (보지 않은 다음 6시간, 실제 호가 단위 미끄러짐, 같은 전략에 청산 규칙만 다름)")
+print(f"\n#### 합계 (보지 않은 다음 6시간, 전체 거래 {allt[0]} · 거래당 {allt[1] / max(allt[0], 1):+.3f}%)")
+print("관문 판정 기준(봇과 같음): 막았을 거래 20건↑·3개 시간대↑, 거래당 0.15%p 이상 나쁘고 그 자체도 손실")
+out = {}
 for k, d in summary.items():
-    n = d["trades"]
-    d["avg"] = d["sum"] / n if n else 0
-    d["winrate"] = d["wins"] / n if n else 0
-    print(f"{k}: 채택창 {d['picked']} · 거래 {n} · 승률 {d['winrate'] * 100:.0f}% · 거래당 {d['avg']:+.3f}% · 합 {d['sum']:+.2f}% · 조기정리 {d['early']}건")
-json.dump(summary, open("bt_summary.json", "w"), ensure_ascii=False, indent=1)
+    b, p = d["blocked"], d["passed"]
+    ba, pa = (b[1] / b[0] if b[0] else 0), (p[1] / p[0] if p[0] else 0)
+    ok = b[0] >= 20 and len(d["hours"]) >= 3 and ba <= pa - 0.15 and ba < 0
+    print(f"{k}: 막았을 거래 {b[0]}건(시간대 {len(d['hours'])}) 승률 {b[2] / max(b[0], 1) * 100:.0f}% 거래당 {ba:+.3f}% | 통과 {p[0]}건 승률 {p[2] / max(p[0], 1) * 100:.0f}% 거래당 {pa:+.3f}% | 차이 {ba - pa:+.3f}%p → {'적용 기준 충족' if ok else '미충족'}")
+    out[k] = {"blocked": b, "passed": p, "hours": len(d["hours"]), "blockedAvg": ba, "passedAvg": pa, "meets": ok}
+json.dump(out, open("bt_summary.json", "w"), ensure_ascii=False, indent=1)

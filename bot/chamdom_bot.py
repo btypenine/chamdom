@@ -912,8 +912,26 @@ def exit_btc_drop(bot, pos, price):
     return (chg <= BTC_EXIT_PCT and pnl < 0), f"매수 후 BTC {chg:+.2f}% · 포지션 {pnl:+.2f}%"
 
 
+STALE_EXIT_FRAC = 0.5            # 힘 빠진 보유: 보유시간의 이 비율이 지났는데
+STALE_EXIT_PROG = 20             # 익절까지 진행률(최고가 기준)이 이 % 미만이고 손실 중이면 조기 정리 대상
+
+
+def exit_stale(bot, pos, price):
+    """실패 원인 1위 '보유시간 안에 목표 미도달(힘 부족)' 대응 — 끝까지 들고 있어 봐야 대개 시간 초과로 끝나는 거래를 일찍 정리"""
+    start, end = pos["at"] / 1000, pos["deadline"]
+    if end <= start:
+        return False, ""
+    frac = (time.time() - start) / (end - start)
+    up_room = pos["tp"] - pos["unit"]
+    prog = (pos.get("maxP", pos["unit"]) - pos["unit"]) / up_room * 100 if up_room > 0 else 0
+    pnl = (price * (1 - FEE_RATE) / pos["unit"] - 1) * 100
+    return (frac >= STALE_EXIT_FRAC and prog < STALE_EXIT_PROG and pnl < 0), \
+        f"보유시간 {frac * 100:.0f}% 경과 · 익절 진행률 최고 {max(prog, 0):.0f}% · 포지션 {pnl:+.2f}%"
+
+
 EXIT_RULES = [
     {"id": "btc_exit", "name": "보유 중 BTC 하락 정리", "desc": f"들고 있는 동안 BTC가 {BTC_EXIT_PCT}% 이상 빠지고 손실 중이면 일찍 정리", "fn": exit_btc_drop},
+    {"id": "stale_exit", "name": "힘 빠진 보유 정리", "desc": f"보유시간 {STALE_EXIT_FRAC * 100:.0f}%가 지나도 익절까지 {STALE_EXIT_PROG}%도 못 갔고 손실 중이면 일찍 정리", "fn": exit_stale},
 ]
 
 
