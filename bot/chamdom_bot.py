@@ -912,6 +912,21 @@ def gate_chase(bot, mk, price, ctx):
     return gap >= CHASE_PCT, f"{mk.split('-')[1]} 현재가가 신호가보다 {gap:+.2f}% (기준 +{CHASE_PCT}%)"
 
 
+WEAK_HO_MIN_TRADES = 3          # 검증 근거 약함 관문: 검증구간(보지 않은 뒤 25%) 거래가 이보다 적거나
+WEAK_HO_MIN_EDGE = 0.1          # 검증구간 거래당 순익이 이 % 미만이면 막음
+
+
+def gate_weak_holdout(bot, mk, price, ctx):
+    """백테스트 예상(거래당 +0.3%)과 실전(-0.4%) 차이 대응 — 검증구간 근거가 얇은 전략의 매수를 따로 잼"""
+    sp = (bot.state.get("strategies") or {}).get(mk) or {}
+    n, edge = sp.get("holdoutTrades"), sp.get("holdoutEdgePct")
+    if n is None:
+        return False, "검증 기록 없음"
+    edge = edge if n else 0.0
+    return (n < WEAK_HO_MIN_TRADES or edge < WEAK_HO_MIN_EDGE), \
+        f"{mk.split('-')[1]} 검증구간 {n}회 거래당 {edge:+.2f}% (기준 {WEAK_HO_MIN_TRADES}회·{WEAK_HO_MIN_EDGE:+.1f}% 이상)"
+
+
 # entry=True 관문은 1분마다가 아니라 매수 신호가 날 때마다 그 종목 기준으로 확인: fn(bot, 종목, 현재가, ctx)
 MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
@@ -919,6 +934,7 @@ MARKET_GATES = [
     {"id": "event", "name": "경제 일정", "desc": "FOMC·미국 물가(CPI) 발표 등 정해진 일정 앞뒤로 새로 사지 않음 (일정표: bot/events.json)", "fn": gate_event},
     {"id": "volatile_hours", "name": "변동 큰 시간대", "desc": "미국장 시작(23~00시)·유럽장 시작(17시)에는 새로 사지 않음", "fn": gate_volatile_hours},
     {"id": "chase", "name": "추격 매수", "desc": f"매수 직전 현재가가 신호가보다 {CHASE_PCT}% 이상 올라 있으면 사지 않음(늦게 따라붙기 방지)", "fn": gate_chase, "entry": True},
+    {"id": "weak_holdout", "name": "검증 근거 약함", "desc": f"전략의 검증구간 거래가 {WEAK_HO_MIN_TRADES}회 미만이거나 거래당 {WEAK_HO_MIN_EDGE:+.1f}% 미만이면 사지 않음", "fn": gate_weak_holdout, "entry": True},
 ]
 
 # ---- 청산 판단 (보유 중) — 관문과 같은 '관찰 → 승인 → 적용' 구조 ----
