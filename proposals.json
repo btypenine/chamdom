@@ -36,6 +36,17 @@
    "branch": "ai/20261029-chase-gate",
    "createdAt": "2026-10-29T08:58:00+09:00",
    "status": "pending"
+  },
+  {
+   "id": "ai-20261029-btc-trend",
+   "title": "시장 판단에 'BTC 하락 추세' 관문 추가 (관찰로 시작)",
+   "summary": "BTC가 최근 120분 동안 -1.0% 이하로 밀려 있으면 '막았을 거래'로 표시해 성적을 비교함. 매매는 그대로, 판정 후 바꿔야 하면 승인 요청.",
+   "why": "10-29 10~11시 BTC가 2시간 서서히 밀리는 동안 실전 7건 중 6건 '시장 전체 하락' 손실. 30분 급락 관문은 기준선 근처에서 켜졌다 꺼졌다 함. bt-lab은 막았을 거래 3건뿐이라 결론 못 냄",
+   "risk": "관찰 전용이라 매매 영향 없음. BTC 시세 요청 크기만 늘어남",
+   "pr": "https://github.com/btypenine/chamdom/pull/4",
+   "branch": "ai/20261029-btc-trend",
+   "createdAt": "2026-10-29T12:25:00+09:00",
+   "status": "pending"
   }
  ]
 }
