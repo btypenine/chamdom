@@ -851,6 +851,8 @@ GATE_MARGIN = 0.15               # 막았을 거래가 통과 거래보다 거�
 GATE_RECHECK = 20                # 이후 막았을 거래가 이만큼 더 쌓일 때마다 재판정
 BTC_DROP_MIN = 30                # BTC 급락 관문: 최근 몇 분
 BTC_DROP_PCT = -0.5              # 이 % 이하로 빠졌으면 막음
+BTC_TREND_MIN = 120              # BTC 하락 추세 관문: 최근 몇 분 (급락 관문보다 느린 흐름을 봄)
+BTC_TREND_PCT = -1.0             # 이 % 이하로 밀려 있으면 막음
 EVENTS_URL = "https://raw.githubusercontent.com/btypenine/chamdom/main/bot/events.json"
 EVENTS_REFRESH = 30 * 60         # 일정표 다시 받는 간격(초) — 코드 재시작 없이 일정만 갱신 가능
 
@@ -861,6 +863,15 @@ def gate_btc_drop(bot):
         return False, "BTC 시세 확인 중"
     chg = (c[-1] / c[-1 - BTC_DROP_MIN] - 1) * 100
     return chg <= BTC_DROP_PCT, f"BTC {BTC_DROP_MIN}분 {chg:+.2f}% (기준 {BTC_DROP_PCT}%)"
+
+
+def gate_btc_trend(bot):
+    """10-29 10~11시처럼 BTC가 2시간에 걸쳐 서서히 밀릴 때 — 30분 급락 관문은 기준선 근처에서 켜졌다 꺼졌다 함"""
+    c = bot.btc_closes()
+    if len(c) < BTC_TREND_MIN + 1:
+        return False, "BTC 시세 확인 중"
+    chg = (c[-1] / c[-1 - BTC_TREND_MIN] - 1) * 100
+    return chg <= BTC_TREND_PCT, f"BTC {BTC_TREND_MIN}분 {chg:+.2f}% (기준 {BTC_TREND_PCT}%)"
 
 
 def gate_event(bot):
@@ -904,6 +915,7 @@ def gate_chase(bot, mk, price, ctx):
 # entry=True 관문은 1분마다가 아니라 매수 신호가 날 때마다 그 종목 기준으로 확인: fn(bot, 종목, 현재가, ctx)
 MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
+    {"id": "btc_trend", "name": "BTC 하락 추세", "desc": f"BTC가 최근 {BTC_TREND_MIN}분 동안 {BTC_TREND_PCT}% 이하로 밀려 있으면 새로 사지 않음", "fn": gate_btc_trend},
     {"id": "event", "name": "경제 일정", "desc": "FOMC·미국 물가(CPI) 발표 등 정해진 일정 앞뒤로 새로 사지 않음 (일정표: bot/events.json)", "fn": gate_event},
     {"id": "volatile_hours", "name": "변동 큰 시간대", "desc": "미국장 시작(23~00시)·유럽장 시작(17시)에는 새로 사지 않음", "fn": gate_volatile_hours},
     {"id": "chase", "name": "추격 매수", "desc": f"매수 직전 현재가가 신호가보다 {CHASE_PCT}% 이상 올라 있으면 사지 않음(늦게 따라붙기 방지)", "fn": gate_chase, "entry": True},
@@ -1436,7 +1448,7 @@ class Bot:
         now_min = int(time.time() // 60)
         if getattr(self, "_btc_min", None) != now_min:
             try:
-                self._btc_c = [c["trade_price"] for c in self.upbit.minute_candles("KRW-BTC", BTC_DROP_MIN + 3)[:-1]]
+                self._btc_c = [c["trade_price"] for c in self.upbit.minute_candles("KRW-BTC", max(BTC_DROP_MIN, BTC_TREND_MIN) + 3)[:-1]]
                 self._btc_min = now_min
             except Exception:
                 return getattr(self, "_btc_c", [])
