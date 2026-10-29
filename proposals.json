@@ -35,7 +35,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/3",
    "branch": "ai/20261029-chase-gate",
    "createdAt": "2026-10-29T08:58:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-10-29T13:33:00+09:00"
   },
   {
    "id": "ai-20261029-btc-trend",
@@ -46,7 +47,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/4",
    "branch": "ai/20261029-btc-trend",
    "createdAt": "2026-10-29T12:11:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-10-29T13:33:00+09:00"
   }
  ]
 }
