@@ -60,6 +60,18 @@
    "branch": "ai/20261029-giveback-exit",
    "createdAt": "2026-10-29T15:20:00+09:00",
    "status": "pending"
+  },
+  {
+   "id": "ai-20261029-exec-cost",
+   "title": "체결 비용 기록(시장가 미끄러짐·익절 지정가 가정 이득)",
+   "summary": "매수·매도 체결 때 신호가 대비 체결가 차이를 종류별로 누적하고, 익절은 '목표가 지정가였다면 더 받았을 몫'도 기록. 매매에는 영향 없는 기록 전용.",
+   "why": "사용자 질문(지정가 미리 걸기) 판단 근거. 로그상 0.2% 이상 밀린 매도 45건 모두 불리, 평균 -0.48%. 익절 신호 3건은 밀림 때문에 손실로 끝남.",
+   "risk": "낮음 — 기록 함수 2곳 추가, 실패해도 주문 흐름 영향 없음(try/except).",
+   "pr": "https://github.com/btypenine/chamdom/pull/6",
+   "branch": "ai/20261029-exec-cost",
+   "createdAt": "2026-10-29T20:55:00+09:00",
+   "status": "pending",
+   "requestId": "req-vtfio37irwii"
   }
  ]
 }
