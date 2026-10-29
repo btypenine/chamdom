@@ -889,10 +889,24 @@ def gate_volatile_hours(bot):
     return h in VOLATILE_HOURS, f"지금 {h:02d}시 · 변동 큰 시간대 {', '.join(f'{x:02d}시' for x in VOLATILE_HOURS)}"
 
 
+CHASE_PCT = 0.3                 # 추격 매수 관문: 매수 직전 현재가가 신호가(신호 봉 종가)보다 이 % 이상 비싸면 막음
+
+
+def gate_chase(bot, mk, price, ctx):
+    """실패 원인 2위 '신호 늦게 따라감' 대응 — 매수할 때마다(종목별) 확인하는 관문"""
+    sig = (ctx or {}).get("signalPrice")
+    if not sig or not price:
+        return False, "신호가 없음"
+    gap = (price / sig - 1) * 100
+    return gap >= CHASE_PCT, f"{mk.split('-')[1]} 현재가가 신호가보다 {gap:+.2f}% (기준 +{CHASE_PCT}%)"
+
+
+# entry=True 관문은 1분마다가 아니라 매수 신호가 날 때마다 그 종목 기준으로 확인: fn(bot, 종목, 현재가, ctx)
 MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
     {"id": "event", "name": "경제 일정", "desc": "FOMC·미국 물가(CPI) 발표 등 정해진 일정 앞뒤로 새로 사지 않음 (일정표: bot/events.json)", "fn": gate_event},
     {"id": "volatile_hours", "name": "변동 큰 시간대", "desc": "미국장 시작(23~00시)·유럽장 시작(17시)에는 새로 사지 않음", "fn": gate_volatile_hours},
+    {"id": "chase", "name": "추격 매수", "desc": f"매수 직전 현재가가 신호가보다 {CHASE_PCT}% 이상 올라 있으면 사지 않음(늦게 따라붙기 방지)", "fn": gate_chase, "entry": True},
 ]
 
 # ---- 청산 판단 (보유 중) — 관문과 같은 '관찰 → 승인 → 적용' 구조 ----
@@ -1457,6 +1471,8 @@ class Bot:
             return self._gate_now
         out = {}
         for g in MARKET_GATES:
+            if g.get("entry"):
+                continue                                   # 종목별 관문은 gate_entry 에서 확인
             try:
                 out[g["id"]] = g["fn"](self)
             except Exception as e:
@@ -1610,7 +1626,18 @@ class Bot:
 
     def gate_entry(self, mk, spec, price, ctx):
         """매수 직전 관문 확인. 막으면 False(가상 거래 등록), 통과면 True (관찰 관문 기록은 ctx 에 남김)"""
-        now = self.gate_check()
+        now = dict(self.gate_check())
+        last = self.__dict__.setdefault("_entry_gate_last", {})
+        for g in MARKET_GATES:
+            if not g.get("entry"):
+                continue
+            try:
+                now[g["id"]] = g["fn"](self, mk, price, ctx)
+            except Exception as e:
+                now[g["id"]] = (False, f"확인 실패: {e}")
+            last[g["id"]] = now[g["id"]]
+            if now[g["id"]][0] and self.gate_stat(g["id"])["mode"] != "active":
+                log(f"[시장 판단] {g['name']} 감지: {now[g['id']][1]} · 관찰 중 → 매수는 하되 '막았을 거래'로 표시")
         hits = [gid for gid, (blk, _) in now.items() if blk]
         active = [gid for gid in hits if self.gate_stat(gid)["mode"] == "active"]
         if active:
@@ -1663,7 +1690,11 @@ class Bot:
         for g in MARKET_GATES:
             st = self.gate_stat(g["id"])
             b, p = st["blocked"], st["passed"]
-            blk, reading = now.get(g["id"], (False, "확인 전"))
+            if g.get("entry"):
+                lb, lr = getattr(self, "_entry_gate_last", {}).get(g["id"], (False, "매수 신호 때마다 확인"))
+                blk, reading = False, ("최근 매수 신호: " + lr) if lr != "매수 신호 때마다 확인" else lr
+            else:
+                blk, reading = now.get(g["id"], (False, "확인 전"))
             out.append({"id": g["id"], "name": g["name"], "desc": g["desc"], "mode": st["mode"], "now": blk, "reading": reading,
                         "blockedN": b["n"], "blockedAvg": round(b["sumPct"] / b["n"], 3) if b["n"] else None,
                         "blockedWins": b["wins"], "passedN": p["n"],
