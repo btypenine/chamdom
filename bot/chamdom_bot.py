@@ -955,9 +955,22 @@ def exit_stale(bot, pos, price):
         f"보유시간 {frac * 100:.0f}% 경과 · 익절 진행률 최고 {max(prog, 0):.0f}% · 포지션 {pnl:+.2f}%"
 
 
+GIVEBACK_PROG = 70              # 익절 근처 되밀림: 익절까지 진행률(최고가 기준)이 이 % 이상 갔었는데
+GIVEBACK_PNL = 0.0               # 지금 순손익(수수료 포함)이 이 % 이하로 되밀렸으면 조기 정리 대상
+
+
+def exit_giveback(bot, pos, price):
+    """실패 원인 '익절 직전까지 갔다가 반락' 대응 — 거의 다 간 수익을 손실로 바꾸기 전에 본전 근처에서 정리"""
+    up_room = pos["tp"] - pos["unit"]
+    prog = (pos.get("maxP", pos["unit"]) - pos["unit"]) / up_room * 100 if up_room > 0 else 0
+    pnl = (price * (1 - FEE_RATE) / pos["unit"] - 1) * 100
+    return (prog >= GIVEBACK_PROG and pnl <= GIVEBACK_PNL), f"익절 진행률 최고 {prog:.0f}% · 지금 포지션 {pnl:+.2f}%"
+
+
 EXIT_RULES = [
     {"id": "btc_exit", "name": "보유 중 BTC 하락 정리", "desc": f"들고 있는 동안 BTC가 {BTC_EXIT_PCT}% 이상 빠지고 손실 중이면 일찍 정리", "fn": exit_btc_drop},
     {"id": "stale_exit", "name": "힘 빠진 보유 정리", "desc": f"보유시간 {STALE_EXIT_FRAC * 100:.0f}%가 지나도 익절까지 {STALE_EXIT_PROG}%도 못 갔고 손실 중이면 일찍 정리", "fn": exit_stale},
+    {"id": "giveback_exit", "name": "익절 근처 되밀림 정리", "desc": f"익절까지 {GIVEBACK_PROG}% 이상 갔다가 순손익 {GIVEBACK_PNL:+.1f}% 이하로 되밀리면 일찍 정리", "fn": exit_giveback},
 ]
 
 
