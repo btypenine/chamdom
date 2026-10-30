@@ -1022,6 +1022,36 @@ function renderMore(s, stale) {
   const rbox = $("ruleBook"); rbox.textContent = "";
   if (!rbk.length) rbox.innerHTML = '<div class="empty">아직 기록된 규칙이 없습니다.</div>';
   const pct = (v) => (v == null ? "-" : (v >= 0 ? "+" : "") + v.toFixed(2) + "%");
+  // 백테스트 예상 vs 실전 괴리 (실전 1회 이상 규칙, 거래 수 가중 평균)
+  const gapRow = (label, list) => {
+    const xs = list.filter(r => r.trades > 0 && r.avgPct != null && r.btEdge != null);
+    const n = xs.reduce((a, r) => a + r.trades, 0);
+    if (!n) return null;
+    const real = xs.reduce((a, r) => a + r.avgPct * r.trades, 0) / n;
+    const bt = xs.reduce((a, r) => a + r.btEdge * r.trades, 0) / n;
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = "<span></span><span class='num'></span>";
+    el.firstChild.textContent = label;
+    el.firstChild.style.whiteSpace = "nowrap";
+    const gap = real - bt;
+    el.lastChild.textContent = `${n}회 · 예상 ${pct(bt)} → 실전 ${pct(real)}`;
+    el.lastChild.title = `차이 ${gap >= 0 ? "+" : ""}${gap.toFixed(2)}%p`;
+    el.lastChild.classList.add(real >= 0 ? "up" : "down");
+    if (n < 20) el.style.opacity = "0.6";
+    return el;
+  };
+  const gapRows = [
+    gapRow("전체 규칙", rbk),
+    gapRow("└ 실전 통과", rbk.filter(r => r.status === "proven")),
+    gapRow("└ 검증 중", rbk.filter(r => r.status !== "proven" && r.status !== "retired")),
+    gapRow("└ 퇴출", rbk.filter(r => r.status === "retired")),
+  ].filter(Boolean);
+  if (gapRows.length) {
+    const box = document.createElement("div");
+    box.style.cssText = "border-bottom:1px solid var(--line);margin-bottom:6px;padding-bottom:4px";
+    gapRows.forEach(e => box.append(e));
+    rbox.append(box);
+  }
   for (const r of rbk) {
     const el = document.createElement("div"); el.className = "li stack";
     el.innerHTML = `<span><b></b> <span class="tag"></span><br><span class="sub d"></span></span><span class="num r"></span>`;
