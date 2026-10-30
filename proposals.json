@@ -109,6 +109,17 @@
    "branch": "ai/20261030-proven-only-live",
    "createdAt": "2026-10-30T11:50:00+09:00",
    "status": "pending"
+  },
+  {
+   "id": "ai-20261030-dawn-gate",
+   "title": "새벽 시간대(03~08시) 관문 추가 — 관찰로 시작",
+   "summary": "03:00~08:59 매수를 '막았을 거래'로 표시해 나머지 시간과 실전 성적을 비교. 매매 동작은 안 바뀜.",
+   "why": "실전 201건 중 새벽 매수 58건 거래당 -0.87% vs 나머지 143건 -0.27%(4일치라 표본 작음)",
+   "risk": "관찰 모드라 위험 낮음. 나중에 적용으로 바꿀 땐 봇이 따로 승인 요청함",
+   "pr": "https://github.com/btypenine/chamdom/pull/10",
+   "branch": "ai/20261030-dawn-gate",
+   "createdAt": "2026-10-30T11:55:00+09:00",
+   "status": "pending"
   }
  ]
 }
