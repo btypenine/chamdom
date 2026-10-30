@@ -158,6 +158,17 @@
       "createdAt": "2026-10-30T17:55:00+09:00",
       "status": "merged",
       "requestId": "req-vtfio37irwii"
+    },
+    {
+      "id": "ai-20261030-bt-gap",
+      "title": "규칙 장부에 '백테스트 예상 vs 실전' 비교 줄",
+      "summary": "규칙 장부 맨 위에 전체·실전 통과·검증 중·퇴출별로 예상 거래당 순익과 실전 거래당 순익을 나란히 표시",
+      "why": "전체 114회 예상 +0.37% vs 실전 -0.13%(약 0.5%p 과대평가). 실전 통과 규칙만 +0.48%로 예상보다 좋음 → 괴리를 계속 추적해 검증 기준을 다듬기 위함",
+      "risk": "화면 표시만 추가, 매매 영향 없음",
+      "pr": "https://github.com/btypenine/chamdom/pull/14",
+      "branch": "ai/20261030-bt-gap",
+      "createdAt": "2026-10-30T20:58:00+09:00",
+      "status": "pending"
     }
   ]
 }
