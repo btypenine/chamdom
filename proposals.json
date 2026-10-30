@@ -59,7 +59,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/5",
    "branch": "ai/20261029-giveback-exit",
    "createdAt": "2026-10-29T15:20:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-10-30T10:35:00+09:00"
   },
   {
    "id": "ai-20261029-exec-cost",
@@ -70,8 +71,9 @@
    "pr": "https://github.com/btypenine/chamdom/pull/6",
    "branch": "ai/20261029-exec-cost",
    "createdAt": "2026-10-29T20:55:00+09:00",
-   "status": "pending",
-   "requestId": "req-vtfio37irwii"
+   "status": "merged",
+   "requestId": "req-vtfio37irwii",
+   "mergedAt": "2026-10-30T10:35:00+09:00"
   },
   {
    "id": "ai-20261030-hour-stats",
@@ -93,7 +95,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/8",
    "branch": "ai/20261030-weak-holdout",
    "createdAt": "2026-10-30T09:25:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-10-30T10:35:00+09:00"
   }
  ]
 }
