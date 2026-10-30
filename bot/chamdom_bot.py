@@ -1285,6 +1285,7 @@ class Bot:
                 log(f"[경고] {market} 매수 체결 확인 실패")
                 return
             cost = funds + fee
+            self.exec_record("buy", (funds / vol / price - 1) * 100)
         else:
             vol = krw * (1 - FEE_RATE) / price
             cost = krw
@@ -1320,6 +1321,8 @@ class Bot:
             if vol > 0:
                 fill = funds / vol
                 slip = (fill / price - 1) * 100
+                tp_gap = (pos["tp"] / fill - 1) * 100 if reason == "익절" else None
+                self.exec_record(reason, slip, tp_gap)
                 if abs(slip) >= 0.2:
                     log(f"[체결 확인] {market} 신호가 {price:,.4f} → 체결가 {fill:,.4f} ({slip:+.2f}%)")
             if vol < pos["volume"] * 0.999:
@@ -1358,6 +1361,20 @@ class Bot:
             + ("" if pnl > 0 else f" · {LOSS_COOLDOWN_MIN}분 대기"))
         self._record("sell", market, price, proceeds, reason, round(pnl), analysis)
         self.upload_status()
+
+    def exec_record(self, kind, slip_pct, tp_gap=None):
+        """체결 비용 기록(분석 전용, 매매에는 영향 없음): 시장가 주문이 신호가 대비 얼마나 밀려 체결됐는지.
+        익절은 '목표가에 지정가 매도를 미리 걸어뒀다면' 더 받았을 몫(tp_gap)도 함께 누적 → 지정가 전환 판단 근거"""
+        try:
+            key = "buy" if kind == "buy" else "sell:" + ("익절" if kind.startswith("익절") else kind if kind in ("손절", "보유시간 초과") else "조기 정리")
+            es = self.state.setdefault("execStats", {}).setdefault(key, {"n": 0, "sumSlip": 0.0, "worse": 0, "sumTpGap": 0.0})
+            es["n"] += 1
+            es["sumSlip"] += slip_pct
+            es["worse"] += 1 if (slip_pct > 0.05 if kind == "buy" else slip_pct < -0.05) else 0
+            if tp_gap is not None:
+                es["sumTpGap"] += max(tp_gap, 0.0)
+        except Exception:
+            pass
 
     def post_mortem(self, market, pos, price, reason, pnl):
         """실패로 끝난 거래 원인 분석 → 기록·통계"""
@@ -1859,6 +1876,7 @@ class Bot:
                        "검증승률": sp.get("holdoutWinrate"), "검증거래": sp.get("holdoutTrades")}
                       for m, sp in self.state["strategies"].items()],
             "실패원인누적": self.state.get("failStats", {}),
+            "체결비용": self.state.get("execStats", {}),
             "최근거래": self.state.get("tradeLog", []),
         }
 
@@ -1956,6 +1974,9 @@ class Bot:
                      "report": self.state["lastReport"],
                      "ai": self.state.get("aiReport"),
                      "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
+                     "execStats": [{"kind": k, "n": v["n"], "avgSlip": round(v["sumSlip"] / v["n"], 3), "worse": v["worse"],
+                                    "avgTpGap": round(v["sumTpGap"] / v["n"], 3) if k == "sell:익절" else None}
+                                   for k, v in self.state.get("execStats", {}).items() if v.get("n")],
                      "failStats": [{"code": k, "label": FAIL_LABELS.get(k, k), "count": v}
                                    for k, v in sorted(self.state.get("failStats", {}).items(), key=lambda x: -x[1])]})
         self.cloud.put_status(data)
