@@ -378,6 +378,12 @@ body.compact #sumCard { display: flex !important; }
       <div class="list" id="failStats"></div>
     </section>
 
+    <section class="card" id="execCard" hidden>
+      <h2>체결 비용 (시장가 밀림)</h2>
+      <div class="sub">실제 돈으로 낸 시장가 주문이 봇이 본 가격(신호가)보다 얼마나 불리하게 체결됐는지입니다. 매수는 +일수록, 매도는 −일수록 손해입니다. 익절 줄의 '지정가였다면'은 목표가에 매도 주문을 미리 걸어뒀다면 건당 더 받았을 몫으로, 익절 지정가 전환을 판단하는 근거입니다. 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 10회 미만입니다.</div>
+      <div class="list" id="execStats"></div>
+    </section>
+
     <section class="card" id="tradeCard">
       <h2>최근 거래</h2>
       <div class="list" id="trades"><div class="empty">아직 거래가 없습니다.</div></div>
@@ -1068,6 +1074,28 @@ function renderMore(s, stale) {
     el.innerHTML = "<span></span><span class='num'></span>";
     el.firstChild.textContent = f.label; el.lastChild.textContent = f.count + "회";
     fbox.append(el);
+  }
+
+  // 체결 비용 (시장가 밀림)
+  const EXEC_LABEL = { "buy": "매수", "sell:익절": "익절 매도", "sell:손절": "손절 매도", "sell:보유시간 초과": "시간 초과 매도", "sell:조기 정리": "조기 정리 매도" };
+  const EXEC_ORDER = ["buy", "sell:익절", "sell:손절", "sell:보유시간 초과", "sell:조기 정리"];
+  const est = (Array.isArray(s.execStats) ? s.execStats : []).filter(e => e && e.n > 0)
+    .sort((a, b) => (EXEC_ORDER.indexOf(a.kind) + 99) % 99 - (EXEC_ORDER.indexOf(b.kind) + 99) % 99);
+  $("execCard").hidden = !est.length;
+  const ebox = $("execStats"); ebox.textContent = "";
+  const epct = (v) => `${v >= 0 ? "+" : ""}${Number(v).toFixed(2)}%`;
+  for (const e of est) {
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = "<span></span><span class='num'></span>";
+    el.firstChild.textContent = EXEC_LABEL[e.kind] || e.kind;
+    el.firstChild.style.whiteSpace = "nowrap";
+    if (e.n < 10) el.style.opacity = "0.6";
+    const bad = e.kind === "buy" ? e.avgSlip > 0.05 : e.avgSlip < -0.05;
+    let txt = `${e.n}회 · 평균 ${epct(e.avgSlip)} · 불리 ${e.worse}회`;
+    if (e.avgTpGap != null) txt += ` · 지정가였다면 ${epct(e.avgTpGap)}/건`;
+    el.lastChild.textContent = txt;
+    if (bad) el.lastChild.classList.add("down");
+    ebox.append(el);
   }
 
   // 실시간 기록 (최신이 위)
