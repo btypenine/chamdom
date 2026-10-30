@@ -33,6 +33,9 @@
   "merged_ai-20261030-weak-holdout": "2026-10-30T10:33:00+09:00",
   "rule_retired_XPL-f65a02fd": "2026-10-30T10:33:00+09:00",
   "exit_active_btc_exit": "2026-10-30T10:33:00+09:00",
-  "rule_proven_BAT-0056de4b": "2026-10-30T11:33:00+09:00"
+  "rule_proven_BAT-0056de4b": "2026-10-30T11:33:00+09:00",
+  "merged_ai-20261030-proven-only-live": "2026-10-30T12:00:00+09:00",
+  "merged_ai-20261030-dawn-gate": "2026-10-30T12:00:00+09:00",
+  "merged_ai-20261030-pc-layout": "2026-10-30T12:00:00+09:00"
  }
 }
