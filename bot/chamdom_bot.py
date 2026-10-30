@@ -80,6 +80,8 @@ BT_TRIALS = 200                  # 종목당 시험할 무작위 전략 수 (많
 BT_MIN_TRADES = 20               # 채택 최소 거래 수 (6회는 우연과 구분 불가)
 BT_HOLDOUT_MIN_TRADES = 5        # 최근 검증 구간 최소 거래 수
 BT_HOLDOUT_MIN_WINRATE = 0.80    # 최근 검증 구간 최소 승률
+PROVEN_ONLY_LIVE = True          # 실전 통과(proven) 규칙만 실제 돈으로 주문, 검증 중 규칙은 모의 체결로 계속 시험·학습
+SHADOW_SLIPPAGE = 0.0015         # 모의 체결 미끄러짐(매수·매도 각각) — 실전 평균보다 약간 보수적으로
 BT_SLIPPAGE = 0.001              # (고정값 쓸 때) 시장가 체결 미끄러짐 0.1% (매수·매도 각각)
 BT_SLIP_BASE = 0.0003            # 종목별 미끄러짐 = 0.03% + 호가 한 칸/가격 (BTC≈0.03%, 100원대 코인≈0.5~1%)
 EXPLORE_MIN_TRADES = 6           # 탐험 모드: 학습 구간 최소 거래 수
@@ -1008,7 +1010,26 @@ class Bot:
         return self.state["ledger"]
 
     def in_use(self):
-        return sum(p["cost"] for p in self.state["positions"].values())
+        return sum(p["cost"] for p in self.state["positions"].values() if not p.get("paper"))
+
+    def is_shadow(self, market, spec):
+        """실매매 중이라도 아직 실전 통과 못 한 규칙이면 모의 체결로만 시험"""
+        if not (self.live and PROVEN_ONLY_LIVE):
+            return False
+        rb = self.state["ruleBook"].get(spec.get("rid") or rule_id(market, spec))
+        return not (rb and rb.get("status") == "proven")
+
+    def shadow_book(self, pnl, market=None):
+        """모의 체결 결과: 시드·실현손익에는 넣지 않고 따로 집계 (손실 종목 정지는 실전과 같게)"""
+        lg = self.ledger
+        lg["shadowTrades"] = lg.get("shadowTrades", 0) + 1
+        lg["shadowWins"] = lg.get("shadowWins", 0) + (1 if pnl > 0 else 0)
+        lg["shadowPnl"] = lg.get("shadowPnl", 0.0) + pnl
+        lg["dayShadowTrades"] = lg.get("dayShadowTrades", 0) + 1
+        lg["dayShadowPnl"] = lg.get("dayShadowPnl", 0.0) + pnl
+        if pnl <= 0 and COOLDOWN_PER_MARKET and market:
+            self.state.setdefault("coolMarkets", {})[market] = int(time.time()) + LOSS_COOLDOWN_MIN * 60
+        save_state(self.state)
 
     def available(self):
         return max(0.0, self.ledger["seed"] - self.in_use())
@@ -1028,7 +1049,8 @@ class Bot:
                     "blocked": list(self.state["blocked"])}
             self.state["marketStats"] = {}
             self.state["blocked"] = []
-            lg.update({"day": day, "dayPnl": 0.0, "dayTrades": 0, "dayWins": 0, "gateTrades": 0, "gateWins": 0})
+            lg.update({"day": day, "dayPnl": 0.0, "dayTrades": 0, "dayWins": 0, "gateTrades": 0, "gateWins": 0,
+                       "dayShadowTrades": 0, "dayShadowPnl": 0.0})
             save_state(self.state)
             log(f"새 거래일 {day} 시작 · 시드 {lg['seed']:,.0f}원 · 잠긴 수익 {lg['locked']:,.0f}원")
 
@@ -1089,13 +1111,13 @@ class Bot:
             old = rb["status"]
             rb["status"] = "proven" if avg > 0 else "retired"
             verdict = "계속 사용" if rb["status"] == "proven" else "퇴출(다시 채택 안 함)"
-            log(f"[규칙 판정] {coin} {rb['id']} 실전 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}% "
+            log(f"[규칙 판정] {coin} {rb['id']} 실전·검증 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}% "
                 f"(백테스트 예상 {rb.get('btEdge') or 0:+.2f}%) → {verdict}")
             if rb["status"] == "retired" and old != "retired" and self.state["strategies"].get(rb["market"], {}).get("rid") == rid:
                 del self.state["strategies"][rb["market"]]
         else:
             left = RULE_EVAL_TRADES - n
-            log(f"[규칙 기록] {coin} {rb['id']} 실전 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}%"
+            log(f"[규칙 기록] {coin} {rb['id']} {'검증(모의)' if pos.get('paper') else '실전'} {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}%"
                 + (f" · 판정까지 {left}회" if left > 0 else ""))
         self.trim_rulebook()
         save_state(self.state)
@@ -1289,7 +1311,12 @@ class Bot:
 
     def enter(self, market, spec, price, ctx=None):
         krw = self.order_size()
-        if self.live:
+        shadow = self.is_shadow(market, spec)
+        if shadow:
+            fill = price * (1 + SHADOW_SLIPPAGE)
+            vol = krw * (1 - FEE_RATE) / fill
+            cost = krw
+        elif self.live:
             krw_balance = next((float(a["balance"]) for a in self.upbit.accounts() if a["currency"] == "KRW"), 0)
             krw = min(krw, krw_balance * 0.995)
             if krw < MIN_ORDER_KRW:
@@ -1315,22 +1342,27 @@ class Bot:
             "btWinrate": spec.get("winrate"), "btEdge": spec.get("edgePct"),
             "rid": spec.get("rid") or self.rule_open(market, spec)["id"], **(ctx or {}),
         }
+        if shadow:
+            self.state["positions"][market]["paper"] = True
         try:
             self.state["positions"][market]["btcAtEntry"] = self.upbit.prices(["KRW-BTC"]).get("KRW-BTC")
         except Exception:
             pass
         save_state(self.state)
-        tag = "실매수" if self.live else "모의매수"
+        tag = "검증 모의매수" if shadow else ("실매수" if self.live else "모의매수")
         log(f"[{tag}] {market} {cost:,.0f}원 @ {unit:,.4f} · 목표 {self.state['positions'][market]['tp']:,.4f} "
             f"· 손절 {self.state['positions'][market]['sl']:,.4f} · {describe(spec)}")
-        self._record("buy", market, unit, cost, describe(spec), None)
+        self._record("buy", market, unit, cost, describe(spec), None, paper=shadow)
         self.upload_status()
 
     def exit(self, market, price, reason):
         pos = self.state["positions"].get(market)
         if not pos:
             return
-        if self.live:
+        shadow = bool(pos.get("paper"))
+        if shadow:
+            proceeds = pos["volume"] * price * (1 - SHADOW_SLIPPAGE) * (1 - FEE_RATE)
+        elif self.live:
             res = self.upbit.sell_market(market, int(pos["volume"] * 1e8) / 1e8)
             vol, funds, fee = self.upbit.wait_fill(res["uuid"])
             proceeds = funds - fee
@@ -1349,7 +1381,10 @@ class Bot:
         if reason == "익절" and pnl <= 0:
             reason = "익절 신호였으나 체결 손실"     # 장부·학습에 '익절'로 잘못 남지 않게
         del self.state["positions"][market]
-        self.book(pnl, market)
+        if shadow:
+            self.shadow_book(pnl, market)
+        else:
+            self.book(pnl, market)
         self.learn(market, pnl, reason)
         self.cond_record(pos, pnl)
         self.rule_record(pos, pnl)
@@ -1368,15 +1403,15 @@ class Bot:
                    "pnl": round(pnl), "cost": round(pos["cost"]), "exit": reason, "strategy": pos.get("strategy", ""),
                    "heldMin": round((time.time() * 1000 - pos["at"]) / 60000, 1),
                    "btWinrate": pos.get("btWinrate"), "mart": pos.get("mart"),
-                   "cause": analysis["label"] if analysis else None,
+                   "cause": analysis["label"] if analysis else None, "paper": shadow,
                    "details": [c["detail"] for c in analysis["causes"]] if analysis else None})
         del tl[:-AI_TRADE_LOG]
         if pnl <= 0:
             self.state["aiLossesSince"] = self.state.get("aiLossesSince", 0) + 1
-        tag = "실매도" if self.live else "모의매도"
+        tag = "검증 모의매도" if shadow else ("실매도" if self.live else "모의매도")
         log(f"[{tag}] {market} 손익 {pnl:+,.0f}원 ({reason}) · 시드 {self.ledger['seed']:,.0f} · 잠김 {self.ledger['locked']:,.0f}"
             + ("" if pnl > 0 else f" · {LOSS_COOLDOWN_MIN}분 대기"))
-        self._record("sell", market, price, proceeds, reason, round(pnl), analysis)
+        self._record("sell", market, price, proceeds, reason, round(pnl), analysis, paper=shadow)
         self.upload_status()
 
     def hour_record(self, pos, pnl, pct):
@@ -1444,9 +1479,9 @@ class Bot:
             + " / ".join(f"{c['label']}({c['detail']})" for c in a["causes"]))
         return a
 
-    def _record(self, side, market, price, krw, reason, pnl, analysis=None):
+    def _record(self, side, market, price, krw, reason, pnl, analysis=None, paper=False):
         try:
-            data = {"mode": "live" if self.live else "paper", "side": side, "market": market,
+            data = {"mode": "live" if self.live and not paper else "paper", "side": side, "market": market,
                     "price": float(price), "krw": round(krw), "reason": reason, "pnl": pnl,
                     "at": int(time.time() * 1000)}
             if analysis:
@@ -1858,6 +1893,7 @@ class Bot:
                         "deadline": p["deadline"] * 1000, "strategy": p.get("strategy", ""),
                         "signalPrice": p.get("signalPrice"), "btWinrate": p.get("btWinrate"), "btEdge": p.get("btEdge"),
                         "rid": p.get("rid"), "rule": self.rule_brief(p.get("rid")), "entryInfo": p.get("entryInfo"),
+                        "paper": bool(p.get("paper")),
                         "pnlPct": round((price * (1 - FEE_RATE) / p["unit"] - 1) * 100, 2) if price else None})
         return out
 
@@ -1968,6 +2004,8 @@ class Bot:
             wait = f" · 손실 후 대기 {int((lg['cooldownUntil'] - time.time()) / 60) + 1}분"
         ok, why = self.can_enter()
         reason = "" if ok or why in ("손실 후 대기", "일시정지") else f" · 신규 진입 중지: {why}"
+        if self.live and PROVEN_ONLY_LIVE:
+            mode += f" · 실전 통과 규칙만 실주문(검증 모의 오늘 {lg.get('dayShadowTrades', 0)}회 {lg.get('dayShadowPnl', 0):+,.0f}원)"
         return (f"{mode} · 오늘 {lg['dayTrades']}회(익절 {lg['dayWins']}) {lg['dayPnl']:+,.0f}원 · "
                 f"시드 {lg['seed']:,.0f}원 · 잠긴 수익 {lg['locked']:,.0f}원 · "
                 f"대상 {len(self.state['strategies'])}종목 · 다음 주문 {self.order_size():,.0f}원{wait}{reason}")
@@ -1999,7 +2037,11 @@ class Bot:
                                 "realizedTotal": round(lg["realizedTotal"]), "dayPnl": round(lg["dayPnl"]),
                                 "dayTrades": lg["dayTrades"], "dayWins": lg["dayWins"], "martLevel": lg["martLevel"],
                                 "tradesTotal": lg["tradesTotal"], "winsTotal": lg["winsTotal"],
-                                "mode": "live" if self.live else "paper"},
+                                "mode": "live" if self.live else "paper",
+                                "provenOnly": bool(self.live and PROVEN_ONLY_LIVE),
+                                "shadowTrades": lg.get("shadowTrades", 0), "shadowWins": lg.get("shadowWins", 0),
+                                "shadowPnl": round(lg.get("shadowPnl", 0)), "dayShadowTrades": lg.get("dayShadowTrades", 0),
+                                "dayShadowPnl": round(lg.get("dayShadowPnl", 0))},
                      "strategies": [{"market": m, "desc": describe(s), "winrate": s.get("winrate"),
                                      "trades": s.get("trades"), "totalPct": s.get("totalPct"),
                                      "holdoutPct": s.get("holdoutPct")} for m, s in self.state["strategies"].items()],

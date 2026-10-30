@@ -905,7 +905,7 @@ function renderMore(s, stale) {
       <div class="range"><span class="entry"></span><span class="tick"></span></div>
       <div class="range-lbl num"><span class="l"></span><span class="m"></span><span class="r"></span></div>
       <div class="sub info"></div>`;
-    el.querySelector(".coin").textContent = `${p.coin} · ${won(p.cost)}`;
+    el.querySelector(".coin").textContent = `${p.coin} · ${won(p.cost)}` + (p.paper ? " · 검증(모의)" : "");
     const pnlEl = el.querySelector(".pnl");
     pnlEl.textContent = p.pnlPct == null ? "-" : (p.pnlPct > 0 ? "+" : "") + p.pnlPct.toFixed(2) + "%";
     if (p.pnlPct > 0) pnlEl.classList.add("up"); else if (p.pnlPct < 0) pnlEl.classList.add("down");
