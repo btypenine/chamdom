@@ -912,6 +912,21 @@ def gate_chase(bot, mk, price, ctx):
     return gap >= CHASE_PCT, f"{mk.split('-')[1]} 현재가가 신호가보다 {gap:+.2f}% (기준 +{CHASE_PCT}%)"
 
 
+WEAK_HO_MIN_TRADES = 2          # 검증 근거 약함 관문: 검증구간(보지 않은 뒤 25%) 거래가 이보다 적거나 (bt-lab 10-30: 2회·+0.1%가 차이 가장 큼)
+WEAK_HO_MIN_EDGE = 0.1          # 검증구간 거래당 순익이 이 % 미만이면 막음
+
+
+def gate_weak_holdout(bot, mk, price, ctx):
+    """백테스트 예상(거래당 +0.3%)과 실전(-0.4%) 차이 대응 — 검증구간 근거가 얇은 전략의 매수를 따로 잼"""
+    sp = (bot.state.get("strategies") or {}).get(mk) or {}
+    n, edge = sp.get("holdoutTrades"), sp.get("holdoutEdgePct")
+    if n is None:
+        return False, "검증 기록 없음"
+    edge = edge if n else 0.0
+    return (n < WEAK_HO_MIN_TRADES or edge < WEAK_HO_MIN_EDGE), \
+        f"{mk.split('-')[1]} 검증구간 {n}회 거래당 {edge:+.2f}% (기준 {WEAK_HO_MIN_TRADES}회·{WEAK_HO_MIN_EDGE:+.1f}% 이상)"
+
+
 # entry=True 관문은 1분마다가 아니라 매수 신호가 날 때마다 그 종목 기준으로 확인: fn(bot, 종목, 현재가, ctx)
 MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
@@ -919,6 +934,7 @@ MARKET_GATES = [
     {"id": "event", "name": "경제 일정", "desc": "FOMC·미국 물가(CPI) 발표 등 정해진 일정 앞뒤로 새로 사지 않음 (일정표: bot/events.json)", "fn": gate_event},
     {"id": "volatile_hours", "name": "변동 큰 시간대", "desc": "미국장 시작(23~00시)·유럽장 시작(17시)에는 새로 사지 않음", "fn": gate_volatile_hours},
     {"id": "chase", "name": "추격 매수", "desc": f"매수 직전 현재가가 신호가보다 {CHASE_PCT}% 이상 올라 있으면 사지 않음(늦게 따라붙기 방지)", "fn": gate_chase, "entry": True},
+    {"id": "weak_holdout", "name": "검증 근거 약함", "desc": f"전략의 검증구간 거래가 {WEAK_HO_MIN_TRADES}회 미만이거나 거래당 {WEAK_HO_MIN_EDGE:+.1f}% 미만이면 사지 않음", "fn": gate_weak_holdout, "entry": True},
 ]
 
 # ---- 청산 판단 (보유 중) — 관문과 같은 '관찰 → 승인 → 적용' 구조 ----
@@ -955,9 +971,22 @@ def exit_stale(bot, pos, price):
         f"보유시간 {frac * 100:.0f}% 경과 · 익절 진행률 최고 {max(prog, 0):.0f}% · 포지션 {pnl:+.2f}%"
 
 
+GIVEBACK_PROG = 70              # 익절 근처 되밀림: 익절까지 진행률(최고가 기준)이 이 % 이상 갔었는데
+GIVEBACK_PNL = 0.0               # 지금 순손익(수수료 포함)이 이 % 이하로 되밀렸으면 조기 정리 대상
+
+
+def exit_giveback(bot, pos, price):
+    """실패 원인 '익절 직전까지 갔다가 반락' 대응 — 거의 다 간 수익을 손실로 바꾸기 전에 본전 근처에서 정리"""
+    up_room = pos["tp"] - pos["unit"]
+    prog = (pos.get("maxP", pos["unit"]) - pos["unit"]) / up_room * 100 if up_room > 0 else 0
+    pnl = (price * (1 - FEE_RATE) / pos["unit"] - 1) * 100
+    return (prog >= GIVEBACK_PROG and pnl <= GIVEBACK_PNL), f"익절 진행률 최고 {prog:.0f}% · 지금 포지션 {pnl:+.2f}%"
+
+
 EXIT_RULES = [
     {"id": "btc_exit", "name": "보유 중 BTC 하락 정리", "desc": f"들고 있는 동안 BTC가 {BTC_EXIT_PCT}% 이상 빠지고 손실 중이면 일찍 정리", "fn": exit_btc_drop},
     {"id": "stale_exit", "name": "힘 빠진 보유 정리", "desc": f"보유시간 {STALE_EXIT_FRAC * 100:.0f}%가 지나도 익절까지 {STALE_EXIT_PROG}%도 못 갔고 손실 중이면 일찍 정리", "fn": exit_stale},
+    {"id": "giveback_exit", "name": "익절 근처 되밀림 정리", "desc": f"익절까지 {GIVEBACK_PROG}% 이상 갔다가 순손익 {GIVEBACK_PNL:+.1f}% 이하로 되밀리면 일찍 정리", "fn": exit_giveback},
 ]
 
 
@@ -1272,6 +1301,7 @@ class Bot:
                 log(f"[경고] {market} 매수 체결 확인 실패")
                 return
             cost = funds + fee
+            self.exec_record("buy", (funds / vol / price - 1) * 100)
         else:
             vol = krw * (1 - FEE_RATE) / price
             cost = krw
@@ -1307,6 +1337,8 @@ class Bot:
             if vol > 0:
                 fill = funds / vol
                 slip = (fill / price - 1) * 100
+                tp_gap = (pos["tp"] / fill - 1) * 100 if reason == "익절" else None
+                self.exec_record(reason, slip, tp_gap)
                 if abs(slip) >= 0.2:
                     log(f"[체결 확인] {market} 신호가 {price:,.4f} → 체결가 {fill:,.4f} ({slip:+.2f}%)")
             if vol < pos["volume"] * 0.999:
@@ -1373,6 +1405,19 @@ class Bot:
             out.append({"from": b, "to": b + 2, "n": n, "wins": w,
                         "avgPct": round(sp / n, 3) if n else None, "pnl": round(pn)})
         return out
+    def exec_record(self, kind, slip_pct, tp_gap=None):
+        """체결 비용 기록(분석 전용, 매매에는 영향 없음): 시장가 주문이 신호가 대비 얼마나 밀려 체결됐는지.
+        익절은 '목표가에 지정가 매도를 미리 걸어뒀다면' 더 받았을 몫(tp_gap)도 함께 누적 → 지정가 전환 판단 근거"""
+        try:
+            key = "buy" if kind == "buy" else "sell:" + ("익절" if kind.startswith("익절") else kind if kind in ("손절", "보유시간 초과") else "조기 정리")
+            es = self.state.setdefault("execStats", {}).setdefault(key, {"n": 0, "sumSlip": 0.0, "worse": 0, "sumTpGap": 0.0})
+            es["n"] += 1
+            es["sumSlip"] += slip_pct
+            es["worse"] += 1 if (slip_pct > 0.05 if kind == "buy" else slip_pct < -0.05) else 0
+            if tp_gap is not None:
+                es["sumTpGap"] += max(tp_gap, 0.0)
+        except Exception:
+            pass
 
     def post_mortem(self, market, pos, price, reason, pnl):
         """실패로 끝난 거래 원인 분석 → 기록·통계"""
@@ -1874,6 +1919,7 @@ class Bot:
                        "검증승률": sp.get("holdoutWinrate"), "검증거래": sp.get("holdoutTrades")}
                       for m, sp in self.state["strategies"].items()],
             "실패원인누적": self.state.get("failStats", {}),
+            "체결비용": self.state.get("execStats", {}),
             "최근거래": self.state.get("tradeLog", []),
         }
 
@@ -1972,6 +2018,9 @@ class Bot:
                      "ai": self.state.get("aiReport"),
                      "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
                      "hourStats": self.hours_view(),
+                     "execStats": [{"kind": k, "n": v["n"], "avgSlip": round(v["sumSlip"] / v["n"], 3), "worse": v["worse"],
+                                    "avgTpGap": round(v["sumTpGap"] / v["n"], 3) if k == "sell:익절" else None}
+                                   for k, v in self.state.get("execStats", {}).items() if v.get("n")],
                      "failStats": [{"code": k, "label": FAIL_LABELS.get(k, k), "count": v}
                                    for k, v in sorted(self.state.get("failStats", {}).items(), key=lambda x: -x[1])]})
         self.cloud.put_status(data)
