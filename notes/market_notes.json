@@ -1,3 +1,14 @@
 {
- "notes": []
+ "notes": [
+  {
+   "at": "2026-10-30T09:33:00+09:00",
+   "btcMove": "BTC 120분 -2.34%, 30분 -0.98% (봇 관문 지표, 1시간 변동은 약 -1.5% 안팎으로 추정)",
+   "summary": "사실: 07:30~09:30 사이 BTC가 2시간 -2.3% 하락, 봇의 BTC 급락·하락추세 관문이 반복 감지. 추정: 10월 월간 하락 마감 우려 및 FOMC(10-2 이견) 이후 위험회피 흐름의 연장으로 보이나 이 시점의 특정 원인 뉴스는 확인 못 함.",
+   "sources": [
+    "https://www.kucoin.com/news/flash/bitcoin-falls-2-amid-uncertainty-over-october-2026-performance",
+    "https://tech-insider.org/crypto-decline-samsung-alphabet-earnings-fed-10-2-dissent-2026/"
+   ],
+   "confirmed": false
+  }
+ ]
 }
