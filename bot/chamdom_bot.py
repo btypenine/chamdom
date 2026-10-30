@@ -938,6 +938,23 @@ def gate_weak_holdout(bot, mk, price, ctx):
         f"{mk.split('-')[1]} 검증구간 {n}회 거래당 {edge:+.2f}% (기준 {WEAK_HO_MIN_TRADES}회·{WEAK_HO_MIN_EDGE:+.1f}% 이상)"
 
 
+BREADTH_MIN = 30                # 시장 폭 약세 관문: 종목별 최근 몇 분 변화를 볼지
+BREADTH_DOWN_FRAC = 0.7         # 대상 종목 중 이 비율 이상이 하락 중이면 막음
+BREADTH_MIN_MARKETS = 10        # 최근 확인한 종목이 이보다 적으면 판단 안 함
+BREADTH_FRESH = 300             # 이 초 안에 확인한 종목만 셈
+
+
+def gate_breadth(bot, mk, price, ctx):
+    """실패 원인 2위 '시장 전체 하락' 대응 — BTC는 버티는데 알트 전체가 같이 밀리는 때를 따로 잼 (BTC 관문과 별개)"""
+    now = time.time()
+    chg = [c for c, at in (bot.__dict__.get("_mk_chg") or {}).values() if now - at <= BREADTH_FRESH]
+    if len(chg) < BREADTH_MIN_MARKETS:
+        return False, f"확인한 종목 {len(chg)}개(기준 {BREADTH_MIN_MARKETS}개 이상)"
+    down = sum(c < 0 for c in chg) / len(chg)
+    avg = sum(chg) / len(chg)
+    return down >= BREADTH_DOWN_FRAC, f"대상 {len(chg)}종목 중 {down * 100:.0f}% 하락 · 평균 {avg:+.2f}% ({BREADTH_MIN}분, 기준 {BREADTH_DOWN_FRAC * 100:.0f}% 이상)"
+
+
 # entry=True 관문은 1분마다가 아니라 매수 신호가 날 때마다 그 종목 기준으로 확인: fn(bot, 종목, 현재가, ctx)
 MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
@@ -947,6 +964,7 @@ MARKET_GATES = [
     {"id": "dawn_hours", "name": "새벽 시간대", "desc": f"새벽 {DAWN_HOURS.start:02d}~{DAWN_HOURS.stop - 1:02d}시(한국시간)에는 새로 사지 않음", "fn": gate_dawn_hours},
     {"id": "chase", "name": "추격 매수", "desc": f"매수 직전 현재가가 신호가보다 {CHASE_PCT}% 이상 올라 있으면 사지 않음(늦게 따라붙기 방지)", "fn": gate_chase, "entry": True},
     {"id": "weak_holdout", "name": "검증 근거 약함", "desc": f"전략의 검증구간 거래가 {WEAK_HO_MIN_TRADES}회 미만이거나 거래당 {WEAK_HO_MIN_EDGE:+.1f}% 미만이면 사지 않음", "fn": gate_weak_holdout, "entry": True},
+    {"id": "breadth", "name": "시장 폭 약세", "desc": f"거래 대상 종목 중 {BREADTH_DOWN_FRAC * 100:.0f}% 이상이 최근 {BREADTH_MIN}분 하락 중이면 사지 않음(알트 동반 하락)", "fn": gate_breadth, "entry": True},
 ]
 
 # ---- 청산 판단 (보유 중) — 관문과 같은 '관찰 → 승인 → 적용' 구조 ----
@@ -1546,6 +1564,8 @@ class Bot:
                 continue
             self.state["lastCandle"][mk] = key
             series = Series(closed)
+            if len(series.c) > BREADTH_MIN:               # 시장 폭 관문용: 종목별 최근 30분 변화율 기록
+                self.__dict__.setdefault("_mk_chg", {})[mk] = ((series.c[-1] / series.c[-1 - BREADTH_MIN] - 1) * 100, time.time())
             if series.signal(spec)[-1]:
                 price = self.upbit.prices([mk]).get(mk)
                 if price:
