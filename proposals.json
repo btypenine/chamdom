@@ -84,7 +84,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/7",
    "branch": "ai/20261030-hour-stats",
    "createdAt": "2026-10-30T00:30:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-10-30T10:36:00+09:00"
   },
   {
    "id": "ai-20261030-weak-holdout",
