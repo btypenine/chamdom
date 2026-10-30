@@ -992,7 +992,8 @@ function renderMore(s, stale) {
     el.querySelector(".gate-now").textContent = r.marked ? `지금 보유 중 ${r.marked}종목이 조건에 걸림(관찰 기록 중)` : "지금 걸린 보유 종목 없음";
     el.querySelector(".d").textContent = r.desc;
     const left = Math.max(0, (r.nextEval || 20) - r.n);
-    el.querySelector(".st").textContent = `조기 정리했다면 ${r.n}건 평균 ${pctTxt(r.avgDiff)}p (${r.better}건 더 나음) · ${r.episodes}개 시간대` + (left ? ` · 판정까지 ${left}건` : "") + (r.ghosts ? ` · 가상 추적 ${r.ghosts}건` : "");
+    el.querySelector(".st").textContent = `조기 정리했다면 ${r.n}건 평균 ${pctTxt(r.avgDiff)}p (${r.better}건 더 나음) · ${r.episodes}개 시간대` + (left ? ` · 판정까지 ${left}건` : "") + (r.ghosts ? ` · 가상 추적 ${r.ghosts}건` : "")
+      + (r.recentN >= 3 && r.recentN < r.n ? ` · 최근 ${r.recentN}건 ${pctTxt(r.recentAvg)}p (${r.recentBetter}건 더 나음)` : "");
     gbox.append(el);
   }
   renderApprovals();
