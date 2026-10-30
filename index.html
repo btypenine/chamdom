@@ -221,6 +221,24 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
 body.compact #appView > section.card:not(#sumCard):not(#apprCard) { display: none !important; }
 body.compact #sumCard { display: flex !important; }
 @media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
+
+/* ---------- PC 화면(넓은 창): 카드를 여러 단으로 배치 ---------- */
+@media (min-width: 900px) {
+  .wrap { max-width: 1560px; padding-inline: 24px; }
+  .topbar { margin-inline: -24px; padding-inline: 24px; flex-direction: row; align-items: center; justify-content: space-between; }
+  .topbar header { flex: 1; }
+  .topbar .seg { width: 180px; flex: none; order: 2; }
+  .who { max-width: 240px; }
+  #loginView { max-width: 560px; margin-inline: auto; }
+  #appView:not([hidden]) { display: block !important; columns: 3 420px; column-gap: 16px; }
+  #appView > section.card { break-inside: avoid; margin: 0 0 16px; }
+  #appView > #sumCard { column-span: all; }
+  #sumCard .tiles { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .logbox { max-height: 520px; }
+  /* 긴 목록은 카드 안에서 스크롤 → 단 길이가 한쪽으로 쏠리지 않게 */
+  #ruleBook, #strategies { max-height: 640px; overflow-y: auto; padding-right: 6px; scrollbar-width: thin; }
+  #appView > footer { column-span: all; text-align: center; }
+}
 </style>
 </head>
 <body>
