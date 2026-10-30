@@ -1405,6 +1405,7 @@ class Bot:
             out.append({"from": b, "to": b + 2, "n": n, "wins": w,
                         "avgPct": round(sp / n, 3) if n else None, "pnl": round(pn)})
         return out
+
     def exec_record(self, kind, slip_pct, tp_gap=None):
         """체결 비용 기록(분석 전용, 매매에는 영향 없음): 시장가 주문이 신호가 대비 얼마나 밀려 체결됐는지.
         익절은 '목표가에 지정가 매도를 미리 걸어뒀다면' 더 받았을 몫(tp_gap)도 함께 누적 → 지정가 전환 판단 근거"""
