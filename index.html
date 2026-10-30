@@ -303,6 +303,7 @@ body.compact #sumCard { display: flex !important; }
         <div><div class="label">다음 주문</div><div class="stat-val num" id="nextOrder">-</div></div>
       </div>
       <div class="sub" id="perfNote"></div>
+      <div class="msg" id="shadowBox" hidden></div>
       <div class="msg" id="reportBox" hidden></div>
     </section>
 
@@ -675,6 +676,7 @@ function renderTiles() {
     { k: "오늘 손익", v: signed(lg.dayPnl), s: `${lg.dayTrades || 0}회 · 익절 ${lg.dayWins || 0}`, go: "perfCard", cls: lg.dayPnl > 0 ? "up" : lg.dayPnl < 0 ? "down" : "" },
     { k: "승률 (오늘)", v: lg.dayTrades ? Math.round(lg.dayWins / lg.dayTrades * 100) + "%" : "-", s: lg.tradesTotal ? `누적 ${Math.round(lg.winsTotal / lg.tradesTotal * 100)}% · ${lg.tradesTotal}회` : "", go: "perfCard" },
     { k: "시드", v: won(lg.seed), s: `잠긴 수익 ${won(lg.locked)}`, go: "perfCard" },
+    ...(lg.provenOnly ? [{ k: "검증(모의) 오늘", v: signed(lg.dayShadowPnl || 0), s: `${lg.dayShadowTrades || 0}회 · 실주문 아님`, go: "perfCard", cls: lg.dayShadowPnl > 0 ? "up" : lg.dayShadowPnl < 0 ? "down" : "" }] : []),
     { k: "보유 중", v: ps.length + "종목", s: avg == null ? "없음" : "평균 " + pct(avg), go: "posCard" },
     { k: "승인 대기", v: pend + "건", s: pend ? "눌러서 확인" : "없음", go: "apprCard", alert: pend > 0 },
     { k: "시장·청산 판단", v: `${gs.filter((g) => g.now || g.marked).length}개 감지`, s: `적용 ${gs.filter((g) => g.mode === "active").length} · 관찰 ${gs.filter((g) => g.mode !== "active").length}`, go: "gateCard" },
@@ -898,6 +900,18 @@ function renderMore(s, stale) {
     if (lg.tradesTotal) notes.push(`누적 ${lg.tradesTotal}회 · 승률 ${Math.round(lg.winsTotal / lg.tradesTotal * 100)}% · 실현 ${signed(lg.realizedTotal)}`);
     if ((s.blocked || []).length) notes.push("오늘 제외(실전 부진): " + s.blocked.map((m) => m.split("-")[1]).join(", "));
     $("perfNote").textContent = notes.join(" · ");
+    // 실전 통과 규칙만 실주문일 때: 나머지 규칙의 검증(모의) 성적 — 실제 돈은 안 움직임
+    const sh = $("shadowBox");
+    sh.hidden = !lg.provenOnly;
+    if (lg.provenOnly) {
+      const rbk = Array.isArray(s.ruleBook) ? s.ruleBook : [];
+      const near = rbk.filter((x) => x.status === "testing" && (x.trades || 0) >= 3 && (x.avgPct || 0) > 0).length;
+      const tot = lg.shadowTrades || 0;
+      sh.textContent = `검증(모의) 오늘 ${lg.dayShadowTrades || 0}회 · ${signed(lg.dayShadowPnl || 0)}` +
+        (tot ? ` · 누적 ${tot}회 승률 ${Math.round((lg.shadowWins || 0) / tot * 100)}% ${signed(lg.shadowPnl || 0)}` : "") +
+        ` · 실주문은 통과 규칙 ${rbk.filter((x) => x.status === "proven").length}개만` +
+        (near ? ` · 통과 가까운 규칙 ${near}개(3회+·플러스)` : "") + " · 모의 손익은 시드에 안 들어감";
+    }
     const r = s.report;
     if (r) {
       const wr = r.trades ? Math.round(r.wins / r.trades * 100) + "%" : "-";
