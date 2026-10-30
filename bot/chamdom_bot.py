@@ -912,7 +912,7 @@ def gate_chase(bot, mk, price, ctx):
     return gap >= CHASE_PCT, f"{mk.split('-')[1]} 현재가가 신호가보다 {gap:+.2f}% (기준 +{CHASE_PCT}%)"
 
 
-WEAK_HO_MIN_TRADES = 3          # 검증 근거 약함 관문: 검증구간(보지 않은 뒤 25%) 거래가 이보다 적거나
+WEAK_HO_MIN_TRADES = 2          # 검증 근거 약함 관문: 검증구간(보지 않은 뒤 25%) 거래가 이보다 적거나 (bt-lab 10-30: 2회·+0.1%가 차이 가장 큼)
 WEAK_HO_MIN_EDGE = 0.1          # 검증구간 거래당 순익이 이 % 미만이면 막음
 
 
