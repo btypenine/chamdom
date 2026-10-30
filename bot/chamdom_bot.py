@@ -1354,6 +1354,7 @@ class Bot:
         self.cond_record(pos, pnl)
         self.rule_record(pos, pnl)
         actual_pct = pnl / pos["cost"] * 100
+        self.hour_record(pos, pnl, actual_pct)
         for rid, mk_ in (pos.get("exitMarks") or {}).items():
             if self.exit_stat(rid)["mode"] != "active" or reason != next((r["name"] for r in EXIT_RULES if r["id"] == rid), ""):
                 self.exit_record(rid, mk_["pct"], actual_pct, mk_["at"])   # 관찰: 그때 정리했다면 vs 실제
@@ -1377,6 +1378,33 @@ class Bot:
             + ("" if pnl > 0 else f" · {LOSS_COOLDOWN_MIN}분 대기"))
         self._record("sell", market, price, proceeds, reason, round(pnl), analysis)
         self.upload_status()
+
+    def hour_record(self, pos, pnl, pct):
+        """분석 전용: 매수한 시각(한국시간)별 실전 성적 누적 — 매매에는 영향 없음"""
+        try:
+            h = "%02d" % datetime.fromtimestamp(pos["at"] / 1000, KST).hour
+            st = self.state.setdefault("hourStats", {}).setdefault(h, {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0.0})
+            st["n"] += 1
+            st["wins"] += 1 if pnl > 0 else 0
+            st["sumPct"] += pct
+            st["pnl"] += pnl
+        except Exception as e:
+            log(f"[경고] 시간대 성적 기록 실패: {e}")
+
+    def hours_view(self):
+        """3시간 묶음(00-02, 03-05 …)으로 합쳐 대시보드에 보냄"""
+        hs = self.state.get("hourStats", {})
+        out = []
+        for b in range(0, 24, 3):
+            n = w = 0
+            sp = pn = 0.0
+            for h in range(b, b + 3):
+                st = hs.get("%02d" % h)
+                if st:
+                    n += st["n"]; w += st["wins"]; sp += st["sumPct"]; pn += st["pnl"]
+            out.append({"from": b, "to": b + 2, "n": n, "wins": w,
+                        "avgPct": round(sp / n, 3) if n else None, "pnl": round(pn)})
+        return out
 
     def exec_record(self, kind, slip_pct, tp_gap=None):
         """체결 비용 기록(분석 전용, 매매에는 영향 없음): 시장가 주문이 신호가 대비 얼마나 밀려 체결됐는지.
@@ -1990,6 +2018,7 @@ class Bot:
                      "report": self.state["lastReport"],
                      "ai": self.state.get("aiReport"),
                      "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
+                     "hourStats": self.hours_view(),
                      "execStats": [{"kind": k, "n": v["n"], "avgSlip": round(v["sumSlip"] / v["n"], 3), "worse": v["worse"],
                                     "avgTpGap": round(v["sumTpGap"] / v["n"], 3) if k == "sell:익절" else None}
                                    for k, v in self.state.get("execStats", {}).items() if v.get("n")],
