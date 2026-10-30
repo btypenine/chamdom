@@ -120,6 +120,17 @@
    "branch": "ai/20261030-dawn-gate",
    "createdAt": "2026-10-30T11:55:00+09:00",
    "status": "pending"
+  },
+  {
+   "id": "ai-20261030-pc-layout",
+   "title": "PC 브라우저용 넓은 화면 배치",
+   "summary": "창 너비 900px 이상에서 카드를 2~3단으로 배치하고 상단 바를 한 줄로, 긴 목록은 카드 안 스크롤로. 폰 화면은 그대로.",
+   "why": "사용자 요청(채팅): PC에서 보기 편한 브라우저용 창. 지금은 최대 폭 560px라 PC에서 가운데 좁은 띠로만 보임.",
+   "risk": "낮음 — 화면 배치만 변경, 봇·매매 영향 없음.",
+   "pr": "https://github.com/btypenine/chamdom/pull/11",
+   "branch": "ai/20261030-pc-layout",
+   "createdAt": "2026-10-30T10:50:00+09:00",
+   "status": "pending"
   }
  ]
 }
