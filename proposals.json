@@ -213,8 +213,9 @@
       "pr": "https://github.com/btypenine/chamdom/pull/18",
       "branch": "ai/20261031-tp-limit-watch",
       "createdAt": "2026-10-31T11:55:00+09:00",
-      "status": "pending",
-      "requestId": "req-vtfio37irwii"
+      "status": "merged",
+      "requestId": "req-vtfio37irwii",
+      "mergedAt": "2026-10-31T13:36:00+09:00"
     }
   ]
 }
