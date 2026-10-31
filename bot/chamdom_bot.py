@@ -103,6 +103,8 @@ LIVE_DAY_MIN_WINRATE = 0.50      # 승률이 이보다 낮으면 다음 날 9시
 # 규칙 장부: 종목+규칙마다 실전 성적을 날짜와 상관없이 계속 기록
 RULE_EVAL_TRADES = 5             # 이 횟수를 채울 때까지 규칙을 바꾸지 않음, 이후 판정
 RULE_RECHECK = (10, 20, 40)      # 이 횟수마다 다시 판정 (5회는 표본이 작아 운 영향 큼)
+RULE_PROMOTE_MIN_AVG = 0.15      # 실주문 자격(통과): 거래당 +0.15% 이상 — 0% 근처는 체결 비용·운 차이로 실전에서 뒤집히기 쉬움
+RULE_POST_CHECK = 5              # 통과 '이후' 실주문 5회마다 다시 봄 → 거래당 0% 이하면 다시 검증(모의)로 내림
 RULE_BOOK_MAX = 300              # 장부에 남길 최대 규칙 수 (퇴출 규칙부터 정리)
 UNIVERSE_DAYS = 30               # 거래대금 순위 기간(최근 30일)
 UNIVERSE_MIN_LISTED_DAYS = 90    # 상장 90일 미만 종목 제외
@@ -1230,10 +1232,24 @@ class Bot:
         n = rb["trades"]
         avg = rb["sumPct"] / n
         coin = rb["market"].split("-")[1]
-        if n == RULE_EVAL_TRADES or n in RULE_RECHECK or (n > RULE_EVAL_TRADES and rb["status"] == "proven" and avg <= 0):
+        post = rb.get("post") or {}
+        post_bad = (rb["status"] == "proven" and post.get("n", 0) >= RULE_POST_CHECK
+                    and post["n"] % RULE_POST_CHECK == 0 and post["sumPct"] / post["n"] <= 0)
+        if post_bad:
+            rb["status"] = "testing"
+            rb["demoted"] = rb.get("demoted", 0) + 1
+            log(f"[규칙 판정] {coin} {rb['id']} 통과 이후 실주문 {post['n']}회 거래당 {post['sumPct'] / post['n']:+.2f}% "
+                f"→ 다시 검증(모의)로 내림 (실돈 주문 중지, 시험은 계속)")
+        elif n == RULE_EVAL_TRADES or n in RULE_RECHECK or (n > RULE_EVAL_TRADES and rb["status"] == "proven" and avg <= 0):
             old = rb["status"]
-            rb["status"] = "proven" if avg > 0 else "retired"
-            verdict = "계속 사용" if rb["status"] == "proven" else "퇴출(다시 채택 안 함)"
+            if avg >= RULE_PROMOTE_MIN_AVG:
+                rb["status"] = "proven"
+            elif avg <= 0:
+                rb["status"] = "retired"
+            else:
+                rb["status"] = "testing"          # 플러스지만 여유가 작음 → 모의로 더 지켜봄
+            verdict = {"proven": "계속 사용(실주문 자격)", "retired": "퇴출(다시 채택 안 함)",
+                       "testing": f"플러스지만 +{RULE_PROMOTE_MIN_AVG}% 미만 → 다음 판정까지 검증(모의) 계속"}[rb["status"]]
             log(f"[규칙 판정] {coin} {rb['id']} 실전·검증 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}% "
                 f"(백테스트 예상 {rb.get('btEdge') or 0:+.2f}%) → {verdict}")
             if rb["status"] == "retired" and old != "retired" and self.state["strategies"].get(rb["market"], {}).get("rid") == rid:
