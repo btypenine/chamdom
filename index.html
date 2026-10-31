@@ -218,6 +218,10 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
 .pnl-chart .ax { font-size: 10px; fill: var(--muted); font-variant-numeric: tabular-nums; }
 .pnl-tip { font-size: 12px; min-height: 18px; color: var(--fg); font-variant-numeric: tabular-nums; }
 .pnl-tip .up { color: var(--up); } .pnl-tip .down { color: var(--down); }
+#trendSeg { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.trend-row { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; padding: 4px 0; font-variant-numeric: tabular-nums; }
+.trend-row .k { color: var(--muted); white-space: nowrap; } .trend-row > span:last-child { text-align: right; } .trend-row .up { color: var(--up); } .trend-row .down { color: var(--down); }
+.trend-key { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
 body.compact #appView > section.card:not(#sumCard):not(#apprCard) { display: none !important; }
 body.compact #sumCard { display: flex !important; }
 @media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
@@ -321,6 +325,19 @@ body.compact #sumCard { display: flex !important; }
       <div class="pnl-chart" id="pnlChart"><div class="empty">불러오는 중…</div></div>
       <div class="pnl-tip" id="pnlTip" aria-live="polite"></div>
       <div class="sub">위: 누적 손익(실매매 매도 기준, 모의 제외) · 아래: 구간별 손익(빨강 이익·파랑 손실). 1일 이상은 09시 기준으로 묶음. 그래프를 누르거나 손가락으로 훑으면 구간 내용이 보임.</div>
+    </section>
+
+    <section class="card" id="trendCard" hidden>
+      <div class="head-row"><h2>학습 추세</h2><span class="sub" id="trendSum"></span></div>
+      <div class="seg" id="trendSeg" role="group" aria-label="몇 회씩 묶을지">
+        <button type="button" data-n="10" aria-pressed="false">10회씩</button>
+        <button type="button" data-n="20" aria-pressed="true">20회씩</button>
+        <button type="button" data-n="50" aria-pressed="false">50회씩</button>
+      </div>
+      <div class="pnl-chart" id="trendChart"><div class="empty">불러오는 중…</div></div>
+      <div class="pnl-tip" id="trendTip" aria-live="polite"></div>
+      <div class="list" id="trendRows"></div>
+      <div class="sub">반복할수록 나아지는지 보는 카드. 매도 기록을 시간 순서로 N회씩 묶어 '거래당 순익(%)'을 이음(주문 금액과 무관하게 비교). 아래 줄은 묶음 앞 절반과 뒤 절반의 평균 비교(0.1%p 이상 차이면 나아짐/나빠짐). 진한 선: 실매매, 노란 선: 검증 모의. 점선은 0%. 그래프를 누르거나 훑으면 묶음 내용이 보임.</div>
     </section>
 
     <section class="card" id="gateCard" hidden>
@@ -541,6 +558,7 @@ onAuthStateChanged(auth, async (user) => {
     (e) => toast("거래 기록 불러오기 실패: " + e.code)));
 
   pnlUid = user.uid; pnlCache = { since: Infinity, items: [] }; loadPnl();
+  trendCache = null; loadTrend();
 
   const q = query(collection(db, "users", user.uid, "commands"), orderBy("createdAt", "desc"), limit(5));
   unsubs.push(onSnapshot(q, (snap) => renderCmds(snap.docs.map((d) => d.data())),
@@ -1182,7 +1200,7 @@ function renderMore(s, stale) {
 }
 
 function renderTrades(items) {
-  lastTrades = items; renderTiles(); mergePnl(items);
+  lastTrades = items; renderTiles(); mergePnl(items); mergeTrend(items);
   const box = $("trades"); box.textContent = "";
   if (!items.length) { box.innerHTML = '<div class="empty">아직 거래가 없습니다.</div>'; return; }
   for (const t of items) {
@@ -1350,6 +1368,129 @@ function renderPnl() {
   };
   hit.addEventListener("pointermove", show); hit.addEventListener("pointerdown", show);
   hit.addEventListener("pointerleave", (ev) => { if (ev.pointerType === "mouse") { cross.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); } });
+}
+
+// ---------- 학습 추세 (반복할수록 나아지는가) ----------
+const TREND_KEY = "chamdomTrendN", TREND_DAYS = 60;
+let trendN = 20, trendCache = null, trendLoading = false;
+try { const v = Number(localStorage.getItem(TREND_KEY)); if ([10, 20, 50].includes(v)) trendN = v; } catch (e) {}
+function trendItem(t) {
+  if (!t || t.side !== "sell" || typeof t.at !== "number" || typeof t.pnl !== "number" || typeof t.krw !== "number") return null;
+  const cost = t.krw - t.pnl;
+  if (!(cost > 0)) return null;
+  return { at: t.at, market: t.market, paper: t.mode === "paper", pct: t.pnl / cost * 100, pnl: t.pnl };
+}
+async function loadTrend() {
+  if (!pnlUid || trendLoading) return;
+  trendLoading = true; $("trendCard").hidden = false;
+  try {
+    const since = Date.now() - TREND_DAYS * DAY;
+    const snap = await getDocs(query(collection(db, "users", pnlUid, "trades"), where("at", ">=", since), orderBy("at", "asc"), limit(5000)));
+    trendCache = snap.docs.map((d) => trendItem(d.data())).filter(Boolean);
+  } catch (e) { toast("학습 추세 불러오기 실패: " + (e.code || e.message)); }
+  trendLoading = false;
+  renderTrend();
+}
+function mergeTrend(items) {
+  if (!trendCache) return;
+  const seen = new Set(trendCache.map((t) => t.at + "|" + t.market));
+  let add = false;
+  for (const raw of items) { const t = trendItem(raw); if (t && !seen.has(t.at + "|" + t.market)) { trendCache.push(t); add = true; } }
+  if (add) { trendCache.sort((a, b) => a.at - b.at); renderTrend(); }
+}
+document.querySelectorAll("#trendSeg [data-n]").forEach((b) => b.addEventListener("click", () => {
+  trendN = Number(b.dataset.n); try { localStorage.setItem(TREND_KEY, String(trendN)); } catch (e) {}
+  renderTrend();
+}));
+function trendBlocks(list, n) {
+  const out = [];
+  for (let i = 0; i + n <= list.length; i += n) {
+    const g = list.slice(i, i + n);
+    out.push({ from: i + 1, to: i + n, t0: g[0].at, t1: g[g.length - 1].at, avg: g.reduce((a, t) => a + t.pct, 0) / n,
+      w: g.filter((t) => t.pnl > 0).length, pnl: g.reduce((a, t) => a + t.pnl, 0) });
+  }
+  const rest = list.length % n;
+  return { blocks: out, rest };
+}
+const pctS = (v) => v == null || isNaN(v) ? "-" : (v > 0 ? "+" : "") + v.toFixed(2) + "%";
+const clsV = (v) => v > 0 ? "up" : v < 0 ? "down" : "";
+function renderTrend() {
+  document.querySelectorAll("#trendSeg [data-n]").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.n) === trendN)));
+  const box = $("trendChart"), rows = $("trendRows"), tipEl = $("trendTip");
+  if (!trendCache) return;
+  box.textContent = ""; rows.textContent = ""; tipEl.textContent = "";
+  const S = [
+    { key: "live", name: "실매매", color: "var(--fg)", list: trendCache.filter((t) => !t.paper) },
+    { key: "paper", name: "검증 모의", color: "var(--ln-slow)", list: trendCache.filter((t) => t.paper) },
+  ];
+  for (const s of S) Object.assign(s, trendBlocks(s.list, trendN));
+  // 요약 줄: 처음 묶음 → 최근 묶음, 앞쪽 절반 vs 뒤쪽 절반
+  for (const s of S) {
+    const r = document.createElement("div"); r.className = "trend-row";
+    const k = document.createElement("span"); k.className = "k";
+    const key = document.createElement("span"); key.className = "trend-key"; key.style.background = s.color;
+    k.append(key, `${s.name} ${s.list.length}회`);
+    const v = document.createElement("span");
+    const B = s.blocks;
+    if (B.length < 2) v.textContent = `묶음 ${B.length}개 — ${trendN}회씩 2묶음부터 비교`;
+    else {
+      const h = Math.floor(B.length / 2), avgOf = (a) => a.reduce((x, b) => x + b.avg, 0) / a.length;
+      const early = avgOf(B.slice(0, h)), late = avgOf(B.slice(B.length - h));
+      const sp = (txt, c) => { const e = document.createElement("span"); e.textContent = txt; if (c) e.className = c; return e; };
+      v.append(sp("앞 절반 "), sp(pctS(early), clsV(early)), sp(" → 뒤 절반 "), sp(pctS(late), clsV(late)),
+        sp(late - early >= 0.1 ? " 나아짐" : late - early <= -0.1 ? " 나빠짐" : " 비슷함"));
+    }
+    r.append(k, v); rows.append(r);
+  }
+  const maxB = Math.max(...S.map((s) => s.blocks.length));
+  const sumEl = $("trendSum");
+  const lastN = S[0].list.length >= trendN ? S[0].list.slice(-trendN).reduce((a, t) => a + t.pct, 0) / trendN : null;
+  sumEl.textContent = lastN != null ? `최근 ${trendN}회 실매매 거래당 ${pctS(lastN)}` : "";
+  sumEl.className = "sub num " + (lastN != null ? clsV(lastN) : "");
+  if (maxB < 1) { box.innerHTML = `<div class="empty">아직 ${trendN}회 묶음이 없습니다(최근 ${TREND_DAYS}일 매도 ${trendCache.length}회).</div>`; return; }
+  const W = 360, L = 44, R = 8, H1 = 150, XH = 18, H = H1 + XH;
+  const pw = W - L - R, x = (s, i) => L + (s.blocks.length <= 1 ? pw / 2 : pw * i / (s.blocks.length - 1));
+  const vals = S.flatMap((s) => s.blocks.map((b) => b.avg));
+  let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals); if (hi - lo < 0.5) { lo -= 0.25; hi += 0.25; }
+  const padv = (hi - lo) * 0.1; lo -= padv; hi += padv;
+  const y = (v) => 6 + (H1 - 12) * (1 - (v - lo) / (hi - lo));
+  const svg = pnlEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `학습 추세 ${trendN}회씩 묶은 거래당 순익` }, box);
+  for (const v of niceTicks(lo, hi))
+    if (v !== 0) {
+      pnlEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: "var(--line)" }, svg);
+      pnlEl("text", { x: L - 4, y: y(v) + 3, "text-anchor": "end", class: "ax" }, svg).textContent = (v > 0 ? "+" : "") + +v.toFixed(2) + "%";
+    }
+  pnlEl("line", { x1: L, x2: W - R, y1: y(0), y2: y(0), stroke: "var(--muted)", "stroke-dasharray": "4 3" }, svg);
+  pnlEl("text", { x: L - 4, y: y(0) + 3, "text-anchor": "end", class: "ax" }, svg).textContent = "0%";
+  for (const s of S) {
+    if (!s.blocks.length) continue;
+    if (s.blocks.length > 1)
+      pnlEl("polyline", { points: s.blocks.map((b, i) => `${x(s, i).toFixed(1)},${y(b.avg).toFixed(1)}`).join(" "), fill: "none",
+        stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+    s.blocks.forEach((b, i) => pnlEl("circle", { cx: x(s, i), cy: y(b.avg), r: s.blocks.length > 30 ? 2 : 3, fill: s.color }, svg));
+  }
+  pnlEl("text", { x: L, y: H - 4, "text-anchor": "start", class: "ax" }, svg).textContent = "처음";
+  pnlEl("text", { x: W - R, y: H - 4, "text-anchor": "end", class: "ax" }, svg).textContent = "최근";
+  pnlEl("text", { x: L + pw / 2, y: H - 4, "text-anchor": "middle", class: "ax" }, svg).textContent = `${trendN}회씩 묶음 →`;
+  const cross = pnlEl("line", { y1: 4, y2: H1, stroke: "var(--muted)", "stroke-dasharray": "3 3", visibility: "hidden" }, svg);
+  const hit = pnlEl("rect", { x: L, y: 0, width: pw, height: H, fill: "transparent" }, svg);
+  const show = (ev) => {
+    const r = svg.getBoundingClientRect(), f = Math.max(0, Math.min(1, ((ev.clientX - r.left) * W / r.width - L) / pw));
+    cross.setAttribute("x1", L + pw * f); cross.setAttribute("x2", L + pw * f); cross.setAttribute("visibility", "visible");
+    tipEl.textContent = "";
+    for (const s of S) {
+      if (!s.blocks.length) continue;
+      const i = Math.round(f * (s.blocks.length - 1)), b = s.blocks[i];
+      const line = document.createElement("div");
+      const sp = (txt, c) => { const e = document.createElement("span"); e.textContent = txt; if (c) e.className = c; return e; };
+      const a = kd(b.t0), z = kd(b.t1);
+      line.append(sp(`${s.name} ${b.from}~${b.to}회째 (${a.mo}/${a.d}~${z.mo}/${z.d}) · 거래당 `), sp(pctS(b.avg), clsV(b.avg)),
+        sp(` · 이익 ${b.w}/${trendN}회 · `), sp(signed(b.pnl), clsV(b.pnl)));
+      tipEl.append(line);
+    }
+  };
+  hit.addEventListener("pointermove", show); hit.addEventListener("pointerdown", show);
+  hit.addEventListener("pointerleave", (ev) => { if (ev.pointerType === "mouse") cross.setAttribute("visibility", "hidden"); });
 }
 
 /* ---------- 비상 제어 (두 번 눌러 실행) ---------- */
