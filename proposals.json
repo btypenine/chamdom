@@ -191,7 +191,7 @@
    "pr": "https://github.com/btypenine/chamdom/pull/16",
    "branch": "ai/20261031-exit-recent",
    "createdAt": "2026-10-31T02:58:00+09:00",
-   "status": "pending"
+   "status": "merged"
   },
   {
    "id": "ai-20261031-btc-day",
@@ -202,7 +202,7 @@
    "pr": "https://github.com/btypenine/chamdom/pull/17",
    "branch": "ai/20261031-btc-day",
    "createdAt": "2026-10-31T05:58:00+09:00",
-   "status": "pending"
+   "status": "merged"
   }
  ]
 }
