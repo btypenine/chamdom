@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""이번 실험: '종목 하락 추세' 관문 — 매수 신호 때 그 종목이 최근 N분 X% 이하로 밀려 있으면 막기
-배경: 실패 원인 2위 '서서히 하락(추세 반대 진입)' 55건, 조건 학습에서 눌림 매수 조건(볼린저하단 -0.53%·RSI과매도 -0.52%)이 최하위
-질문: 보지 않은 다음 6시간에서 막힌 거래가 남은 거래보다 나쁜가? 기준(60·120·240분 × -1·-2·-3%)별 비교
+"""이번 실험: '힘 부족(익절폭 > 기대 움직임)' 관문 — 매수 신호 때 그 종목 최근 60분 1분봉 평균 움직임으로
+보유시간 안에 기대되는 움직임(평균|1분 변화| × √보유분)을 구해, 익절폭이 그보다 몇 배 이상 크면 막기
+배경: 실패 원인 1위 '보유시간 안에 목표 미도달(힘 부족)' 96건(전체 실패의 약 32%), 직전 3시간 실전 손실 3건 모두 이 원인
+질문: 보지 않은 다음 6시간에서 막힌 거래가 남은 거래보다 나쁜가? 기준(익절폭/기대 움직임 0.5·0.75·1.0·1.5배)별 비교
 - 롤링 워크포워드: 과거 3일로 현재 봇 기준대로 전략을 고르고 다음 6시간 성적, 10개 창. 같은 난수 → 공정 비교
 """
 import importlib.util, json, os, random, time
@@ -103,8 +104,10 @@ for mk in MARKETS:
         sp, ho = pick(cands)
         if sp:
             for i, pnl in backtest_idx(s, sp, end, stop):
-                chg = {m: (s.c[i] / s.c[i - m] - 1) * 100 for m in (60, 120, 240)}
-                rows.append((chg, pnl, mk + ts[i][:13]))
+                mv = sum(abs(s.c[k] / s.c[k - 1] - 1) for k in range(i - 59, i + 1)) / 60 * 100
+                reach = mv * sp["hold"] ** 0.5
+                ratio = sp.get("tp", bot.TARGET_NET_PCT) / reach if reach > 0 else 99
+                rows.append((ratio, pnl, mk + ts[i][:13], sp["hold"]))
                 nt += 1
     print(f"== {mk} 거래 {nt} ({time.time() - t0:.0f}s)", flush=True)
 
@@ -115,10 +118,15 @@ allr = [r[1] for r in rows]
 print(f"\n#### 합계 (보지 않은 다음 6시간 × {WINDOWS}개 창)")
 print(line("현재 봇 그대로", allr))
 out = {"all": bot.stats(allr), "gate": {}}
-for m in (60, 120, 240):
-    for th in (-1.0, -2.0, -3.0):
-        blk = [r for r in rows if r[0][m] <= th]; keep = [r for r in rows if r[0][m] > th]
-        bs, ks = bot.stats([r[1] for r in blk]), bot.stats([r[1] for r in keep])
-        print(f"관문 '종목 {m}분 {th:+.0f}% 이하 막기': 막힌 {bs['n']}건 거래당 {bs['edge']:+.3f}% (시간대·종목 {len(set(r[2] for r in blk))}) · 남은 {ks['n']}건 거래당 {ks['edge']:+.3f}% · 차이 {ks['edge'] - bs['edge']:+.3f}%p")
-        out["gate"][f"{m}_{th}"] = {"blocked": bs, "kept": ks}
+rs = sorted(r[0] for r in rows)
+if rs:
+    print("익절폭/기대 움직임 분포: 25%", round(rs[len(rs) // 4], 2), "· 중앙", round(rs[len(rs) // 2], 2), "· 75%", round(rs[len(rs) * 3 // 4], 2))
+for th in (0.5, 0.75, 1.0, 1.5, 2.0):
+    blk = [r for r in rows if r[0] > th]; keep = [r for r in rows if r[0] <= th]
+    bs, ks = bot.stats([r[1] for r in blk]), bot.stats([r[1] for r in keep])
+    print(f"관문 '익절폭 > 기대 움직임 x{th}' 막기: 막힌 {bs['n']}건 거래당 {bs['edge']:+.3f}% (시간대·종목 {len(set(r[2] for r in blk))}) · 남은 {ks['n']}건 거래당 {ks['edge']:+.3f}% · 차이 {ks['edge'] - bs['edge']:+.3f}%p")
+    out["gate"][str(th)] = {"blocked": bs, "kept": ks}
+for lo, hi in ((0, 0.5), (0.5, 1.0), (1.0, 1.5), (1.5, 99)):
+    g = [r[1] for r in rows if lo < r[0] <= hi]
+    print(line(f"구간 {lo}~{hi}배", g))
 json.dump(out, open("bt_summary.json", "w"), ensure_ascii=False, indent=1)
