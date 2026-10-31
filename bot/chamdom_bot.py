@@ -2251,6 +2251,9 @@ class Bot:
                 log(f"[안내] 친구 제안함을 아직 읽을 수 없음 (Firebase 보안 규칙 추가 필요): {str(e)[:80]}")
                 self._sug_warned = True
             return
+        if not getattr(self, "_sug_ok", False):
+            self._sug_ok = True
+            log(f"[안내] 친구 제안함 연결 확인 (보안 규칙 정상) · 지금까지 제안 {len(items)}건")
         seen = self.state.setdefault("sugSeen", [])
         reqs = self.state.setdefault("userRequests", [])
         new = 0
