@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""이번 실험: '검증 근거 약함' 관문 — 고른 전략의 검증구간(보지 않은 뒤 25%) 거래가 3회 미만이거나 거래당 +0.1% 미만이면 막기
-배경: 실전 163건(bot.log) 중 검증 3회 이상·거래당 +0.1% 이상 62건 거래당 -6원, 나머지 101건 -28.5원 (표본 작음·같은 기간 사후 분석)
-질문: 보지 않은 다음 6시간에서도 막힌 거래가 남은 거래보다 나쁜가? 기준값(회수 2·3·5, 거래당 0·0.1·0.2%)별로 비교
+"""이번 실험: '종목 하락 추세' 관문 — 매수 신호 때 그 종목이 최근 N분 X% 이하로 밀려 있으면 막기
+배경: 실패 원인 2위 '서서히 하락(추세 반대 진입)' 55건, 조건 학습에서 눌림 매수 조건(볼린저하단 -0.53%·RSI과매도 -0.52%)이 최하위
+질문: 보지 않은 다음 6시간에서 막힌 거래가 남은 거래보다 나쁜가? 기준(60·120·240분 × -1·-2·-3%)별 비교
 - 롤링 워크포워드: 과거 3일로 현재 봇 기준대로 전략을 고르고 다음 6시간 성적, 10개 창. 같은 난수 → 공정 비교
 """
 import importlib.util, json, os, random, time
@@ -28,6 +28,32 @@ for i in range(0, len(MARKETS), 20):
 
 
 
+
+
+def backtest_idx(series, spec, start, end):
+    """bot.backtest 와 같은 계산, 거래마다 신호 봉 위치도 함께 돌려줌"""
+    sig = series.signal(spec)
+    out, i, cd = [], start, -1
+    slip = getattr(series, "slip", bot.BT_SLIPPAGE)
+    while i < end - 1:
+        if i < cd or not sig[i]:
+            i += 1; continue
+        j = i + 1
+        entry = series.o[j] * (1 + slip) * (1 + bot.FEE_RATE)
+        tp, sl = bot.target_price(entry, spec.get("tp", bot.TARGET_NET_PCT)), entry * (1 + spec["sl"] / 100)
+        ex, k = None, j
+        while k < end:
+            if series.l[k] <= sl: ex = sl; break
+            if series.h[k] >= tp: ex = tp; break
+            if k - j >= spec["hold"]: ex = series.c[k]; break
+            k += 1
+        if ex is None: break
+        pnl = (ex * (1 - slip) * (1 - bot.FEE_RATE) / entry - 1) * 100
+        out.append((i, pnl)); i = k + 1
+        if pnl < 0: cd = i + bot.LOSS_COOLDOWN_MIN
+    return out
+
+
 def pick(cands):
     mn, me, fl = bot.EXPLORE_MIN_TRADES, bot.EXPLORE_MIN_EDGE, bot.EXPLORE_HOLDOUT_FLOOR
     best = None
@@ -42,10 +68,8 @@ def pick(cands):
     return (best[0], best[2]) if best else (None, None)
 
 
-
-
 print("현재 봇 값:", bot.EXPLORE_MIN_TRADES, bot.EXPLORE_MIN_EDGE, bot.EXPLORE_HOLDOUT_FLOOR, "· 시험 수", bot.BT_TRIALS, flush=True)
-rows = []   # (검증 거래수, 검증 거래당, 결과 리스트, 시간대)
+rows = []   # (종목 변화율{60,120,240분}, 거래 순익%, 종목+시간대)
 t0 = time.time()
 for mk in MARKETS:
     try:
@@ -78,25 +102,23 @@ for mk in MARKETS:
         stop = min(end + STEP, s.n)
         sp, ho = pick(cands)
         if sp:
-            res = bot.backtest(s, sp, start=end, end=stop)
-            if res:
-                rows.append((ho["n"], ho["edge"] if ho["n"] else 0.0, res, mk + ts[end][:13]))
-                nt += len(res)
+            for i, pnl in backtest_idx(s, sp, end, stop):
+                chg = {m: (s.c[i] / s.c[i - m] - 1) * 100 for m in (60, 120, 240)}
+                rows.append((chg, pnl, mk + ts[i][:13]))
+                nt += 1
     print(f"== {mk} 거래 {nt} ({time.time() - t0:.0f}s)", flush=True)
 
 def line(name, r):
     st = bot.stats(r)
     return f"{name}: {st['n']}건 · 승률 {st['winrate'] * 100:.0f}% · 거래당 {st['edge']:+.3f}% · 합계 {st['total']:+.1f}%"
-allr = [x for r in rows for x in r[2]]
+allr = [r[1] for r in rows]
 print(f"\n#### 합계 (보지 않은 다음 6시간 × {WINDOWS}개 창)")
 print(line("현재 봇 그대로", allr))
 out = {"all": bot.stats(allr), "gate": {}}
-for mn in (2, 3, 5):
-    for me in (0.0, 0.1, 0.2):
-        blk = [r for r in rows if r[0] < mn or r[1] < me]
-        keep = [r for r in rows if not (r[0] < mn or r[1] < me)]
-        b = [x for r in blk for x in r[2]]; k = [x for r in keep for x in r[2]]
-        bs, ks = bot.stats(b), bot.stats(k)
-        print(f"관문 '검증 {mn}회 미만 또는 거래당 {me:+.1f}% 미만 막기': 막힌 {bs['n']}건 거래당 {bs['edge']:+.3f}% (시간대·종목 {len(set(r[3] for r in blk))}) · 남은 {ks['n']}건 거래당 {ks['edge']:+.3f}% · 차이 {ks['edge'] - bs['edge']:+.3f}%p")
-        out["gate"][f"{mn}_{me}"] = {"blocked": bs, "kept": ks}
+for m in (60, 120, 240):
+    for th in (-1.0, -2.0, -3.0):
+        blk = [r for r in rows if r[0][m] <= th]; keep = [r for r in rows if r[0][m] > th]
+        bs, ks = bot.stats([r[1] for r in blk]), bot.stats([r[1] for r in keep])
+        print(f"관문 '종목 {m}분 {th:+.0f}% 이하 막기': 막힌 {bs['n']}건 거래당 {bs['edge']:+.3f}% (시간대·종목 {len(set(r[2] for r in blk))}) · 남은 {ks['n']}건 거래당 {ks['edge']:+.3f}% · 차이 {ks['edge'] - bs['edge']:+.3f}%p")
+        out["gate"][f"{m}_{th}"] = {"blocked": bs, "kept": ks}
 json.dump(out, open("bt_summary.json", "w"), ensure_ascii=False, indent=1)

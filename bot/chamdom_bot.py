@@ -55,7 +55,7 @@ FS_BASE = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}/data
 UPBIT = "https://api.upbit.com"
 KST = timezone(timedelta(hours=9))
 
-PROTECTED_COINS = {"XRP"}        # 절대 거래 금지 + 화면 표시 안 함
+PROTECTED_COINS = {"XRP"}        # 절대 거래 금지 + 화면 표시 안 함 (bot_config.env 의 PROTECTED_COINS 가 있으면 그 값으로 바뀜)
 STABLE_COINS = {"USDT", "USDC", "DAI", "USDE", "USD1", "PYUSD", "TUSD"}  # 가격 고정 코인은 거래 대상 제외
 MIN_ORDER_KRW = 5000
 FEE_RATE = 0.0005                # 업비트 원화마켓 0.05%
@@ -80,6 +80,8 @@ BT_TRIALS = 200                  # 종목당 시험할 무작위 전략 수 (많
 BT_MIN_TRADES = 20               # 채택 최소 거래 수 (6회는 우연과 구분 불가)
 BT_HOLDOUT_MIN_TRADES = 5        # 최근 검증 구간 최소 거래 수
 BT_HOLDOUT_MIN_WINRATE = 0.80    # 최근 검증 구간 최소 승률
+PROVEN_ONLY_LIVE = True          # 실전 통과(proven) 규칙만 실제 돈으로 주문, 검증 중 규칙은 모의 체결로 계속 시험·학습
+SHADOW_SLIPPAGE = 0.0015         # 모의 체결 미끄러짐(매수·매도 각각) — 실전 평균보다 약간 보수적으로
 BT_SLIPPAGE = 0.001              # (고정값 쓸 때) 시장가 체결 미끄러짐 0.1% (매수·매도 각각)
 BT_SLIP_BASE = 0.0003            # 종목별 미끄러짐 = 0.03% + 호가 한 칸/가격 (BTC≈0.03%, 100원대 코인≈0.5~1%)
 EXPLORE_MIN_TRADES = 6           # 탐험 모드: 학습 구간 최소 거래 수
@@ -119,6 +121,7 @@ AI_TRADE_LOG = 60                # AI에게 보여줄 최근 거래 수
 
 # 자동 업데이트: GitHub에 올라간 최신 코드를 받아 스스로 재시작 (start_bot.bat 이 다시 띄워줌)
 UPDATE_URL = "https://raw.githubusercontent.com/btypenine/chamdom/main/bot/chamdom_bot.py"
+UPDATE_URL_TMPL = "https://raw.githubusercontent.com/btypenine/chamdom/{branch}/bot/chamdom_bot.py"
 UPDATE_EVERY = 10 * 60
 RESTART_CODE = 3
 
@@ -200,6 +203,19 @@ def load_config():
     key = cfg.get("ANTHROPIC_API_KEY", "")
     cfg["ANTHROPIC_API_KEY"] = "" if not key or key.startswith("여기에") else key
     cfg["AI_MODEL"] = cfg.get("AI_MODEL") or AI_MODEL_DEFAULT
+    # 사용자별 설정 (친구용): 없으면 기존 값 그대로
+    cfg["ROLE"] = (cfg.get("ROLE") or "owner").lower()             # owner | friend
+    if "PROTECTED_COINS" in cfg:                                     # 예: XRP,DOGE  (빈 값이면 보호 코인 없음)
+        PROTECTED_COINS.clear()
+        PROTECTED_COINS.update(c.strip().upper() for c in cfg["PROTECTED_COINS"].split(",") if c.strip())
+    channel = (cfg.get("UPDATE_CHANNEL") or ("stable" if cfg["ROLE"] == "friend" else "main")).lower()
+    if channel not in ("main", "stable"):
+        channel = "stable"
+    cfg["UPDATE_CHANNEL"] = channel
+    global UPDATE_URL, REPORT_DIR
+    UPDATE_URL = UPDATE_URL_TMPL.format(branch=channel)
+    if cfg["ROLE"] == "friend":
+        REPORT_DIR = ""                                              # 성민님 PC 분석용 보고서는 친구 PC에서 만들지 않음
     if EXPLORE_MODE:
         cfg["ORDER_KRW"] = EXPLORE_ORDER_KRW
         cfg["MARTINGALE_MAX_LEVEL"] = EXPLORE_MARTINGALE
@@ -443,6 +459,24 @@ class Cloud:
                         out[k] = v
             except Exception:
                 continue
+        return out
+
+    def suggestions(self, limit=50):
+        """친구들이 대시보드 '요청하기'로 보낸 제안 (공용 suggestions 컬렉션, 운영자만 전부 읽을 수 있음)"""
+        h = self._auth()
+        body = {"structuredQuery": {"from": [{"collectionId": "suggestions"}],
+                                    "orderBy": [{"field": {"fieldPath": "at"}, "direction": "DESCENDING"}],
+                                    "limit": limit}}
+        res = requests.post(f"{FS_BASE}:runQuery", json=body, headers=h, timeout=10)
+        if res.status_code != 200:
+            raise RuntimeError(f"친구 제안 확인 실패 {res.status_code}: {res.text[:150]}")
+        out = []
+        for row in res.json():
+            d = row.get("document")
+            if d:
+                f = {k: from_fs(v) for k, v in d.get("fields", {}).items()}
+                f["_id"] = d["name"].rsplit("/", 1)[-1]
+                out.append(f)
         return out
 
     def put_status(self, data, partial=False):
@@ -874,6 +908,28 @@ def gate_btc_trend(bot):
     return chg <= BTC_TREND_PCT, f"BTC {BTC_TREND_MIN}분 {chg:+.2f}% (기준 {BTC_TREND_PCT}%)"
 
 
+BTC_DAY_HOURS = 24              # BTC 하루 약세 관문: 최근 몇 시간 변화를 볼지(60분봉)
+BTC_DAY_PCT = -3.0              # 이 % 이하로 빠져 있으면 막음
+BTC_DAY_REFRESH = 600           # 60분봉은 10분마다만 다시 받음
+
+
+def gate_btc_day(bot):
+    """10-30 바이낸스 해킹 뒤 BTC 24시간 -5%: 30분·120분 관문은 반등 때마다 꺼지는데, 하루 내내 밀리는 장에서는 모의 거래가 '시장 전체 하락'으로 연달아 짐"""
+    now = time.time()
+    if now - bot.__dict__.get("_btc_day_at", 0) >= BTC_DAY_REFRESH:
+        try:
+            data = bot.upbit._public("/v1/candles/minutes/60", {"market": "KRW-BTC", "count": BTC_DAY_HOURS + 1})
+            if data and len(data) >= BTC_DAY_HOURS + 1:
+                bot._btc_day = (data[0]["trade_price"] / data[BTC_DAY_HOURS]["trade_price"] - 1) * 100
+                bot._btc_day_at = now
+        except Exception:
+            pass
+    chg = bot.__dict__.get("_btc_day")
+    if chg is None:
+        return False, "BTC 하루 시세 확인 중"
+    return chg <= BTC_DAY_PCT, f"BTC {BTC_DAY_HOURS}시간 {chg:+.2f}% (기준 {BTC_DAY_PCT}%)"
+
+
 def gate_event(bot):
     now = time.time()
     nxt = None
@@ -900,6 +956,15 @@ def gate_volatile_hours(bot):
     return h in VOLATILE_HOURS, f"지금 {h:02d}시 · 변동 큰 시간대 {', '.join(f'{x:02d}시' for x in VOLATILE_HOURS)}"
 
 
+DAWN_HOURS = range(3, 9)        # 새벽 시간대 관문(한국시간 03:00~08:59): 실전 201건 중 이 시간 매수 58건 거래당 -0.87% vs 나머지 143건 -0.27% (10-27~10-30)
+
+
+def gate_dawn_hours(bot):
+    """아시아 새벽(미국장 마감 후~한국장 전) 거래가 얇은 시간대의 매수를 따로 잼 — 관찰로 시작"""
+    h = datetime.now(KST).hour
+    return h in DAWN_HOURS, f"지금 {h:02d}시 · 새벽 시간대 {DAWN_HOURS.start:02d}~{DAWN_HOURS.stop - 1:02d}시"
+
+
 CHASE_PCT = 0.3                 # 추격 매수 관문: 매수 직전 현재가가 신호가(신호 봉 종가)보다 이 % 이상 비싸면 막음
 
 
@@ -912,13 +977,63 @@ def gate_chase(bot, mk, price, ctx):
     return gap >= CHASE_PCT, f"{mk.split('-')[1]} 현재가가 신호가보다 {gap:+.2f}% (기준 +{CHASE_PCT}%)"
 
 
+WEAK_HO_MIN_TRADES = 2          # 검증 근거 약함 관문: 검증구간(보지 않은 뒤 25%) 거래가 이보다 적거나 (bt-lab 10-30: 2회·+0.1%가 차이 가장 큼)
+WEAK_HO_MIN_EDGE = 0.1          # 검증구간 거래당 순익이 이 % 미만이면 막음
+
+
+def gate_weak_holdout(bot, mk, price, ctx):
+    """백테스트 예상(거래당 +0.3%)과 실전(-0.4%) 차이 대응 — 검증구간 근거가 얇은 전략의 매수를 따로 잼"""
+    sp = (bot.state.get("strategies") or {}).get(mk) or {}
+    n, edge = sp.get("holdoutTrades"), sp.get("holdoutEdgePct")
+    if n is None:
+        return False, "검증 기록 없음"
+    edge = edge if n else 0.0
+    return (n < WEAK_HO_MIN_TRADES or edge < WEAK_HO_MIN_EDGE), \
+        f"{mk.split('-')[1]} 검증구간 {n}회 거래당 {edge:+.2f}% (기준 {WEAK_HO_MIN_TRADES}회·{WEAK_HO_MIN_EDGE:+.1f}% 이상)"
+
+
+BREADTH_MIN = 30                # 시장 폭 약세 관문: 종목별 최근 몇 분 변화를 볼지
+BREADTH_DOWN_FRAC = 0.7         # 대상 종목 중 이 비율 이상이 하락 중이면 막음
+BREADTH_MIN_MARKETS = 10        # 최근 확인한 종목이 이보다 적으면 판단 안 함
+BREADTH_FRESH = 300             # 이 초 안에 확인한 종목만 셈
+
+
+def gate_breadth(bot, mk, price, ctx):
+    """실패 원인 2위 '시장 전체 하락' 대응 — BTC는 버티는데 알트 전체가 같이 밀리는 때를 따로 잼 (BTC 관문과 별개)"""
+    now = time.time()
+    chg = [c for c, at in (bot.__dict__.get("_mk_chg") or {}).values() if now - at <= BREADTH_FRESH]
+    if len(chg) < BREADTH_MIN_MARKETS:
+        return False, f"확인한 종목 {len(chg)}개(기준 {BREADTH_MIN_MARKETS}개 이상)"
+    down = sum(c < 0 for c in chg) / len(chg)
+    avg = sum(chg) / len(chg)
+    return down >= BREADTH_DOWN_FRAC, f"대상 {len(chg)}종목 중 {down * 100:.0f}% 하락 · 평균 {avg:+.2f}% ({BREADTH_MIN}분, 기준 {BREADTH_DOWN_FRAC * 100:.0f}% 이상)"
+
+
+COIN_TREND_MIN = 120             # 종목 자체 하락 추세 관문: 그 종목의 최근 몇 분 변화를 볼지
+COIN_TREND_PCT = -2.0            # 이 % 이하로 밀려 있는 종목은 막음 (BTC·시장 폭과 별개로 '그 코인만' 흘러내리는 때)
+
+
+def gate_coin_trend(bot, mk, price, ctx):
+    """실패 원인 '서서히 하락(추세 반대 진입)' 대응 — 눌림 매수 조건(볼린저하단·RSI과매도·단기급락)이 실전 성적 최하위라
+    그 종목 자체가 최근 2시간 계속 밀리는 중이면 따로 잼"""
+    chg = (ctx or {}).get("coinChg")
+    if chg is None:
+        return False, "종목 변화 기록 없음"
+    return chg <= COIN_TREND_PCT, f"{mk.split('-')[1]} 최근 {COIN_TREND_MIN}분 {chg:+.2f}% (기준 {COIN_TREND_PCT}%)"
+
+
 # entry=True 관문은 1분마다가 아니라 매수 신호가 날 때마다 그 종목 기준으로 확인: fn(bot, 종목, 현재가, ctx)
 MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
     {"id": "btc_trend", "name": "BTC 하락 추세", "desc": f"BTC가 최근 {BTC_TREND_MIN}분 동안 {BTC_TREND_PCT}% 이하로 밀려 있으면 새로 사지 않음", "fn": gate_btc_trend},
+    {"id": "btc_day", "name": "BTC 하루 약세", "desc": f"BTC가 최근 {BTC_DAY_HOURS}시간 {BTC_DAY_PCT}% 이하로 빠져 있으면 새로 사지 않음(악재로 하루 내내 밀리는 장)", "fn": gate_btc_day},
     {"id": "event", "name": "경제 일정", "desc": "FOMC·미국 물가(CPI) 발표 등 정해진 일정 앞뒤로 새로 사지 않음 (일정표: bot/events.json)", "fn": gate_event},
     {"id": "volatile_hours", "name": "변동 큰 시간대", "desc": "미국장 시작(23~00시)·유럽장 시작(17시)에는 새로 사지 않음", "fn": gate_volatile_hours},
+    {"id": "dawn_hours", "name": "새벽 시간대", "desc": f"새벽 {DAWN_HOURS.start:02d}~{DAWN_HOURS.stop - 1:02d}시(한국시간)에는 새로 사지 않음", "fn": gate_dawn_hours},
     {"id": "chase", "name": "추격 매수", "desc": f"매수 직전 현재가가 신호가보다 {CHASE_PCT}% 이상 올라 있으면 사지 않음(늦게 따라붙기 방지)", "fn": gate_chase, "entry": True},
+    {"id": "weak_holdout", "name": "검증 근거 약함", "desc": f"전략의 검증구간 거래가 {WEAK_HO_MIN_TRADES}회 미만이거나 거래당 {WEAK_HO_MIN_EDGE:+.1f}% 미만이면 사지 않음", "fn": gate_weak_holdout, "entry": True},
+    {"id": "breadth", "name": "시장 폭 약세", "desc": f"거래 대상 종목 중 {BREADTH_DOWN_FRAC * 100:.0f}% 이상이 최근 {BREADTH_MIN}분 하락 중이면 사지 않음(알트 동반 하락)", "fn": gate_breadth, "entry": True},
+    {"id": "coin_trend", "name": "종목 하락 추세", "desc": f"그 종목이 최근 {COIN_TREND_MIN}분 {COIN_TREND_PCT}% 이하로 밀려 있으면 사지 않음(혼자 흘러내리는 코인 눌림 매수 방지)", "fn": gate_coin_trend, "entry": True},
 ]
 
 # ---- 청산 판단 (보유 중) — 관문과 같은 '관찰 → 승인 → 적용' 구조 ----
@@ -927,6 +1042,10 @@ MARKET_GATES = [
 EXIT_EVAL_MIN = 20               # 판정에 필요한 표본 수
 EXIT_MARGIN = 0.15               # 조기 정리가 평균 이만큼(%p) 이상 나아야 적용 제안
 BTC_EXIT_PCT = -0.5              # 매수 후 BTC가 이만큼 빠졌고 포지션이 손실 중이면 조기 정리 대상
+
+
+TP_LIMIT_MAX_MIN = 400  # 지정가 익절 관찰: 보유가 이보다 길면 1분봉 조회량이 커서 건너뜀(분석 전용)
+EXIT_RECENT_N = 20     # 청산 규칙 '최근 N건' 흐름 표시용(판정 기준은 누적 그대로)
 
 
 def exit_btc_drop(bot, pos, price):
@@ -955,9 +1074,22 @@ def exit_stale(bot, pos, price):
         f"보유시간 {frac * 100:.0f}% 경과 · 익절 진행률 최고 {max(prog, 0):.0f}% · 포지션 {pnl:+.2f}%"
 
 
+GIVEBACK_PROG = 70              # 익절 근처 되밀림: 익절까지 진행률(최고가 기준)이 이 % 이상 갔었는데
+GIVEBACK_PNL = 0.0               # 지금 순손익(수수료 포함)이 이 % 이하로 되밀렸으면 조기 정리 대상
+
+
+def exit_giveback(bot, pos, price):
+    """실패 원인 '익절 직전까지 갔다가 반락' 대응 — 거의 다 간 수익을 손실로 바꾸기 전에 본전 근처에서 정리"""
+    up_room = pos["tp"] - pos["unit"]
+    prog = (pos.get("maxP", pos["unit"]) - pos["unit"]) / up_room * 100 if up_room > 0 else 0
+    pnl = (price * (1 - FEE_RATE) / pos["unit"] - 1) * 100
+    return (prog >= GIVEBACK_PROG and pnl <= GIVEBACK_PNL), f"익절 진행률 최고 {prog:.0f}% · 지금 포지션 {pnl:+.2f}%"
+
+
 EXIT_RULES = [
     {"id": "btc_exit", "name": "보유 중 BTC 하락 정리", "desc": f"들고 있는 동안 BTC가 {BTC_EXIT_PCT}% 이상 빠지고 손실 중이면 일찍 정리", "fn": exit_btc_drop},
     {"id": "stale_exit", "name": "힘 빠진 보유 정리", "desc": f"보유시간 {STALE_EXIT_FRAC * 100:.0f}%가 지나도 익절까지 {STALE_EXIT_PROG}%도 못 갔고 손실 중이면 일찍 정리", "fn": exit_stale},
+    {"id": "giveback_exit", "name": "익절 근처 되밀림 정리", "desc": f"익절까지 {GIVEBACK_PROG}% 이상 갔다가 순손익 {GIVEBACK_PNL:+.1f}% 이하로 되밀리면 일찍 정리", "fn": exit_giveback},
 ]
 
 
@@ -979,7 +1111,26 @@ class Bot:
         return self.state["ledger"]
 
     def in_use(self):
-        return sum(p["cost"] for p in self.state["positions"].values())
+        return sum(p["cost"] for p in self.state["positions"].values() if not p.get("paper"))
+
+    def is_shadow(self, market, spec):
+        """실매매 중이라도 아직 실전 통과 못 한 규칙이면 모의 체결로만 시험"""
+        if not (self.live and PROVEN_ONLY_LIVE):
+            return False
+        rb = self.state["ruleBook"].get(spec.get("rid") or rule_id(market, spec))
+        return not (rb and rb.get("status") == "proven")
+
+    def shadow_book(self, pnl, market=None):
+        """모의 체결 결과: 시드·실현손익에는 넣지 않고 따로 집계 (손실 종목 정지는 실전과 같게)"""
+        lg = self.ledger
+        lg["shadowTrades"] = lg.get("shadowTrades", 0) + 1
+        lg["shadowWins"] = lg.get("shadowWins", 0) + (1 if pnl > 0 else 0)
+        lg["shadowPnl"] = lg.get("shadowPnl", 0.0) + pnl
+        lg["dayShadowTrades"] = lg.get("dayShadowTrades", 0) + 1
+        lg["dayShadowPnl"] = lg.get("dayShadowPnl", 0.0) + pnl
+        if pnl <= 0 and COOLDOWN_PER_MARKET and market:
+            self.state.setdefault("coolMarkets", {})[market] = int(time.time()) + LOSS_COOLDOWN_MIN * 60
+        save_state(self.state)
 
     def available(self):
         return max(0.0, self.ledger["seed"] - self.in_use())
@@ -999,7 +1150,8 @@ class Bot:
                     "blocked": list(self.state["blocked"])}
             self.state["marketStats"] = {}
             self.state["blocked"] = []
-            lg.update({"day": day, "dayPnl": 0.0, "dayTrades": 0, "dayWins": 0, "gateTrades": 0, "gateWins": 0})
+            lg.update({"day": day, "dayPnl": 0.0, "dayTrades": 0, "dayWins": 0, "gateTrades": 0, "gateWins": 0,
+                       "dayShadowTrades": 0, "dayShadowPnl": 0.0})
             save_state(self.state)
             log(f"새 거래일 {day} 시작 · 시드 {lg['seed']:,.0f}원 · 잠긴 수익 {lg['locked']:,.0f}원")
 
@@ -1048,6 +1200,14 @@ class Bot:
         if not rb:
             return
         pct = pnl / pos["cost"] * 100 if pos.get("cost") else 0.0
+        if rb["status"] == "proven":
+            # 통과 '이후' 성적만 따로 누적 (통과 판정이 앞으로도 맞는지 확인용, 매매 영향 없음)
+            for box in (rb.setdefault("post", {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0}),
+                        self.state.setdefault("passStats", {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0})):
+                box["n"] += 1
+                box["wins"] += 1 if pnl > 0 else 0
+                box["sumPct"] = round(box["sumPct"] + pct, 4)
+                box["pnl"] = round(box["pnl"] + pnl)
         rb["trades"] += 1
         rb["wins"] += 1 if pnl > 0 else 0
         rb["sumPct"] = round(rb["sumPct"] + pct, 4)
@@ -1060,13 +1220,13 @@ class Bot:
             old = rb["status"]
             rb["status"] = "proven" if avg > 0 else "retired"
             verdict = "계속 사용" if rb["status"] == "proven" else "퇴출(다시 채택 안 함)"
-            log(f"[규칙 판정] {coin} {rb['id']} 실전 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}% "
+            log(f"[규칙 판정] {coin} {rb['id']} 실전·검증 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}% "
                 f"(백테스트 예상 {rb.get('btEdge') or 0:+.2f}%) → {verdict}")
             if rb["status"] == "retired" and old != "retired" and self.state["strategies"].get(rb["market"], {}).get("rid") == rid:
                 del self.state["strategies"][rb["market"]]
         else:
             left = RULE_EVAL_TRADES - n
-            log(f"[규칙 기록] {coin} {rb['id']} 실전 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}%"
+            log(f"[규칙 기록] {coin} {rb['id']} {'검증(모의)' if pos.get('paper') else '실전'} {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}%"
                 + (f" · 판정까지 {left}회" if left > 0 else ""))
         self.trim_rulebook()
         save_state(self.state)
@@ -1260,7 +1420,12 @@ class Bot:
 
     def enter(self, market, spec, price, ctx=None):
         krw = self.order_size()
-        if self.live:
+        shadow = self.is_shadow(market, spec)
+        if shadow:
+            fill = price * (1 + SHADOW_SLIPPAGE)
+            vol = krw * (1 - FEE_RATE) / fill
+            cost = krw
+        elif self.live:
             krw_balance = next((float(a["balance"]) for a in self.upbit.accounts() if a["currency"] == "KRW"), 0)
             krw = min(krw, krw_balance * 0.995)
             if krw < MIN_ORDER_KRW:
@@ -1272,6 +1437,7 @@ class Bot:
                 log(f"[경고] {market} 매수 체결 확인 실패")
                 return
             cost = funds + fee
+            self.exec_record("buy", (funds / vol / price - 1) * 100)
         else:
             vol = krw * (1 - FEE_RATE) / price
             cost = krw
@@ -1285,28 +1451,35 @@ class Bot:
             "btWinrate": spec.get("winrate"), "btEdge": spec.get("edgePct"),
             "rid": spec.get("rid") or self.rule_open(market, spec)["id"], **(ctx or {}),
         }
+        if shadow:
+            self.state["positions"][market]["paper"] = True
         try:
             self.state["positions"][market]["btcAtEntry"] = self.upbit.prices(["KRW-BTC"]).get("KRW-BTC")
         except Exception:
             pass
         save_state(self.state)
-        tag = "실매수" if self.live else "모의매수"
+        tag = "검증 모의매수" if shadow else ("실매수" if self.live else "모의매수")
         log(f"[{tag}] {market} {cost:,.0f}원 @ {unit:,.4f} · 목표 {self.state['positions'][market]['tp']:,.4f} "
             f"· 손절 {self.state['positions'][market]['sl']:,.4f} · {describe(spec)}")
-        self._record("buy", market, unit, cost, describe(spec), None)
+        self._record("buy", market, unit, cost, describe(spec), None, paper=shadow)
         self.upload_status()
 
     def exit(self, market, price, reason):
         pos = self.state["positions"].get(market)
         if not pos:
             return
-        if self.live:
+        shadow = bool(pos.get("paper"))
+        if shadow:
+            proceeds = pos["volume"] * price * (1 - SHADOW_SLIPPAGE) * (1 - FEE_RATE)
+        elif self.live:
             res = self.upbit.sell_market(market, int(pos["volume"] * 1e8) / 1e8)
             vol, funds, fee = self.upbit.wait_fill(res["uuid"])
             proceeds = funds - fee
             if vol > 0:
                 fill = funds / vol
                 slip = (fill / price - 1) * 100
+                tp_gap = (pos["tp"] / fill - 1) * 100 if reason == "익절" else None
+                self.exec_record(reason, slip, tp_gap)
                 if abs(slip) >= 0.2:
                     log(f"[체결 확인] {market} 신호가 {price:,.4f} → 체결가 {fill:,.4f} ({slip:+.2f}%)")
             if vol < pos["volume"] * 0.999:
@@ -1317,11 +1490,16 @@ class Bot:
         if reason == "익절" and pnl <= 0:
             reason = "익절 신호였으나 체결 손실"     # 장부·학습에 '익절'로 잘못 남지 않게
         del self.state["positions"][market]
-        self.book(pnl, market)
+        if shadow:
+            self.shadow_book(pnl, market)
+        else:
+            self.book(pnl, market)
         self.learn(market, pnl, reason)
         self.cond_record(pos, pnl)
         self.rule_record(pos, pnl)
         actual_pct = pnl / pos["cost"] * 100
+        self.hour_record(pos, pnl, actual_pct)
+        self.tp_limit_record(market, pos, reason, actual_pct)
         for rid, mk_ in (pos.get("exitMarks") or {}).items():
             if self.exit_stat(rid)["mode"] != "active" or reason != next((r["name"] for r in EXIT_RULES if r["id"] == rid), ""):
                 self.exit_record(rid, mk_["pct"], actual_pct, mk_["at"])   # 관찰: 그때 정리했다면 vs 실제
@@ -1335,16 +1513,88 @@ class Bot:
                    "pnl": round(pnl), "cost": round(pos["cost"]), "exit": reason, "strategy": pos.get("strategy", ""),
                    "heldMin": round((time.time() * 1000 - pos["at"]) / 60000, 1),
                    "btWinrate": pos.get("btWinrate"), "mart": pos.get("mart"),
-                   "cause": analysis["label"] if analysis else None,
+                   "cause": analysis["label"] if analysis else None, "paper": shadow,
                    "details": [c["detail"] for c in analysis["causes"]] if analysis else None})
         del tl[:-AI_TRADE_LOG]
         if pnl <= 0:
             self.state["aiLossesSince"] = self.state.get("aiLossesSince", 0) + 1
-        tag = "실매도" if self.live else "모의매도"
+        tag = "검증 모의매도" if shadow else ("실매도" if self.live else "모의매도")
         log(f"[{tag}] {market} 손익 {pnl:+,.0f}원 ({reason}) · 시드 {self.ledger['seed']:,.0f} · 잠김 {self.ledger['locked']:,.0f}"
             + ("" if pnl > 0 else f" · {LOSS_COOLDOWN_MIN}분 대기"))
-        self._record("sell", market, price, proceeds, reason, round(pnl), analysis)
+        self._record("sell", market, price, proceeds, reason, round(pnl), analysis, paper=shadow)
         self.upload_status()
+
+    def hour_record(self, pos, pnl, pct):
+        """분석 전용: 매수한 시각(한국시간)별 실전 성적 누적 — 매매에는 영향 없음"""
+        try:
+            h = "%02d" % datetime.fromtimestamp(pos["at"] / 1000, KST).hour
+            st = self.state.setdefault("hourStats", {}).setdefault(h, {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0.0})
+            st["n"] += 1
+            st["wins"] += 1 if pnl > 0 else 0
+            st["sumPct"] += pct
+            st["pnl"] += pnl
+        except Exception as e:
+            log(f"[경고] 시간대 성적 기록 실패: {e}")
+
+    def hours_view(self):
+        """3시간 묶음(00-02, 03-05 …)으로 합쳐 대시보드에 보냄"""
+        hs = self.state.get("hourStats", {})
+        out = []
+        for b in range(0, 24, 3):
+            n = w = 0
+            sp = pn = 0.0
+            for h in range(b, b + 3):
+                st = hs.get("%02d" % h)
+                if st:
+                    n += st["n"]; w += st["wins"]; sp += st["sumPct"]; pn += st["pnl"]
+            out.append({"from": b, "to": b + 2, "n": n, "wins": w,
+                        "avgPct": round(sp / n, 3) if n else None, "pnl": round(pn)})
+        return out
+
+    def exec_record(self, kind, slip_pct, tp_gap=None):
+        """체결 비용 기록(분석 전용, 매매에는 영향 없음): 시장가 주문이 신호가 대비 얼마나 밀려 체결됐는지.
+        익절은 '목표가에 지정가 매도를 미리 걸어뒀다면' 더 받았을 몫(tp_gap)도 함께 누적 → 지정가 전환 판단 근거"""
+        try:
+            key = "buy" if kind == "buy" else "sell:" + ("익절" if kind.startswith("익절") else kind if kind in ("손절", "보유시간 초과") else "조기 정리")
+            es = self.state.setdefault("execStats", {}).setdefault(key, {"n": 0, "sumSlip": 0.0, "worse": 0, "sumTpGap": 0.0})
+            es["n"] += 1
+            es["sumSlip"] += slip_pct
+            es["worse"] += 1 if (slip_pct > 0.05 if kind == "buy" else slip_pct < -0.05) else 0
+            if tp_gap is not None:
+                es["sumTpGap"] += max(tp_gap, 0.0)
+        except Exception:
+            pass
+
+    def tp_limit_record(self, market, pos, reason, actual_pct):
+        """관찰 전용(매매에는 영향 없음): '매수 직후 목표가에 지정가 매도를 미리 걸어뒀다면' 결과를 실제와 비교.
+        거래가 끝날 때 보유 구간 1분봉 고가가 목표가를 '넘었으면'(같기만 하면 대기열 탓에 안 채워질 수 있어 제외) 목표가에 체결됐다고 봄.
+        → 시장가 익절 밀림 + 1분봉 안에서 잠깐 찍고 내려와 놓친 익절(감시 주기 사이)까지 함께 측정. 안 넘었으면 실제와 같음(차이 0)"""
+        try:
+            entry_ms, now_ms = pos["at"], time.time() * 1000
+            need = int((now_ms - entry_ms) / 60000) + 2
+            if need > TP_LIMIT_MAX_MIN:
+                return
+            candles = self.upbit.minute_candles(market, need)
+            start = (int(entry_ms // 60000) + 1) * 60000            # 매수한 그 1분봉은 매수 전 고가일 수 있어 제외
+            touched = False
+            for c in candles:
+                t = datetime.strptime(c["candle_date_time_utc"], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp() * 1000
+                if start <= t <= now_ms and c["high_price"] > pos["tp"]:
+                    touched = True
+                    break
+            virt = (pos["tp"] * (1 - FEE_RATE) / pos["unit"] - 1) * 100 if touched else actual_pct
+            diff = virt - actual_pct
+            st = self.state.setdefault("tpLimit", {"n": 0, "touched": 0, "missed": 0, "better": 0, "worse": 0, "sumDiff": 0.0})
+            st["n"] += 1
+            st["touched"] += touched
+            st["missed"] += touched and not reason.startswith("익절")      # 목표가를 넘었는데 익절로 못 끝난 거래
+            st["better"] += diff > 0.01
+            st["worse"] += diff < -0.01
+            st["sumDiff"] += diff
+            if touched and not reason.startswith("익절"):
+                log(f"[지정가 관찰] {market.split('-')[1]} 보유 중 1분봉 고가가 목표가를 넘었음 → 지정가였다면 {virt:+.2f}% (실제 {reason} {actual_pct:+.2f}%)")
+        except Exception:
+            pass
 
     def post_mortem(self, market, pos, price, reason, pnl):
         """실패로 끝난 거래 원인 분석 → 기록·통계"""
@@ -1370,9 +1620,9 @@ class Bot:
             + " / ".join(f"{c['label']}({c['detail']})" for c in a["causes"]))
         return a
 
-    def _record(self, side, market, price, krw, reason, pnl, analysis=None):
+    def _record(self, side, market, price, krw, reason, pnl, analysis=None, paper=False):
         try:
-            data = {"mode": "live" if self.live else "paper", "side": side, "market": market,
+            data = {"mode": "live" if self.live and not paper else "paper", "side": side, "market": market,
                     "price": float(price), "krw": round(krw), "reason": reason, "pnl": pnl,
                     "at": int(time.time() * 1000)}
             if analysis:
@@ -1427,10 +1677,14 @@ class Bot:
                 continue
             self.state["lastCandle"][mk] = key
             series = Series(closed)
+            if len(series.c) > BREADTH_MIN:               # 시장 폭 관문용: 종목별 최근 30분 변화율 기록
+                self.__dict__.setdefault("_mk_chg", {})[mk] = ((series.c[-1] / series.c[-1 - BREADTH_MIN] - 1) * 100, time.time())
             if series.signal(spec)[-1]:
                 price = self.upbit.prices([mk]).get(mk)
                 if price:
                     ctx = {"signalPrice": series.c[-1], "entryVol": round(avg_range_pct(series), 4)}
+                    if len(series.c) > COIN_TREND_MIN:    # 종목 하락 추세 관문용
+                        ctx["coinChg"] = round((series.c[-1] / series.c[-1 - COIN_TREND_MIN] - 1) * 100, 3)
                     try:
                         ctx["entryInfo"] = entry_snapshot(series, spec)
                     except Exception as e:                # 팝업용 기록 실패가 매수를 막으면 안 됨
@@ -1607,6 +1861,7 @@ class Bot:
         st["n"] += 1
         st["sumDiff"] += diff
         st["better"] += diff > 0
+        st["recent"] = (st.get("recent", []) + [round(diff, 3)])[-EXIT_RECENT_N:]   # 분석 전용: 최근 흐름(판정에는 안 씀)
         hk = datetime.fromtimestamp(at_ms / 1000, KST).strftime("%m%d%H")
         if hk not in st["hours"]:
             st["hours"] = (st["hours"] + [hk])[-50:]
@@ -1692,6 +1947,9 @@ class Bot:
             out.append({"id": r["id"], "name": r["name"], "desc": r["desc"], "mode": st["mode"], "n": st["n"],
                         "avgDiff": round(st["sumDiff"] / st["n"], 3) if st["n"] else None, "better": st["better"],
                         "episodes": len(st["hours"]), "nextEval": st["nextEval"], "marked": watching,
+                        "recentN": len(st.get("recent", [])),
+                        "recentAvg": round(sum(st["recent"]) / len(st["recent"]), 3) if st.get("recent") else None,
+                        "recentBetter": sum(1 for d in st.get("recent", []) if d > 0),
                         "ghosts": sum(1 for g in (self.state.get("holdGhosts") or {}).values() if g["rule"] == r["id"]),
                         "pending": any(p["status"] == "pending" and p["target"] == r["id"] for p in self.state.get("proposals", []))})
         return out
@@ -1784,6 +2042,7 @@ class Bot:
                         "deadline": p["deadline"] * 1000, "strategy": p.get("strategy", ""),
                         "signalPrice": p.get("signalPrice"), "btWinrate": p.get("btWinrate"), "btEdge": p.get("btEdge"),
                         "rid": p.get("rid"), "rule": self.rule_brief(p.get("rid")), "entryInfo": p.get("entryInfo"),
+                        "paper": bool(p.get("paper")),
                         "pnlPct": round((price * (1 - FEE_RATE) / p["unit"] - 1) * 100, 2) if price else None})
         return out
 
@@ -1846,6 +2105,7 @@ class Bot:
                        "검증승률": sp.get("holdoutWinrate"), "검증거래": sp.get("holdoutTrades")}
                       for m, sp in self.state["strategies"].items()],
             "실패원인누적": self.state.get("failStats", {}),
+            "체결비용": self.state.get("execStats", {}),
             "최근거래": self.state.get("tradeLog", []),
         }
 
@@ -1893,6 +2153,8 @@ class Bot:
             wait = f" · 손실 후 대기 {int((lg['cooldownUntil'] - time.time()) / 60) + 1}분"
         ok, why = self.can_enter()
         reason = "" if ok or why in ("손실 후 대기", "일시정지") else f" · 신규 진입 중지: {why}"
+        if self.live and PROVEN_ONLY_LIVE:
+            mode += f" · 실전 통과 규칙만 실주문(검증 모의 오늘 {lg.get('dayShadowTrades', 0)}회 {lg.get('dayShadowPnl', 0):+,.0f}원)"
         return (f"{mode} · 오늘 {lg['dayTrades']}회(익절 {lg['dayWins']}) {lg['dayPnl']:+,.0f}원 · "
                 f"시드 {lg['seed']:,.0f}원 · 잠긴 수익 {lg['locked']:,.0f}원 · "
                 f"대상 {len(self.state['strategies'])}종목 · 다음 주문 {self.order_size():,.0f}원{wait}{reason}")
@@ -1924,7 +2186,11 @@ class Bot:
                                 "realizedTotal": round(lg["realizedTotal"]), "dayPnl": round(lg["dayPnl"]),
                                 "dayTrades": lg["dayTrades"], "dayWins": lg["dayWins"], "martLevel": lg["martLevel"],
                                 "tradesTotal": lg["tradesTotal"], "winsTotal": lg["winsTotal"],
-                                "mode": "live" if self.live else "paper"},
+                                "mode": "live" if self.live else "paper",
+                                "provenOnly": bool(self.live and PROVEN_ONLY_LIVE),
+                                "shadowTrades": lg.get("shadowTrades", 0), "shadowWins": lg.get("shadowWins", 0),
+                                "shadowPnl": round(lg.get("shadowPnl", 0)), "dayShadowTrades": lg.get("dayShadowTrades", 0),
+                                "dayShadowPnl": round(lg.get("dayShadowPnl", 0))},
                      "strategies": [{"market": m, "desc": describe(s), "winrate": s.get("winrate"),
                                      "trades": s.get("trades"), "totalPct": s.get("totalPct"),
                                      "holdoutPct": s.get("holdoutPct")} for m, s in self.state["strategies"].items()],
@@ -1935,14 +2201,24 @@ class Bot:
                      "exitRules": self.exits_view(),
                      "proposals": self.state.get("proposals", []),
                      "aiDecisions": self.state.get("aiDecisions", {}),
-                     "userRequests": self.state.get("userRequests", [])[-20:],
+                     "userRequests": self.state.get("userRequests", [])[-40:],
                      "explore": EXPLORE_MODE,
+                     "role": self.cfg.get("ROLE", "owner"), "updateChannel": self.cfg.get("UPDATE_CHANNEL", "main"),
                      "condStats": [{"name": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3)}
                                    for k, v in self.state.get("condStats", {}).items() if v["n"]],
                      "cooling": sorted(m.split("-")[1] for m, t in self.state.get("coolMarkets", {}).items() if t > time.time()),
                      "report": self.state["lastReport"],
                      "ai": self.state.get("aiReport"),
                      "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
+                     "hourStats": self.hours_view(),
+                     "execStats": [{"kind": k, "n": v["n"], "avgSlip": round(v["sumSlip"] / v["n"], 3), "worse": v["worse"],
+                                    "avgTpGap": round(v["sumTpGap"] / v["n"], 3) if k == "sell:익절" else None}
+                                   for k, v in self.state.get("execStats", {}).items() if v.get("n")],
+                     "tpLimit": (lambda t: {"n": t["n"], "touched": t["touched"], "missed": t["missed"], "better": t["better"],
+                                            "worse": t["worse"], "avgDiff": round(t["sumDiff"] / t["n"], 3)}
+                                 if t and t.get("n") else None)(self.state.get("tpLimit")),
+                     "passStats": (lambda t: {"n": t["n"], "wins": t["wins"], "avgPct": round(t["sumPct"] / t["n"], 3),
+                                              "pnl": t["pnl"]} if t and t.get("n") else None)(self.state.get("passStats")),
                      "failStats": [{"code": k, "label": FAIL_LABELS.get(k, k), "count": v}
                                    for k, v in sorted(self.state.get("failStats", {}).items(), key=lambda x: -x[1])]})
         self.cloud.put_status(data)
@@ -1958,6 +2234,8 @@ class Bot:
                          "trades": n, "wins": r["wins"], "winrate": round(r["wins"] / n, 3) if n else None,
                          "avgPct": round(r["sumPct"] / n, 3) if n else None, "pnl": r["pnl"],
                          "btEdge": r.get("btEdge"), "btWinrate": r.get("btWinrate"),
+                         "postN": (r.get("post") or {}).get("n", 0),
+                         "postAvg": round(r["post"]["sumPct"] / r["post"]["n"], 3) if (r.get("post") or {}).get("n") else None,
                          "active": self.state["strategies"].get(r["market"], {}).get("rid") == r["id"],
                          "lastAt": r.get("lastAt") or r["firstAt"]})
         rows.sort(key=lambda x: (not x["active"], x["trades"] == 0, -x["lastAt"]))
@@ -1965,6 +2243,8 @@ class Bot:
 
     def write_report(self, data):
         """분석용 보고서를 내 문서\\chamdom_report 에 저장 (비밀 정보 없음)"""
+        if not REPORT_DIR:
+            return
         try:
             os.makedirs(REPORT_DIR, exist_ok=True)
             rep = dict(data)
@@ -2023,6 +2303,41 @@ class Bot:
             save_state(self.state)
             self.upload_status()
 
+    def handle_suggestions(self):
+        """운영자 봇만: 친구 제안을 요청 장부(userRequests)에 합쳐 AI 점검이 함께 처리하게 함"""
+        if self.cfg.get("ROLE", "owner") != "owner" or time.time() - getattr(self, "_sug_at", 0) < 60:
+            return
+        self._sug_at = time.time()
+        try:
+            items = self.cloud.suggestions()
+        except Exception as e:
+            if not getattr(self, "_sug_warned", False):
+                log(f"[안내] 친구 제안함을 아직 읽을 수 없음 (Firebase 보안 규칙 추가 필요): {str(e)[:80]}")
+                self._sug_warned = True
+            return
+        if not getattr(self, "_sug_ok", False):
+            self._sug_ok = True
+            log(f"[안내] 친구 제안함 연결 확인 (보안 규칙 정상) · 지금까지 제안 {len(items)}건")
+        seen = self.state.setdefault("sugSeen", [])
+        reqs = self.state.setdefault("userRequests", [])
+        new = 0
+        for it in sorted(items, key=lambda x: x.get("at") or 0):
+            sid = it["_id"]
+            if sid in seen:
+                continue
+            seen.append(sid)
+            text = str(it.get("text", ""))[:600]
+            who = str(it.get("nick") or "친구")[:20]
+            reqs.append({"id": "sug-" + sid[-16:], "text": text, "at": int(it.get("at") or time.time() * 1000),
+                         "from": who, "friend": True})
+            new += 1
+            log(f"친구 제안 접수({who}): {text[:60]} → 다음 AI 점검에서 검토")
+        if new:
+            del reqs[:-40]
+            del seen[:-500]
+            save_state(self.state)
+            self.upload_status()
+
     def handle_commands(self):
         for c in self.cloud.pending_commands():
             ctype, created, age = c.get("type"), c.get("createdAt"), None
@@ -2067,7 +2382,8 @@ class Bot:
     def run(self):
         uid = self.cloud.connect()
         log(f"웹페이지 계정 연결됨 ({uid[:6]}…) · 기기: {self.cfg['DEVICE_NAME']}")
-        log(f"모드: {'★ 실매매 (실제 주문) ★' if self.live else '모의매매 (실제 주문 없음)'} · 거래 금지/숨김: {', '.join(sorted(PROTECTED_COINS))}")
+        log(f"모드: {'★ 실매매 (실제 주문) ★' if self.live else '모의매매 (실제 주문 없음)'} · 거래 금지/숨김: {', '.join(sorted(PROTECTED_COINS)) or '없음'}")
+        log(f"사용자 구분: {'친구용' if self.cfg.get('ROLE') == 'friend' else '운영자'} · 업데이트 채널: {self.cfg.get('UPDATE_CHANNEL', 'main')}")
         log("AI 분석가: " + (f"켜짐 ({self.cfg['AI_MODEL']} · 매일 {'/'.join(str(h) for h in AI_SCHEDULE_HOURS)}시 + 손실 {AI_EVERY_LOSSES}건마다)" if self.cfg["ANTHROPIC_API_KEY"]
                             else "꺼짐 (bot_config.env 에 ANTHROPIC_API_KEY 를 넣으면 켜짐)"))
         log(f"기본 주문 {self.cfg['ORDER_KRW']:,}원 · 익절/손절은 전략별 백테스트로 결정 · 손실 후 {LOSS_COOLDOWN_MIN}분 대기 · "
@@ -2119,6 +2435,7 @@ class Bot:
                 self.handle_commands()
                 try:
                     self.handle_inbox()
+                    self.handle_suggestions()
                 except Exception as e:
                     log(f"[경고] 요청함 확인 실패: {e}")
                 self.manage_positions()
@@ -2144,10 +2461,10 @@ class Bot:
 
 
 def main():
+    cfg = load_config()                 # 업데이트 채널(main/stable)을 알기 위해 설정부터 읽음
     if check_update():
         print("새 버전을 받았습니다. 다시 시작합니다.", flush=True)
         sys.exit(RESTART_CODE)
-    cfg = load_config()
     bot = Bot(cfg)
     log("참돔 트레이드 봇 v2 시작 (종료: Ctrl+C)")
     restarting = False
