@@ -876,6 +876,28 @@ def gate_btc_trend(bot):
     return chg <= BTC_TREND_PCT, f"BTC {BTC_TREND_MIN}분 {chg:+.2f}% (기준 {BTC_TREND_PCT}%)"
 
 
+BTC_DAY_HOURS = 24              # BTC 하루 약세 관문: 최근 몇 시간 변화를 볼지(60분봉)
+BTC_DAY_PCT = -3.0              # 이 % 이하로 빠져 있으면 막음
+BTC_DAY_REFRESH = 600           # 60분봉은 10분마다만 다시 받음
+
+
+def gate_btc_day(bot):
+    """10-30 바이낸스 해킹 뒤 BTC 24시간 -5%: 30분·120분 관문은 반등 때마다 꺼지는데, 하루 내내 밀리는 장에서는 모의 거래가 '시장 전체 하락'으로 연달아 짐"""
+    now = time.time()
+    if now - bot.__dict__.get("_btc_day_at", 0) >= BTC_DAY_REFRESH:
+        try:
+            data = bot.upbit._public("/v1/candles/minutes/60", {"market": "KRW-BTC", "count": BTC_DAY_HOURS + 1})
+            if data and len(data) >= BTC_DAY_HOURS + 1:
+                bot._btc_day = (data[0]["trade_price"] / data[BTC_DAY_HOURS]["trade_price"] - 1) * 100
+                bot._btc_day_at = now
+        except Exception:
+            pass
+    chg = bot.__dict__.get("_btc_day")
+    if chg is None:
+        return False, "BTC 하루 시세 확인 중"
+    return chg <= BTC_DAY_PCT, f"BTC {BTC_DAY_HOURS}시간 {chg:+.2f}% (기준 {BTC_DAY_PCT}%)"
+
+
 def gate_event(bot):
     now = time.time()
     nxt = None
@@ -959,6 +981,7 @@ def gate_breadth(bot, mk, price, ctx):
 MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
     {"id": "btc_trend", "name": "BTC 하락 추세", "desc": f"BTC가 최근 {BTC_TREND_MIN}분 동안 {BTC_TREND_PCT}% 이하로 밀려 있으면 새로 사지 않음", "fn": gate_btc_trend},
+    {"id": "btc_day", "name": "BTC 하루 약세", "desc": f"BTC가 최근 {BTC_DAY_HOURS}시간 {BTC_DAY_PCT}% 이하로 빠져 있으면 새로 사지 않음(악재로 하루 내내 밀리는 장)", "fn": gate_btc_day},
     {"id": "event", "name": "경제 일정", "desc": "FOMC·미국 물가(CPI) 발표 등 정해진 일정 앞뒤로 새로 사지 않음 (일정표: bot/events.json)", "fn": gate_event},
     {"id": "volatile_hours", "name": "변동 큰 시간대", "desc": "미국장 시작(23~00시)·유럽장 시작(17시)에는 새로 사지 않음", "fn": gate_volatile_hours},
     {"id": "dawn_hours", "name": "새벽 시간대", "desc": f"새벽 {DAWN_HOURS.start:02d}~{DAWN_HOURS.stop - 1:02d}시(한국시간)에는 새로 사지 않음", "fn": gate_dawn_hours},
