@@ -1030,6 +1030,7 @@ EXIT_MARGIN = 0.15               # 조기 정리가 평균 이만큼(%p) 이상 
 BTC_EXIT_PCT = -0.5              # 매수 후 BTC가 이만큼 빠졌고 포지션이 손실 중이면 조기 정리 대상
 
 
+TP_LIMIT_MAX_MIN = 400  # 지정가 익절 관찰: 보유가 이보다 길면 1분봉 조회량이 커서 건너뜀(분석 전용)
 EXIT_RECENT_N = 20     # 청산 규칙 '최근 N건' 흐름 표시용(판정 기준은 누적 그대로)
 
 
@@ -1476,6 +1477,7 @@ class Bot:
         self.rule_record(pos, pnl)
         actual_pct = pnl / pos["cost"] * 100
         self.hour_record(pos, pnl, actual_pct)
+        self.tp_limit_record(market, pos, reason, actual_pct)
         for rid, mk_ in (pos.get("exitMarks") or {}).items():
             if self.exit_stat(rid)["mode"] != "active" or reason != next((r["name"] for r in EXIT_RULES if r["id"] == rid), ""):
                 self.exit_record(rid, mk_["pct"], actual_pct, mk_["at"])   # 관찰: 그때 정리했다면 vs 실제
@@ -1538,6 +1540,37 @@ class Bot:
             es["worse"] += 1 if (slip_pct > 0.05 if kind == "buy" else slip_pct < -0.05) else 0
             if tp_gap is not None:
                 es["sumTpGap"] += max(tp_gap, 0.0)
+        except Exception:
+            pass
+
+    def tp_limit_record(self, market, pos, reason, actual_pct):
+        """관찰 전용(매매에는 영향 없음): '매수 직후 목표가에 지정가 매도를 미리 걸어뒀다면' 결과를 실제와 비교.
+        거래가 끝날 때 보유 구간 1분봉 고가가 목표가를 '넘었으면'(같기만 하면 대기열 탓에 안 채워질 수 있어 제외) 목표가에 체결됐다고 봄.
+        → 시장가 익절 밀림 + 1분봉 안에서 잠깐 찍고 내려와 놓친 익절(감시 주기 사이)까지 함께 측정. 안 넘었으면 실제와 같음(차이 0)"""
+        try:
+            entry_ms, now_ms = pos["at"], time.time() * 1000
+            need = int((now_ms - entry_ms) / 60000) + 2
+            if need > TP_LIMIT_MAX_MIN:
+                return
+            candles = self.upbit.minute_candles(market, need)
+            start = (int(entry_ms // 60000) + 1) * 60000            # 매수한 그 1분봉은 매수 전 고가일 수 있어 제외
+            touched = False
+            for c in candles:
+                t = datetime.strptime(c["candle_date_time_utc"], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp() * 1000
+                if start <= t <= now_ms and c["high_price"] > pos["tp"]:
+                    touched = True
+                    break
+            virt = (pos["tp"] * (1 - FEE_RATE) / pos["unit"] - 1) * 100 if touched else actual_pct
+            diff = virt - actual_pct
+            st = self.state.setdefault("tpLimit", {"n": 0, "touched": 0, "missed": 0, "better": 0, "worse": 0, "sumDiff": 0.0})
+            st["n"] += 1
+            st["touched"] += touched
+            st["missed"] += touched and not reason.startswith("익절")      # 목표가를 넘었는데 익절로 못 끝난 거래
+            st["better"] += diff > 0.01
+            st["worse"] += diff < -0.01
+            st["sumDiff"] += diff
+            if touched and not reason.startswith("익절"):
+                log(f"[지정가 관찰] {market.split('-')[1]} 보유 중 1분봉 고가가 목표가를 넘었음 → 지정가였다면 {virt:+.2f}% (실제 {reason} {actual_pct:+.2f}%)")
         except Exception:
             pass
 
@@ -2157,6 +2190,9 @@ class Bot:
                      "execStats": [{"kind": k, "n": v["n"], "avgSlip": round(v["sumSlip"] / v["n"], 3), "worse": v["worse"],
                                     "avgTpGap": round(v["sumTpGap"] / v["n"], 3) if k == "sell:익절" else None}
                                    for k, v in self.state.get("execStats", {}).items() if v.get("n")],
+                     "tpLimit": (lambda t: {"n": t["n"], "touched": t["touched"], "missed": t["missed"], "better": t["better"],
+                                            "worse": t["worse"], "avgDiff": round(t["sumDiff"] / t["n"], 3)}
+                                 if t and t.get("n") else None)(self.state.get("tpLimit")),
                      "failStats": [{"code": k, "label": FAIL_LABELS.get(k, k), "count": v}
                                    for k, v in sorted(self.state.get("failStats", {}).items(), key=lambda x: -x[1])]})
         self.cloud.put_status(data)
