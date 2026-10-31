@@ -461,6 +461,24 @@ class Cloud:
                 continue
         return out
 
+    def suggestions(self, limit=50):
+        """친구들이 대시보드 '요청하기'로 보낸 제안 (공용 suggestions 컬렉션, 운영자만 전부 읽을 수 있음)"""
+        h = self._auth()
+        body = {"structuredQuery": {"from": [{"collectionId": "suggestions"}],
+                                    "orderBy": [{"field": {"fieldPath": "at"}, "direction": "DESCENDING"}],
+                                    "limit": limit}}
+        res = requests.post(f"{FS_BASE}:runQuery", json=body, headers=h, timeout=10)
+        if res.status_code != 200:
+            raise RuntimeError(f"친구 제안 확인 실패 {res.status_code}: {res.text[:150]}")
+        out = []
+        for row in res.json():
+            d = row.get("document")
+            if d:
+                f = {k: from_fs(v) for k, v in d.get("fields", {}).items()}
+                f["_id"] = d["name"].rsplit("/", 1)[-1]
+                out.append(f)
+        return out
+
     def put_status(self, data, partial=False):
         h = self._auth()
         url = f"{FS_BASE}/users/{self.uid}/status/current"
@@ -2126,7 +2144,7 @@ class Bot:
                      "exitRules": self.exits_view(),
                      "proposals": self.state.get("proposals", []),
                      "aiDecisions": self.state.get("aiDecisions", {}),
-                     "userRequests": self.state.get("userRequests", [])[-20:],
+                     "userRequests": self.state.get("userRequests", [])[-40:],
                      "explore": EXPLORE_MODE,
                      "role": self.cfg.get("ROLE", "owner"), "updateChannel": self.cfg.get("UPDATE_CHANNEL", "main"),
                      "condStats": [{"name": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3)}
@@ -2218,6 +2236,38 @@ class Bot:
                 log(f"{'승인' if kind == 'approve' else '거절'} 처리: {msg}")
         if changed:
             del seen[:-300]
+            save_state(self.state)
+            self.upload_status()
+
+    def handle_suggestions(self):
+        """운영자 봇만: 친구 제안을 요청 장부(userRequests)에 합쳐 AI 점검이 함께 처리하게 함"""
+        if self.cfg.get("ROLE", "owner") != "owner" or time.time() - getattr(self, "_sug_at", 0) < 60:
+            return
+        self._sug_at = time.time()
+        try:
+            items = self.cloud.suggestions()
+        except Exception as e:
+            if not getattr(self, "_sug_warned", False):
+                log(f"[안내] 친구 제안함을 아직 읽을 수 없음 (Firebase 보안 규칙 추가 필요): {str(e)[:80]}")
+                self._sug_warned = True
+            return
+        seen = self.state.setdefault("sugSeen", [])
+        reqs = self.state.setdefault("userRequests", [])
+        new = 0
+        for it in sorted(items, key=lambda x: x.get("at") or 0):
+            sid = it["_id"]
+            if sid in seen:
+                continue
+            seen.append(sid)
+            text = str(it.get("text", ""))[:600]
+            who = str(it.get("nick") or "친구")[:20]
+            reqs.append({"id": "sug-" + sid[-16:], "text": text, "at": int(it.get("at") or time.time() * 1000),
+                         "from": who, "friend": True})
+            new += 1
+            log(f"친구 제안 접수({who}): {text[:60]} → 다음 AI 점검에서 검토")
+        if new:
+            del reqs[:-40]
+            del seen[:-500]
             save_state(self.state)
             self.upload_status()
 
@@ -2318,6 +2368,7 @@ class Bot:
                 self.handle_commands()
                 try:
                     self.handle_inbox()
+                    self.handle_suggestions()
                 except Exception as e:
                     log(f"[경고] 요청함 확인 실패: {e}")
                 self.manage_positions()

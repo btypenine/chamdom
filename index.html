@@ -533,7 +533,7 @@ onAuthStateChanged(auth, async (user) => {
   catch (e) { toast("계정 정보 저장 실패: " + (e.code || e.message)); }
 
   unsubs.push(onSnapshot(doc(db, "users", user.uid, "status", "current"),
-    (snap) => { lastStatus = snap.exists() ? snap.data() : null; $("reqOpen").hidden = !auth.currentUser || (lastStatus && lastStatus.role === "friend"); renderStatus(); },
+    (snap) => { lastStatus = snap.exists() ? snap.data() : null; $("reqOpen").hidden = !auth.currentUser; renderStatus(); },
     (e) => toast("상태 불러오기 실패: " + e.code)));
 
   const tq = query(collection(db, "users", user.uid, "trades"), orderBy("at", "desc"), limit(30));
@@ -746,9 +746,19 @@ async function loadReplies() {
   renderRequests();
 }
 const REQ_ST = { new: ["접수됨", ""], working: ["검토 중", ""], proposed: ["승인 대기", "prop"], done: ["반영 완료", "done"], answered: ["답변", "done"], declined: ["보류", ""] };
+let mySugs = [];   // 친구 계정: 내가 보낸 제안 (공용 제안함)
+const isFriendView = () => (lastStatus || {}).role === "friend";
+async function loadMySugs() {
+  const u = auth.currentUser; if (!u || !isFriendView()) return;
+  try {
+    const snap = await getDocs(query(collection(db, "suggestions"), where("uid", "==", u.uid), limit(30)));
+    mySugs = snap.docs.map((d) => ({ id: "sug-" + d.id.slice(-16), ...d.data() })).sort((a, b) => (a.at || 0) - (b.at || 0));
+  } catch (e) { mySugs = []; }
+}
 function renderRequests() {
   const s = lastStatus || {};
-  const list = (s.userRequests || []).slice().reverse();
+  const list = (isFriendView() ? mySugs : (s.userRequests || [])).slice().reverse();
+  $("reqTitle").textContent = isFriendView() ? "제안하기" : "요청하기";
   const box = $("reqList"); box.textContent = "";
   if (!list.length) box.innerHTML = '<div class="empty">아직 보낸 요청이 없음</div>';
   for (const r of list.slice(0, 8)) {
@@ -756,14 +766,14 @@ function renderRequests() {
     const [label, cls] = REQ_ST[rep.status || "new"] || REQ_ST.new;
     const el = document.createElement("div"); el.className = "li";
     el.innerHTML = `<span class="t"></span><span class="req-st"></span><span class="sub"></span>`;
-    el.querySelector(".t").textContent = r.text;
+    el.querySelector(".t").textContent = (r.friend ? `[${r.from || "친구"}] ` : "") + r.text;
     const st = el.querySelector(".req-st"); st.textContent = label; if (cls) st.classList.add(cls);
     el.querySelector(".sub").textContent = fmtTime(r.at);
     if (rep.reply) { const d = document.createElement("div"); d.className = "req-reply"; d.textContent = "AI: " + rep.reply; el.append(d); }
     box.append(el);
   }
 }
-$("reqOpen").addEventListener("click", () => { renderRequests(); $("reqSheet").showModal(); setTimeout(() => $("reqText").focus(), 50); });
+$("reqOpen").addEventListener("click", async () => { await loadMySugs(); renderRequests(); $("reqSheet").showModal(); setTimeout(() => $("reqText").focus(), 50); });
 $("reqClose").addEventListener("click", () => $("reqSheet").close());
 $("reqSheet").addEventListener("click", (e) => { if (e.target === $("reqSheet")) $("reqSheet").close(); });
 $("reqText").addEventListener("input", () => { $("reqCount").textContent = $("reqText").value.length + "/600"; });
@@ -772,9 +782,15 @@ $("reqSend").addEventListener("click", async () => {
   if (!text) { toast("내용을 적어 주세요"); return; }
   $("reqSend").disabled = true;
   try {
-    await sendInbox({ kind: "request", text });
+    if (isFriendView()) {
+      const u = auth.currentUser;
+      await addDoc(collection(db, "suggestions"), { uid: u.uid, nick: (nickOf(u) || "친구").slice(0, 20), text, at: Date.now(), kind: "request" });
+      await loadMySugs(); renderRequests();
+    } else {
+      await sendInbox({ kind: "request", text });
+    }
     $("reqText").value = ""; $("reqCount").textContent = "0/600";
-    toast("요청을 보냈습니다. 봇이 20초 안에 받아 두고, AI 점검이 검토합니다");
+    toast(isFriendView() ? "제안을 보냈습니다. 운영자 봇이 받아 두고 AI 점검이 검토합니다(반영은 운영자 승인 후)" : "요청을 보냈습니다. 봇이 20초 안에 받아 두고, AI 점검이 검토합니다");
   } catch (e) { toast("전송 실패: " + (e.code || e.message) + " — 보안 규칙 확인 필요"); }
   finally { $("reqSend").disabled = false; }
 });
