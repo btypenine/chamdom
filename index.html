@@ -380,7 +380,7 @@ body.compact #sumCard { display: flex !important; }
 
     <section class="card" id="execCard" hidden>
       <h2>체결 비용 (시장가 밀림)</h2>
-      <div class="sub">실제 돈으로 낸 시장가 주문이 봇이 본 가격(신호가)보다 얼마나 불리하게 체결됐는지입니다. 매수는 +일수록, 매도는 −일수록 손해입니다. 익절 줄의 '지정가였다면'은 목표가에 매도 주문을 미리 걸어뒀다면 건당 더 받았을 몫으로, 익절 지정가 전환을 판단하는 근거입니다. 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 10회 미만입니다.</div>
+      <div class="sub">실제 돈으로 낸 시장가 주문이 봇이 본 가격(신호가)보다 얼마나 불리하게 체결됐는지입니다. 매수는 +일수록, 매도는 −일수록 손해입니다. 익절 줄의 '지정가였다면'은 목표가에 매도 주문을 미리 걸어뒀다면 건당 더 받았을 몫으로, 익절 지정가 전환을 판단하는 근거입니다. 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 10회 미만입니다. '지정가 익절 관찰'은 모의 거래까지 포함해, 보유 중 1분봉 고가가 목표가를 넘었으면 지정가로 익절됐다고 보고 실제와 비교한 거래당 차이입니다(+면 지정가가 나음).</div>
       <div class="list" id="execStats"></div>
     </section>
 
@@ -1112,7 +1112,8 @@ function renderMore(s, stale) {
   const EXEC_ORDER = ["buy", "sell:익절", "sell:손절", "sell:보유시간 초과", "sell:조기 정리"];
   const est = (Array.isArray(s.execStats) ? s.execStats : []).filter(e => e && e.n > 0)
     .sort((a, b) => (EXEC_ORDER.indexOf(a.kind) + 99) % 99 - (EXEC_ORDER.indexOf(b.kind) + 99) % 99);
-  $("execCard").hidden = !est.length;
+  const tpl = s.tpLimit && s.tpLimit.n > 0 ? s.tpLimit : null;
+  $("execCard").hidden = !est.length && !tpl;
   const ebox = $("execStats"); ebox.textContent = "";
   const epct = (v) => `${v >= 0 ? "+" : ""}${Number(v).toFixed(2)}%`;
   for (const e of est) {
@@ -1126,6 +1127,16 @@ function renderMore(s, stale) {
     if (e.avgTpGap != null) txt += ` · 지정가였다면 ${epct(e.avgTpGap)}/건`;
     el.lastChild.textContent = txt;
     if (bad) el.lastChild.classList.add("down");
+    ebox.append(el);
+  }
+  if (tpl) {  // 관찰: 목표가에 지정가 매도를 미리 걸어뒀다면 (모의 포함 전체 거래, 1분봉 고가 기준)
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = "<span></span><span class='num'></span>";
+    el.firstChild.textContent = "지정가 익절 관찰";
+    el.firstChild.style.whiteSpace = "nowrap";
+    if (tpl.n < 20) el.style.opacity = "0.6";
+    el.lastChild.textContent = `${tpl.n}건 · 목표가 넘음 ${tpl.touched} (놓친 익절 ${tpl.missed}) · 거래당 ${epct(tpl.avgDiff)}`;
+    if (tpl.avgDiff > 0.05) el.lastChild.classList.add("up");
     ebox.append(el);
   }
 
