@@ -216,6 +216,17 @@
       "status": "merged",
       "requestId": "req-vtfio37irwii",
       "mergedAt": "2026-10-31T13:36:00+09:00"
+    },
+    {
+      "id": "ai-20261031-pass-after",
+      "title": "규칙 '통과 이후' 실전 성적 따로 보기",
+      "summary": "실전 통과한 규칙이 통과 뒤에 낸 성적만 따로 모아 규칙 장부 카드에 한 줄로 표시함(매매 영향 없음).",
+      "why": "지금은 통과 규칙만 실주문하는데, '실전 통과 64회 +0.38%'는 통과 전 좋은 5회가 섞인 착시가 있음. 통과 판정이 앞으로도 맞는지 재야 함.",
+      "risk": "기록만 추가. 기존 통과 규칙은 이후 거래부터 집계됨.",
+      "pr": "https://github.com/btypenine/chamdom/pull/19",
+      "branch": "ai/20261031-pass-after",
+      "createdAt": "2026-10-31T15:05:00+09:00",
+      "status": "pending"
     }
   ]
 }
