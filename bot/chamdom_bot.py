@@ -975,6 +975,9 @@ EXIT_MARGIN = 0.15               # 조기 정리가 평균 이만큼(%p) 이상 
 BTC_EXIT_PCT = -0.5              # 매수 후 BTC가 이만큼 빠졌고 포지션이 손실 중이면 조기 정리 대상
 
 
+EXIT_RECENT_N = 20     # 청산 규칙 '최근 N건' 흐름 표시용(판정 기준은 누적 그대로)
+
+
 def exit_btc_drop(bot, pos, price):
     c = bot.btc_closes()
     if not c or not pos.get("btcAtEntry"):
@@ -1746,6 +1749,7 @@ class Bot:
         st["n"] += 1
         st["sumDiff"] += diff
         st["better"] += diff > 0
+        st["recent"] = (st.get("recent", []) + [round(diff, 3)])[-EXIT_RECENT_N:]   # 분석 전용: 최근 흐름(판정에는 안 씀)
         hk = datetime.fromtimestamp(at_ms / 1000, KST).strftime("%m%d%H")
         if hk not in st["hours"]:
             st["hours"] = (st["hours"] + [hk])[-50:]
@@ -1831,6 +1835,9 @@ class Bot:
             out.append({"id": r["id"], "name": r["name"], "desc": r["desc"], "mode": st["mode"], "n": st["n"],
                         "avgDiff": round(st["sumDiff"] / st["n"], 3) if st["n"] else None, "better": st["better"],
                         "episodes": len(st["hours"]), "nextEval": st["nextEval"], "marked": watching,
+                        "recentN": len(st.get("recent", [])),
+                        "recentAvg": round(sum(st["recent"]) / len(st["recent"]), 3) if st.get("recent") else None,
+                        "recentBetter": sum(1 for d in st.get("recent", []) if d > 0),
                         "ghosts": sum(1 for g in (self.state.get("holdGhosts") or {}).values() if g["rule"] == r["id"]),
                         "pending": any(p["status"] == "pending" and p["target"] == r["id"] for p in self.state.get("proposals", []))})
         return out
