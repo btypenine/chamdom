@@ -1065,6 +1065,24 @@ function renderMore(s, stale) {
     gapRow("└ 검증 중", rbk.filter(r => r.status !== "proven" && r.status !== "retired")),
     gapRow("└ 퇴출", rbk.filter(r => r.status === "retired")),
   ].filter(Boolean);
+  // 통과 '이후' 실전 성적: 5회 통과 판정이 앞으로도 맞는지 (통과 전 성적은 빼고 집계)
+  const pst = s.passStats && s.passStats.n > 0 ? s.passStats : null;
+  {
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = "<span></span><span class='num'></span>";
+    el.firstChild.textContent = "└ 통과 이후";
+    el.firstChild.style.whiteSpace = "nowrap";
+    if (pst) {
+      el.lastChild.textContent = `${pst.n}회 · 승률 ${Math.round(pst.wins / pst.n * 100)}% · 거래당 ${pct(pst.avgPct)}`;
+      el.lastChild.title = `통과 판정 뒤 실전 손익 ${pst.pnl >= 0 ? "+" : ""}${pst.pnl.toLocaleString()}원`;
+      el.lastChild.classList.add(pst.avgPct >= 0 ? "up" : "down");
+      if (pst.n < 20) el.style.opacity = "0.6";
+    } else {
+      el.lastChild.textContent = "기록 쌓는 중";
+      el.style.opacity = "0.6";
+    }
+    if (rbk.some(r => r.status === "proven")) gapRows.push(el);
+  }
   if (gapRows.length) {
     const box = document.createElement("div");
     box.style.cssText = "border-bottom:1px solid var(--line);margin-bottom:6px;padding-bottom:4px";
