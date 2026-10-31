@@ -1009,6 +1009,19 @@ def gate_breadth(bot, mk, price, ctx):
     return down >= BREADTH_DOWN_FRAC, f"대상 {len(chg)}종목 중 {down * 100:.0f}% 하락 · 평균 {avg:+.2f}% ({BREADTH_MIN}분, 기준 {BREADTH_DOWN_FRAC * 100:.0f}% 이상)"
 
 
+COIN_TREND_MIN = 120             # 종목 자체 하락 추세 관문: 그 종목의 최근 몇 분 변화를 볼지
+COIN_TREND_PCT = -2.0            # 이 % 이하로 밀려 있는 종목은 막음 (BTC·시장 폭과 별개로 '그 코인만' 흘러내리는 때)
+
+
+def gate_coin_trend(bot, mk, price, ctx):
+    """실패 원인 '서서히 하락(추세 반대 진입)' 대응 — 눌림 매수 조건(볼린저하단·RSI과매도·단기급락)이 실전 성적 최하위라
+    그 종목 자체가 최근 2시간 계속 밀리는 중이면 따로 잼"""
+    chg = (ctx or {}).get("coinChg")
+    if chg is None:
+        return False, "종목 변화 기록 없음"
+    return chg <= COIN_TREND_PCT, f"{mk.split('-')[1]} 최근 {COIN_TREND_MIN}분 {chg:+.2f}% (기준 {COIN_TREND_PCT}%)"
+
+
 # entry=True 관문은 1분마다가 아니라 매수 신호가 날 때마다 그 종목 기준으로 확인: fn(bot, 종목, 현재가, ctx)
 MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
@@ -1020,6 +1033,7 @@ MARKET_GATES = [
     {"id": "chase", "name": "추격 매수", "desc": f"매수 직전 현재가가 신호가보다 {CHASE_PCT}% 이상 올라 있으면 사지 않음(늦게 따라붙기 방지)", "fn": gate_chase, "entry": True},
     {"id": "weak_holdout", "name": "검증 근거 약함", "desc": f"전략의 검증구간 거래가 {WEAK_HO_MIN_TRADES}회 미만이거나 거래당 {WEAK_HO_MIN_EDGE:+.1f}% 미만이면 사지 않음", "fn": gate_weak_holdout, "entry": True},
     {"id": "breadth", "name": "시장 폭 약세", "desc": f"거래 대상 종목 중 {BREADTH_DOWN_FRAC * 100:.0f}% 이상이 최근 {BREADTH_MIN}분 하락 중이면 사지 않음(알트 동반 하락)", "fn": gate_breadth, "entry": True},
+    {"id": "coin_trend", "name": "종목 하락 추세", "desc": f"그 종목이 최근 {COIN_TREND_MIN}분 {COIN_TREND_PCT}% 이하로 밀려 있으면 사지 않음(혼자 흘러내리는 코인 눌림 매수 방지)", "fn": gate_coin_trend, "entry": True},
 ]
 
 # ---- 청산 판단 (보유 중) — 관문과 같은 '관찰 → 승인 → 적용' 구조 ----
@@ -1669,6 +1683,8 @@ class Bot:
                 price = self.upbit.prices([mk]).get(mk)
                 if price:
                     ctx = {"signalPrice": series.c[-1], "entryVol": round(avg_range_pct(series), 4)}
+                    if len(series.c) > COIN_TREND_MIN:    # 종목 하락 추세 관문용
+                        ctx["coinChg"] = round((series.c[-1] / series.c[-1 - COIN_TREND_MIN] - 1) * 100, 3)
                     try:
                         ctx["entryInfo"] = entry_snapshot(series, spec)
                     except Exception as e:                # 팝업용 기록 실패가 매수를 막으면 안 됨
