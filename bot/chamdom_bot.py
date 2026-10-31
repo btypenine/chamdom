@@ -1581,6 +1581,39 @@ class Bot:
                         "avgPct": round(sp / n, 3) if n else None, "pnl": round(pn)})
         return out
 
+    def spec_view(self):
+        """분석 전용: 규칙 장부 전체(퇴출 포함)를 규칙 특성(익절폭·보유시간·조건 개수·백테스트 우위)별로 묶은 실전 성적.
+        어떤 모양의 규칙이 실전에서 덜 손해 보는지 보는 용도이며 매매에는 영향 없음"""
+        try:
+            def edge_b(e):
+                return None if e is None else ("우위 0.3% 미만" if e < 0.3 else "우위 0.3~0.5%" if e < 0.5 else "우위 0.5% 이상")
+            keys = (("tp", "익절폭", lambda sp, r: "익절 +%g%%" % sp.get("tp") if sp.get("tp") is not None else None),
+                    ("hold", "보유시간", lambda sp, r: "최대 %d분" % sp.get("hold") if sp.get("hold") else None),
+                    ("ncond", "조건 개수", lambda sp, r: "조건 %d개" % len(sp.get("conds") or []) if sp.get("conds") else None),
+                    ("edge", "백테스트 우위", lambda sp, r: edge_b(r.get("btEdge"))))
+            out = []
+            for k, label, fn in keys:
+                g = {}
+                for r in self.state.get("ruleBook", {}).values():
+                    n = r.get("trades") or 0
+                    if n <= 0:
+                        continue
+                    b = fn(r.get("spec") or {}, r)
+                    if b is None:
+                        continue
+                    st = g.setdefault(b, {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0.0})
+                    st["n"] += n; st["wins"] += r.get("wins") or 0
+                    st["sumPct"] += r.get("sumPct") or 0.0; st["pnl"] += r.get("pnl") or 0
+                rows = [{"bucket": b, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
+                         "pnl": round(v["pnl"])} for b, v in g.items()]
+                rows.sort(key=lambda x: -x["avgPct"])
+                if rows:
+                    out.append({"key": k, "label": label, "rows": rows})
+            return out
+        except Exception as e:
+            log(f"[경고] 규칙 특성별 성적 집계 실패: {e}")
+            return []
+
     def exec_record(self, kind, slip_pct, tp_gap=None):
         """체결 비용 기록(분석 전용, 매매에는 영향 없음): 시장가 주문이 신호가 대비 얼마나 밀려 체결됐는지.
         익절은 '목표가에 지정가 매도를 미리 걸어뒀다면' 더 받았을 몫(tp_gap)도 함께 누적 → 지정가 전환 판단 근거"""
@@ -2245,6 +2278,7 @@ class Bot:
                      "ai": self.state.get("aiReport"),
                      "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
                      "hourStats": self.hours_view(),
+                     "specStats": self.spec_view(),
                      "execStats": [{"kind": k, "n": v["n"], "avgSlip": round(v["sumSlip"] / v["n"], 3), "worse": v["worse"],
                                     "avgTpGap": round(v["sumTpGap"] / v["n"], 3) if k == "sell:익절" else None}
                                    for k, v in self.state.get("execStats", {}).items() if v.get("n")],
