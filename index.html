@@ -532,7 +532,7 @@ onAuthStateChanged(auth, async (user) => {
   catch (e) { toast("계정 정보 저장 실패: " + (e.code || e.message)); }
 
   unsubs.push(onSnapshot(doc(db, "users", user.uid, "status", "current"),
-    (snap) => { lastStatus = snap.exists() ? snap.data() : null; renderStatus(); },
+    (snap) => { lastStatus = snap.exists() ? snap.data() : null; $("reqOpen").hidden = !auth.currentUser || (lastStatus && lastStatus.role === "friend"); renderStatus(); },
     (e) => toast("상태 불러오기 실패: " + e.code)));
 
   const tq = query(collection(db, "users", user.uid, "trades"), orderBy("at", "desc"), limit(30));
@@ -671,7 +671,7 @@ function renderTiles() {
   const stale = !s.updatedAt || Date.now() - s.updatedAt > OFFLINE_MS;
   const ps = Array.isArray(s.positions) ? s.positions : [];
   const avg = ps.length ? ps.reduce((a, p) => a + (p.pnlPct || 0), 0) / ps.length : null;
-  const pend = (s.proposals || []).filter((p) => p.status === "pending").length + aiProps.filter((p) => p.status === "pending" && !(s.aiDecisions || {})[p.id]).length;
+  const pend = (s.proposals || []).filter((p) => p.status === "pending").length + (s.role === "friend" ? [] : aiProps).filter((p) => p.status === "pending" && !(s.aiDecisions || {})[p.id]).length;
   const gs = [...(s.marketGates || []), ...(s.exitRules || [])];
   const rb = Array.isArray(s.ruleBook) ? s.ruleBook : [];
   const cnt = (st) => rb.filter((r) => r.status === st).length;
@@ -794,7 +794,8 @@ function renderApprovals() {
   const dec = s.aiDecisions || {};
   const items = [];
   for (const p of (s.proposals || [])) if (p.status === "pending") items.push({ src: "봇 학습", id: p.id, title: p.title, body: p.why, extra: "승인하면 봇이 바로 반영함" });
-  for (const p of aiProps) if (p.status === "pending" && !dec[p.id]) items.push({ src: "AI 개선안", id: p.id, title: p.title, body: p.summary, why: p.why, risk: p.risk, pr: p.pr, extra: "승인하면 다음 AI 점검(3시간 이내) 때 반영됨" });
+  const isFriend = s.role === "friend";   // 친구 봇: 운영자 저장소의 AI 개선안·요청하기는 해당 없음
+  if (!isFriend) for (const p of aiProps) if (p.status === "pending" && !dec[p.id]) items.push({ src: "AI 개선안", id: p.id, title: p.title, body: p.summary, why: p.why, risk: p.risk, pr: p.pr, extra: "승인하면 다음 AI 점검(3시간 이내) 때 반영됨" });
   $("apprCard").hidden = !items.length;
   $("apprCount").textContent = items.length ? items.length + "건" : "";
   const box = $("apprList"); box.textContent = "";

@@ -55,7 +55,7 @@ FS_BASE = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}/data
 UPBIT = "https://api.upbit.com"
 KST = timezone(timedelta(hours=9))
 
-PROTECTED_COINS = {"XRP"}        # 절대 거래 금지 + 화면 표시 안 함
+PROTECTED_COINS = {"XRP"}        # 절대 거래 금지 + 화면 표시 안 함 (bot_config.env 의 PROTECTED_COINS 가 있으면 그 값으로 바뀜)
 STABLE_COINS = {"USDT", "USDC", "DAI", "USDE", "USD1", "PYUSD", "TUSD"}  # 가격 고정 코인은 거래 대상 제외
 MIN_ORDER_KRW = 5000
 FEE_RATE = 0.0005                # 업비트 원화마켓 0.05%
@@ -121,6 +121,7 @@ AI_TRADE_LOG = 60                # AI에게 보여줄 최근 거래 수
 
 # 자동 업데이트: GitHub에 올라간 최신 코드를 받아 스스로 재시작 (start_bot.bat 이 다시 띄워줌)
 UPDATE_URL = "https://raw.githubusercontent.com/btypenine/chamdom/main/bot/chamdom_bot.py"
+UPDATE_URL_TMPL = "https://raw.githubusercontent.com/btypenine/chamdom/{branch}/bot/chamdom_bot.py"
 UPDATE_EVERY = 10 * 60
 RESTART_CODE = 3
 
@@ -202,6 +203,19 @@ def load_config():
     key = cfg.get("ANTHROPIC_API_KEY", "")
     cfg["ANTHROPIC_API_KEY"] = "" if not key or key.startswith("여기에") else key
     cfg["AI_MODEL"] = cfg.get("AI_MODEL") or AI_MODEL_DEFAULT
+    # 사용자별 설정 (친구용): 없으면 기존 값 그대로
+    cfg["ROLE"] = (cfg.get("ROLE") or "owner").lower()             # owner | friend
+    if "PROTECTED_COINS" in cfg:                                     # 예: XRP,DOGE  (빈 값이면 보호 코인 없음)
+        PROTECTED_COINS.clear()
+        PROTECTED_COINS.update(c.strip().upper() for c in cfg["PROTECTED_COINS"].split(",") if c.strip())
+    channel = (cfg.get("UPDATE_CHANNEL") or ("stable" if cfg["ROLE"] == "friend" else "main")).lower()
+    if channel not in ("main", "stable"):
+        channel = "stable"
+    cfg["UPDATE_CHANNEL"] = channel
+    global UPDATE_URL, REPORT_DIR
+    UPDATE_URL = UPDATE_URL_TMPL.format(branch=channel)
+    if cfg["ROLE"] == "friend":
+        REPORT_DIR = ""                                              # 성민님 PC 분석용 보고서는 친구 PC에서 만들지 않음
     if EXPLORE_MODE:
         cfg["ORDER_KRW"] = EXPLORE_ORDER_KRW
         cfg["MARTINGALE_MAX_LEVEL"] = EXPLORE_MARTINGALE
@@ -2114,6 +2128,7 @@ class Bot:
                      "aiDecisions": self.state.get("aiDecisions", {}),
                      "userRequests": self.state.get("userRequests", [])[-20:],
                      "explore": EXPLORE_MODE,
+                     "role": self.cfg.get("ROLE", "owner"), "updateChannel": self.cfg.get("UPDATE_CHANNEL", "main"),
                      "condStats": [{"name": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3)}
                                    for k, v in self.state.get("condStats", {}).items() if v["n"]],
                      "cooling": sorted(m.split("-")[1] for m, t in self.state.get("coolMarkets", {}).items() if t > time.time()),
@@ -2146,6 +2161,8 @@ class Bot:
 
     def write_report(self, data):
         """분석용 보고서를 내 문서\\chamdom_report 에 저장 (비밀 정보 없음)"""
+        if not REPORT_DIR:
+            return
         try:
             os.makedirs(REPORT_DIR, exist_ok=True)
             rep = dict(data)
@@ -2248,7 +2265,8 @@ class Bot:
     def run(self):
         uid = self.cloud.connect()
         log(f"웹페이지 계정 연결됨 ({uid[:6]}…) · 기기: {self.cfg['DEVICE_NAME']}")
-        log(f"모드: {'★ 실매매 (실제 주문) ★' if self.live else '모의매매 (실제 주문 없음)'} · 거래 금지/숨김: {', '.join(sorted(PROTECTED_COINS))}")
+        log(f"모드: {'★ 실매매 (실제 주문) ★' if self.live else '모의매매 (실제 주문 없음)'} · 거래 금지/숨김: {', '.join(sorted(PROTECTED_COINS)) or '없음'}")
+        log(f"사용자 구분: {'친구용' if self.cfg.get('ROLE') == 'friend' else '운영자'} · 업데이트 채널: {self.cfg.get('UPDATE_CHANNEL', 'main')}")
         log("AI 분석가: " + (f"켜짐 ({self.cfg['AI_MODEL']} · 매일 {'/'.join(str(h) for h in AI_SCHEDULE_HOURS)}시 + 손실 {AI_EVERY_LOSSES}건마다)" if self.cfg["ANTHROPIC_API_KEY"]
                             else "꺼짐 (bot_config.env 에 ANTHROPIC_API_KEY 를 넣으면 켜짐)"))
         log(f"기본 주문 {self.cfg['ORDER_KRW']:,}원 · 익절/손절은 전략별 백테스트로 결정 · 손실 후 {LOSS_COOLDOWN_MIN}분 대기 · "
@@ -2325,10 +2343,10 @@ class Bot:
 
 
 def main():
+    cfg = load_config()                 # 업데이트 채널(main/stable)을 알기 위해 설정부터 읽음
     if check_update():
         print("새 버전을 받았습니다. 다시 시작합니다.", flush=True)
         sys.exit(RESTART_CODE)
-    cfg = load_config()
     bot = Bot(cfg)
     log("참돔 트레이드 봇 v2 시작 (종료: Ctrl+C)")
     restarting = False
