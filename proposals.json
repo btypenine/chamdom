@@ -238,7 +238,8 @@
       "pr": "https://github.com/btypenine/chamdom/pull/20",
       "branch": "ai/20261031-coin-trend",
       "createdAt": "2026-10-31T17:58:00+09:00",
-      "status": "pending"
+      "status": "merged",
+      "mergedAt": "2026-10-31T18:33:00+09:00"
     }
   ]
 }
