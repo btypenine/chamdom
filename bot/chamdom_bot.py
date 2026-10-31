@@ -1186,6 +1186,14 @@ class Bot:
         if not rb:
             return
         pct = pnl / pos["cost"] * 100 if pos.get("cost") else 0.0
+        if rb["status"] == "proven":
+            # 통과 '이후' 성적만 따로 누적 (통과 판정이 앞으로도 맞는지 확인용, 매매 영향 없음)
+            for box in (rb.setdefault("post", {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0}),
+                        self.state.setdefault("passStats", {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0})):
+                box["n"] += 1
+                box["wins"] += 1 if pnl > 0 else 0
+                box["sumPct"] = round(box["sumPct"] + pct, 4)
+                box["pnl"] = round(box["pnl"] + pnl)
         rb["trades"] += 1
         rb["wins"] += 1 if pnl > 0 else 0
         rb["sumPct"] = round(rb["sumPct"] + pct, 4)
@@ -2193,6 +2201,8 @@ class Bot:
                      "tpLimit": (lambda t: {"n": t["n"], "touched": t["touched"], "missed": t["missed"], "better": t["better"],
                                             "worse": t["worse"], "avgDiff": round(t["sumDiff"] / t["n"], 3)}
                                  if t and t.get("n") else None)(self.state.get("tpLimit")),
+                     "passStats": (lambda t: {"n": t["n"], "wins": t["wins"], "avgPct": round(t["sumPct"] / t["n"], 3),
+                                              "pnl": t["pnl"]} if t and t.get("n") else None)(self.state.get("passStats")),
                      "failStats": [{"code": k, "label": FAIL_LABELS.get(k, k), "count": v}
                                    for k, v in sorted(self.state.get("failStats", {}).items(), key=lambda x: -x[1])]})
         self.cloud.put_status(data)
@@ -2208,6 +2218,8 @@ class Bot:
                          "trades": n, "wins": r["wins"], "winrate": round(r["wins"] / n, 3) if n else None,
                          "avgPct": round(r["sumPct"] / n, 3) if n else None, "pnl": r["pnl"],
                          "btEdge": r.get("btEdge"), "btWinrate": r.get("btWinrate"),
+                         "postN": (r.get("post") or {}).get("n", 0),
+                         "postAvg": round(r["post"]["sumPct"] / r["post"]["n"], 3) if (r.get("post") or {}).get("n") else None,
                          "active": self.state["strategies"].get(r["market"], {}).get("rid") == r["id"],
                          "lastAt": r.get("lastAt") or r["firstAt"]})
         rows.sort(key=lambda x: (not x["active"], x["trades"] == 0, -x["lastAt"]))
