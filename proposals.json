@@ -273,7 +273,8 @@
       "pr": "https://github.com/btypenine/chamdom/pull/23",
       "branch": "ai/20261101-promote-bar",
       "createdAt": "2026-11-01T02:45:00+09:00",
-      "status": "pending"
+      "status": "merged",
+      "mergedAt": "2026-11-01T05:36:00+09:00"
     }
   ]
 }
