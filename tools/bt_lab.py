@@ -1,16 +1,12 @@
 # -*- coding: utf-8 -*-
-"""이번 실험(2차): 봉 길이별 + 'BTC 상승 국면에서만 매수' 필터 비교
-1차 결과(11-01): 보지 않은 구간 거래당 1분 -0.48% · 5분 -0.10% · 15분 -0.68% · 60분 -0.69% → 모두 마이너스.
-질문: 시장(BTC)이 오르는 국면에서만 매수하면 나아지는가? 같은 기간 BTC 자체 등락도 함께 기록(시장 탓인지 확인).
-- BTC 국면: BTC 종가 > BTC 지수이동평균(1분 6시간·5분 1일·15분 2일·60분 5일 길이)일 때만 신규 매수
-(아래는 1차 설명)
-봉 길이(시간 단위) 비교 — 1분봉 vs 5분·15분·60분봉
-배경: 직전 실험에서 현재 봇(1분봉)이 고르는 전략의 '보지 않은 다음 구간' 성적이 거래당 -0.382%.
-1분봉의 짧은 움직임은 수수료·체결 밀림(왕복 약 0.2~0.3%)을 넘기 어려울 수 있음.
-질문: 같은 전략 생성·선정 방식을 더 긴 봉에 적용하면, 보지 않은 다음 구간에서 거래당 순익이 나아지는가?
-- 같은 25종목, 롱폼 워크포워드 8개 창, 같은 난수(창마다 고정) → 공정 비교
-- 봉 단위별 학습/시험 길이: 1분(3일/6시간) · 5분(10일/1일) · 15분(20일/2일) · 60분(60일/5일)
-- 보유시간·손실 후 대기는 '봉 개수'로 해석(봇의 1분봉 기준 값을 그대로 봉 단위로 씀)
+"""이번 실험(3차): 바이낸스 선물 조건 — 숏 허용 + 선물 비용
+배경: 2차(11-01) 시험 기간 BTC가 -3~-9% 하락, 'BTC 상승 국면에서만 매수' 필터가 모든 봉 길이에서 +0.15~0.46%p 개선.
+     → 하락장에 롱만 가능한 구조가 손실의 큰 원인. 선물은 숏 가능 + 호가가 촘촘해 체결 밀림이 작음.
+질문: 보지 않은 다음 구간에서 (A) 업비트 비용·롱만 (B) 선물 비용·롱만 (C) 선물 비용·롱+숏 (D) C + BTC 국면(오를 땐 롱, 내릴 땐 숏)
+      의 거래당 순익은?
+- 숏 = 가격을 뒤집은 시계열(1/가격)에서의 롱으로 계산(짧은 보유에선 근사 오차 작음). 같은 무작위 조건·선정 방식으로 롱·숏 후보를 함께 고름
+- 선물 비용: 시장가 수수료 0.05%(일반 등급 taker) + 체결 밀림 0.02%, 펀딩비는 보유 짧아 생략(보수적이지 않음 주의). 레버리지 1배 가정
+- 데이터: 업비트 원화 시세(바이낸스 시세 대신 근사), 25종목, 8개 창, 같은 난수
 """
 import importlib.util, os, random, time
 spec_ = importlib.util.spec_from_file_location("bot", os.path.join(os.path.dirname(__file__), "..", "bot", "chamdom_bot.py"))
@@ -19,10 +15,12 @@ import requests
 
 MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-DOGE", "KRW-XLM", "KRW-ADA", "KRW-SUI", "KRW-NEAR", "KRW-SAND", "KRW-ONDO",
            "KRW-WLD", "KRW-ENA", "KRW-TRUMP", "KRW-AVAX", "KRW-HBAR", "KRW-LINK", "KRW-UNI", "KRW-APT", "KRW-ARB", "KRW-SHIB",
-           "KRW-AAVE", "KRW-PENGU", "KRW-KAT", "KRW-BAT", "KRW-AXS"]
-TFS = {1: (4320, 360), 5: (2880, 288), 15: (1920, 192), 60: (1440, 120)}   # 봉 단위(분): (학습 봉 수, 시험 봉 수)
-REGIME_LEN = {1: 360, 5: 288, 15: 192, 60: 120}
+           "KRW-AAVE", "KRW-PENGU", "KRW-AXS", "KRW-BAT", "KRW-ETC"]
+TFS = {5: (2880, 288), 15: (1920, 192), 60: (1440, 120)}
+REGIME_LEN = {5: 288, 15: 192, 60: 120}
 WINDOWS = 8
+UPBIT_FEE = bot.FEE_RATE
+FUT_FEE, FUT_SLIP = 0.0005, 0.0002
 
 
 def fetch(market, unit, total):
@@ -55,25 +53,55 @@ except Exception as e:
     print("instruments fail", e)
 
 
-def pick(cands):
+def inverted(cl):
+    """숏 계산용: 가격을 뒤집은 캔들 (고가↔저가)"""
+    out = []
+    for c in cl:
+        out.append({"opening_price": 1 / c["opening_price"], "high_price": 1 / c["low_price"], "low_price": 1 / c["high_price"],
+                    "trade_price": 1 / c["trade_price"], "candle_acc_trade_volume": c["candle_acc_trade_volume"],
+                    "candle_date_time_utc": c["candle_date_time_utc"]})
+    return out
+
+
+def sub_of(s, end):
+    sub = bot.Series.__new__(bot.Series)
+    for a in "ohlcv":
+        setattr(sub, a, getattr(s, a)[:end])
+    sub.n, sub._cache, sub.slip = end, {}, s.slip
+    return sub
+
+
+def candidates(s, end, w):
+    sub = sub_of(s, end)
+    split = int(end * (1 - bot.BT_HOLDOUT))
+    rng = random.Random(1000 + w)
+    out = []
+    for _ in range(bot.BT_TRIALS):
+        sp = bot.random_spec(rng)
+        tr = bot.stats(bot.backtest(sub, sp, end=split))
+        if tr["n"] < 4 or tr["edge"] < 0:
+            continue
+        out.append((sp, tr, bot.stats(bot.backtest(sub, sp, start=split))))
+    return out
+
+
+def score_pick(cands):
     mn, me, fl = bot.EXPLORE_MIN_TRADES, bot.EXPLORE_MIN_EDGE, bot.EXPLORE_HOLDOUT_FLOOR
     best = None
-    for sp, tr, ho in cands:
-        if tr["n"] < mn or tr["edge"] < me:
-            continue
-        if ho["n"] and ho["edge"] < fl:
+    for item in cands:
+        sp, tr, ho = item[0], item[1], item[2]
+        if tr["n"] < mn or tr["edge"] < me or (ho["n"] and ho["edge"] < fl):
             continue
         score = tr["edge"] if not ho["n"] else (tr["edge"] * tr["n"] + ho["edge"] * ho["n"]) / (tr["n"] + ho["n"])
         if best is None or score > best[1]:
-            best = (sp, score)
+            best = (item, score)
     return best[0] if best else None
 
 
 def sim(series, spec, start, end, ok=None):
-    """bot.backtest 와 같은 계산, ok[i] 가 False 면 그 봉에서는 신규 매수 안 함"""
     sig = series.signal(spec)
     out, i, cd = [], start, -1
-    slip = getattr(series, "slip", bot.BT_SLIPPAGE)
+    slip = series.slip
     while i < end - 1:
         if i < cd or not sig[i] or (ok is not None and not ok[i]):
             i += 1; continue
@@ -93,20 +121,17 @@ def sim(series, spec, start, end, ok=None):
     return out
 
 
-btc = {}
-btc_move = {}
+btc_up = {}
 for tf, (train, step) in TFS.items():
     cs = fetch("KRW-BTC", tf, train + WINDOWS * step)
     closes = [c["trade_price"] for c in cs]
     e = bot.ema(closes, REGIME_LEN[tf])
-    btc[tf] = {c["candle_date_time_utc"][:16]: closes[i] > e[i] for i, c in enumerate(cs)}
-    btc_move[tf] = (closes[-1] / closes[train] - 1) * 100 if len(closes) > train else None
-    up_share = sum(1 for i in range(train, len(closes)) if closes[i] > e[i]) / max(1, len(closes) - train)
-    print(f"BTC {tf}분봉 시험 기간 등락 {btc_move[tf]:+.2f}% · 상승 국면 비율 {up_share * 100:.0f}%", flush=True)
+    btc_up[tf] = {c["candle_date_time_utc"][:16]: closes[i] > e[i] for i, c in enumerate(cs)}
+    print(f"BTC {tf}분봉 시험 기간 등락 {(closes[-1] / closes[train] - 1) * 100:+.2f}%", flush=True)
 
-resf = {tf: [] for tf in TFS}
-res = {tf: [] for tf in TFS}
-tp_hist = {tf: {} for tf in TFS}
+KEYS = ["A 업비트·롱만", "B 선물·롱만", "C 선물·롱+숏", "D 선물·롱+숏+BTC국면"]
+res = {tf: {k: [] for k in KEYS} for tf in TFS}
+side_n = {tf: {"long": 0, "short": 0} for tf in TFS}
 t0 = time.time()
 for mk in MARKETS:
     line = []
@@ -114,53 +139,49 @@ for mk in MARKETS:
         total = train + WINDOWS * step
         try:
             cl = fetch(mk, tf, total)
-            s = bot.Series(cl)
-            ok = [btc[tf].get(c["candle_date_time_utc"][:16], False) for c in cl]
-        except Exception as e:
+        except Exception:
             line.append(f"{tf}분 실패"); continue
-        if s.n < total - 20:
-            line.append(f"{tf}분 짧음({s.n})"); continue
-        price = s.c[-1]
-        s.slip = bot.BT_SLIP_BASE + (real_tick.get(mk) or bot.tick_size(price)) / price
-        nt = 0
+        if len(cl) < total - 20:
+            line.append(f"{tf}분 짧음"); continue
+        up_ok = [btc_up[tf].get(c["candle_date_time_utc"][:16], False) for c in cl]
+        dn_ok = [not x for x in up_ok]
+        price = cl[-1]["trade_price"]
+        s_up = bot.Series(cl); s_up.slip = bot.BT_SLIP_BASE + (real_tick.get(mk) or bot.tick_size(price)) / price
+        f_long = bot.Series(cl); f_long.slip = FUT_SLIP
+        f_short = bot.Series(inverted(cl)); f_short.slip = FUT_SLIP
         for w in range(WINDOWS):
             end = train + w * step
-            sub = bot.Series.__new__(bot.Series)
-            for a in "ohlcv":
-                setattr(sub, a, getattr(s, a)[:end])
-            sub.n, sub._cache, sub.slip = end, {}, s.slip
-            split = int(end * (1 - bot.BT_HOLDOUT))
-            rng = random.Random(1000 + w)
-            cands = []
-            for _ in range(bot.BT_TRIALS):
-                sp = bot.random_spec(rng)
-                tr = bot.stats(bot.backtest(sub, sp, end=split))
-                if tr["n"] < 4 or tr["edge"] < 0:
-                    continue
-                cands.append((sp, tr, bot.stats(bot.backtest(sub, sp, start=split))))
-            sp = pick(cands)
-            if sp:
-                r = sim(s, sp, end, min(end + step, s.n))
-                res[tf] += r
-                resf[tf] += sim(s, sp, end, min(end + step, s.n), ok)
-                nt += len(r)
-                tp_hist[tf][sp["tp"]] = tp_hist[tf].get(sp["tp"], 0) + len(r)
-        line.append(f"{tf}분 {nt}건")
+            stop = min(end + step, len(cl))
+            # A: 업비트 비용
+            bot.FEE_RATE = UPBIT_FEE
+            a = score_pick(candidates(s_up, end, w))
+            if a:
+                res[tf][KEYS[0]] += sim(s_up, a[0], end, stop)
+            # B·C·D: 선물 비용
+            bot.FEE_RATE = FUT_FEE
+            cl_long = [(sp, tr, ho, "long") for sp, tr, ho in candidates(f_long, end, w)]
+            cl_short = [(sp, tr, ho, "short") for sp, tr, ho in candidates(f_short, end, w)]
+            b = score_pick(cl_long)
+            if b:
+                res[tf][KEYS[1]] += sim(f_long, b[0], end, stop)
+            c = score_pick(cl_long + cl_short)
+            if c:
+                ser, ok = (f_long, up_ok) if c[3] == "long" else (f_short, dn_ok)
+                r = sim(ser, c[0], end, stop)
+                res[tf][KEYS[2]] += r
+                side_n[tf][c[3]] += len(r)
+                res[tf][KEYS[3]] += sim(ser, c[0], end, stop, ok)
+            bot.FEE_RATE = UPBIT_FEE
+        line.append(f"{tf}분 " + "/".join(str(len(res[tf][k])) for k in KEYS))
     print(f"== {mk} · " + " · ".join(line) + f" ({time.time() - t0:.0f}s)", flush=True)
 
-print(f"\n#### 합계 (보지 않은 다음 구간 × {WINDOWS}개 창, {len(MARKETS)}종목)")
-days = {tf: WINDOWS * step * tf / 1440 for tf, (_, step) in TFS.items()}
 summary = {}
 for tf in TFS:
-    st = bot.stats(res[tf]) if res[tf] else {"n": 0, "winrate": 0, "edge": 0, "total": 0, "pf": 0}
-    summary[tf] = st
-    print(f"{tf:>2}분봉: {st['n']}건 · 승률 {st['winrate'] * 100:.0f}% · 거래당 {st['edge']:+.3f}% · 합계 {st['total']:+.1f}% · "
-          f"손익비 {min(st['pf'], 99):.2f} · 시험 기간 {days[tf]:.1f}일 · 하루 약 {st['n'] / max(days[tf], 0.1) / len(MARKETS):.2f}건/종목 · "
-          f"익절폭 분포 {dict(sorted(tp_hist[tf].items()))}")
-print("\n#### BTC 상승 국면에서만 매수했다면")
-for tf in TFS:
-    st = bot.stats(resf[tf]) if resf[tf] else {"n": 0, "winrate": 0, "edge": 0, "total": 0, "pf": 0}
-    print(f"{tf:>2}분봉: {st['n']}건 · 승률 {st['winrate'] * 100:.0f}% · 거래당 {st['edge']:+.3f}% · 합계 {st['total']:+.1f}% · "
-          f"손익비 {min(st['pf'], 99):.2f} · (같은 기간 BTC {btc_move[tf]:+.2f}%)")
+    print(f"\n#### {tf}분봉 (보지 않은 다음 구간 × {WINDOWS}창, {len(MARKETS)}종목) · C의 롱/숏 거래 {side_n[tf]}")
+    for k in KEYS:
+        r = res[tf][k]
+        st = bot.stats(r) if r else {"n": 0, "winrate": 0, "edge": 0, "total": 0, "pf": 0}
+        summary[f"{tf}-{k}"] = st
+        print(f"{k}: {st['n']}건 · 승률 {st['winrate'] * 100:.0f}% · 거래당 {st['edge']:+.3f}% · 합계 {st['total']:+.1f}% · 손익비 {min(st['pf'], 99):.2f}")
 import json
-json.dump({str(k): v for k, v in summary.items()}, open("bt_summary.json", "w"), ensure_ascii=False)
+json.dump(summary, open("bt_summary.json", "w"), ensure_ascii=False)
