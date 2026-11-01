@@ -114,7 +114,9 @@ def top_symbols(n=TOP_N):
     perp = {s["symbol"] for s in info["symbols"]
             if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING"}
     tick = get("/fapi/v1/ticker/24hr")
-    rows = [(float(t["quoteVolume"]), t["symbol"]) for t in tick if t["symbol"] in perp and t["symbol"] not in EXCLUDE]
+    protected = {c + "USDT" for c in cb.PROTECTED_COINS} | {"1000" + c + "USDT" for c in cb.PROTECTED_COINS}
+    rows = [(float(t["quoteVolume"]), t["symbol"]) for t in tick
+            if t["symbol"] in perp and t["symbol"] not in EXCLUDE and t["symbol"] not in protected]   # 보호 코인(XRP 등)은 선물에서도 제외
     rows.sort(reverse=True)
     return [sym for _, sym in rows[:n]]
 
@@ -215,6 +217,9 @@ class Engine:
                                                               "sumPct": 0.0, "status": "testing"})
                 log(f"  채택 {sym}: {st['desc']} · 백테스트 거래당 {st['btEdge']:+.2f}% ({st['btTrades']}회)")
         self.state["strategies"] = chosen
+        for sym in list(self.state["positions"]):              # 보호 코인으로 바뀐 종목의 모의 보유는 정리
+            if sym.replace("1000", "").replace("USDT", "") in cb.PROTECTED_COINS:
+                self.close_paper(sym, prices([sym]).get(sym, self.state["positions"][sym]["entry"]), "보호 코인 제외")
         self.state["lastSelect"] = int(time.time())
         save_state(self.state)
         log(f"전략 선정 완료: {len(chosen)}종목")
@@ -395,6 +400,8 @@ class Engine:
                     log("새 버전을 받았습니다. 다시 시작합니다")
                     sys.exit(RESTART_CODE)
             try:
+                if any(k.replace("1000", "").replace("USDT", "") in cb.PROTECTED_COINS for k in self.state["strategies"]):
+                    self.state["lastSelect"] = 0
                 if time.time() - self.state["lastSelect"] > RESELECT_HOURS * 3600 or not self.state["strategies"]:
                     self.reselect()
                 self.manage()
