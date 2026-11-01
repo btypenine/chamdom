@@ -298,8 +298,9 @@ body.compact #sumCard { display: flex !important; }
     </section>
 
     <section class="card" id="bnCard" hidden>
-      <div class="head-row"><h2>바이낸스 선물 <span class="sub">(모의매매 · 15분봉 · 롱+숏)</span></h2><span class="mode paper">모의</span></div>
+      <div class="head-row"><h2>바이낸스 선물 <span class="sub">(15분봉 · 롱+숏)</span></h2><span class="mode paper" id="bnMode">모의</span></div>
       <div class="sub" id="bnState"></div>
+      <div class="msg" id="bnLive" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
         <div><div class="label">거래당 평균</div><div class="stat-val num" id="bnAvg">-</div></div>
@@ -789,6 +790,12 @@ function renderBinance(b) {
   const stale = !b.updatedAt || Date.now() - b.updatedAt > 3 * 60 * 1000;
   $("bnState").textContent = stale ? "바이낸스 엔진 응답 없음 · 회사 PC의 start_binance.bat 확인" :
     (b.phase ? "진행 중: " + b.phase : `실행 중 · 마지막 갱신 ${ago(b.updatedAt)} · 대상 ${(b.strategies || []).length}종목`);
+  const isLive = b.mode === "live";
+  $("bnMode").textContent = isLive ? "실주문 켜짐" : "모의";
+  $("bnMode").className = "mode " + (isLive ? "live" : "paper");
+  const ll = b.liveLedger || {};
+  $("bnLive").hidden = !isLive;
+  if (isLive) $("bnLive").textContent = `실주문(통과 규칙만): 누적 ${ll.trades || 0}회 · 익절 ${ll.wins || 0}회 · ${(ll.pnlUsdt || 0) >= 0 ? "+" : ""}${(ll.pnlUsdt || 0).toFixed(2)} USDT · 오늘 ${ll.dayTrades || 0}회 ${(ll.dayPnl || 0) >= 0 ? "+" : ""}${(ll.dayPnl || 0).toFixed(2)} USDT (한도 -${b.liveDailyLoss || 0}) · 1회 ${b.liveOrderUsdt || 0} USDT`;
   $("bnTrades").textContent = `${b.trades || 0}회 / ${b.wins || 0}회`;
   $("bnAvg").textContent = pct(b.avgPct);
   $("bnPnl").textContent = b.pnlUsdt == null ? "-" : (b.pnlUsdt > 0 ? "+" : "") + b.pnlUsdt.toFixed(2) + " USDT";
@@ -799,7 +806,7 @@ function renderBinance(b) {
   for (const p of (b.positions || [])) {
     const el = document.createElement("div"); el.className = "li";
     el.innerHTML = "<span><b></b> <span class='sub d'></span></span><span class='num r'></span>";
-    el.querySelector("b").textContent = `${p.side === "long" ? "롱" : "숏"} ${p.symbol.replace("USDT", "")}`;
+    el.querySelector("b").textContent = `${p.live ? "★실주문 " : ""}${p.side === "long" ? "롱" : "숏"} ${p.symbol.replace("USDT", "")}`;
     el.querySelector(".d").textContent = p.desc || "";
     const r = el.querySelector(".r"); r.textContent = pct(p.pnlPct);
     if (p.pnlPct > 0) r.classList.add("up"); else if (p.pnlPct < 0) r.classList.add("down");
@@ -809,7 +816,7 @@ function renderBinance(b) {
   for (const t of (b.recent || []).slice().reverse()) {
     const el = document.createElement("div"); el.className = "li";
     el.innerHTML = "<span><b></b> <span class='sub d'></span></span><span class='num r'></span>";
-    el.querySelector("b").textContent = `${t.side === "long" ? "롱" : "숏"} ${String(t.symbol).replace("USDT", "")}`;
+    el.querySelector("b").textContent = `${t.live ? "★실주문 " : ""}${t.side === "long" ? "롱" : "숏"} ${String(t.symbol).replace("USDT", "")}`;
     el.querySelector(".d").textContent = `${t.t} · ${t.exit}`;
     const r = el.querySelector(".r"); r.textContent = pct(t.pct);
     if (t.pct > 0) r.classList.add("up"); else if (t.pct < 0) r.classList.add("down");

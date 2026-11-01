@@ -1,6 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-참돔 트레이드 바이낸스 선물 엔진 — 1단계: 모의매매 전용 (실제 주문 코드 없음)
+참돔 트레이드 바이낸스 선물 엔진 — 모의매매 + (사용자가 켜면) 실전 통과 규칙만 실주문
+
+실주문 조건 (모두 만족해야 함, 하나라도 아니면 모의로 처리)
+- bot_config.env: BINANCE_TRADE_MODE=live + BINANCE_API_KEY/BINANCE_SECRET_KEY
+- 그 규칙이 모의 5회 이상에서 거래당 +0.15% 이상으로 '통과'(proven)
+- 오늘(09시 기준) 실주문 손실이 BINANCE_DAILY_LOSS_USDT 미만, 실보유 수 < BINANCE_MAX_LIVE
+- 업비트 봇이 대시보드에서 '일시정지' 상태가 아님
+- 레버리지 1배·격리 마진 고정, 매도는 reduceOnly 로만 정리
+(아래는 1단계 설명)
+참돔 트레이드 바이낸스 선물 엔진 — 1단계: 모의매매 전용
 
 근거 (bt-lab 3차, 11-01): 보지 않은 다음 구간, 25종목 × 8창
 - 15분봉 선물 비용·롱+숏 거래당 +0.318%(189건), 5분봉 +0.132%(166건) — 업비트 롱만은 -0.28~-0.77%
@@ -14,12 +23,16 @@
 
 실행: start_binance.bat (같은 폴더의 chamdom_bot.py 와 bot_config.env 필요)
 """
+import hashlib
+import hmac
 import json
+import math
 import os
 import random
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 try:
     import requests
@@ -154,6 +167,77 @@ def prices(symbols):
     return {d["symbol"]: float(d["price"]) for d in data if d["symbol"] in want}
 
 
+# ---------------- 실주문 (서명 요청) ----------------
+class Live:
+    def __init__(self, key, secret):
+        self.key, self.secret = key, secret
+        self.offset = 0
+        self.filters = {}
+        self.prepared = set()
+
+    def sync(self):
+        d = get("/fapi/v1/time")
+        self.offset = d["serverTime"] - int(time.time() * 1000)
+
+    def call(self, method, path, params=None):
+        p = dict(params or {})
+        p["timestamp"] = int(time.time() * 1000) + self.offset
+        p["recvWindow"] = 5000
+        q = urlencode(p)
+        q += "&signature=" + hmac.new(self.secret.encode(), q.encode(), hashlib.sha256).hexdigest()
+        r = requests.request(method, f"{FAPI}{path}?{q}", headers={"X-MBX-APIKEY": self.key}, timeout=10)
+        try:
+            data = r.json()
+        except ValueError:
+            data = {"msg": r.text[:200]}
+        if r.status_code != 200:
+            raise RuntimeError(f"바이낸스 {path} 실패 {r.status_code} 코드 {data.get('code')}: {data.get('msg')}")
+        return data
+
+    def load_filters(self):
+        info = get("/fapi/v1/exchangeInfo")
+        for s in info["symbols"]:
+            f = {x["filterType"]: x for x in s["filters"]}
+            lot = f.get("MARKET_LOT_SIZE") or f.get("LOT_SIZE") or {}
+            self.filters[s["symbol"]] = {"step": float(lot.get("stepSize", 0.001)), "minQty": float(lot.get("minQty", 0)),
+                                         "minNotional": float((f.get("MIN_NOTIONAL") or {}).get("notional", 5))}
+
+    def prepare(self, sym):
+        if sym in self.prepared:
+            return
+        self.call("POST", "/fapi/v1/leverage", {"symbol": sym, "leverage": 1})
+        try:
+            self.call("POST", "/fapi/v1/marginType", {"symbol": sym, "marginType": "ISOLATED"})
+        except RuntimeError as e:
+            if "-4046" not in str(e):          # 이미 격리 마진이면 -4046 (정상)
+                raise
+        self.prepared.add(sym)
+
+    def qty_for(self, sym, usdt, price):
+        f = self.filters.get(sym) or {}
+        step = f.get("step", 0.001)
+        q = math.floor(usdt / price / step) * step
+        q = float(f"{q:.10f}")
+        if q < f.get("minQty", 0) or q * price < f.get("minNotional", 5):
+            return 0.0, f.get("minNotional", 5)
+        return q, None
+
+    def market(self, sym, side, qty, reduce=False):
+        p = {"symbol": sym, "side": side, "type": "MARKET", "quantity": f"{qty:.10f}".rstrip("0").rstrip("."),
+             "newOrderRespType": "RESULT"}
+        if reduce:
+            p["reduceOnly"] = "true"
+        d = self.call("POST", "/fapi/v1/order", p)
+        return float(d.get("avgPrice") or 0), float(d.get("executedQty") or 0)
+
+    def positions(self):
+        try:
+            d = self.call("GET", "/fapi/v3/positionRisk")
+        except RuntimeError:
+            d = self.call("GET", "/fapi/v2/positionRisk")
+        return {x["symbol"]: float(x["positionAmt"]) for x in d if float(x.get("positionAmt", 0)) != 0}
+
+
 # ---------------- 전략 선정 ----------------
 def series_of(cl):
     s = cb.Series(cl)
@@ -194,6 +278,17 @@ class Engine:
         self.state = load_state()
         self.rng = random.Random()
         self.last_status = 0
+        c = self.cfg
+        num = lambda k, d: float(str(c.get(k, d)).replace(",", "") or d)
+        self.order_usdt = num("BINANCE_ORDER_USDT", 20)
+        self.daily_loss = num("BINANCE_DAILY_LOSS_USDT", 10)
+        self.max_live = int(num("BINANCE_MAX_LIVE", 3))
+        key, sec = c.get("BINANCE_API_KEY", ""), c.get("BINANCE_SECRET_KEY", "")
+        self.live = None
+        if (c.get("BINANCE_TRADE_MODE", "paper").lower() == "live" and key and sec
+                and not key.startswith("여기에") and not sec.startswith("여기에")):
+            self.live = Live(key, sec)
+        self.state.setdefault("liveLedger", {"trades": 0, "wins": 0, "pnlUsdt": 0.0, "day": "", "dayPnl": 0.0, "dayTrades": 0})
 
     # --- 전략 ---
     def reselect(self):
@@ -218,7 +313,7 @@ class Engine:
                 log(f"  채택 {sym}: {st['desc']} · 백테스트 거래당 {st['btEdge']:+.2f}% ({st['btTrades']}회)")
         self.state["strategies"] = chosen
         for sym in list(self.state["positions"]):              # 보호 코인으로 바뀐 종목의 모의 보유는 정리
-            if sym.replace("1000", "").replace("USDT", "") in cb.PROTECTED_COINS:
+            if sym.replace("1000", "").replace("USDT", "") in cb.PROTECTED_COINS and not self.state["positions"][sym].get("live"):
                 self.close_paper(sym, prices([sym]).get(sym, self.state["positions"][sym]["entry"]), "보호 코인 제외")
         self.state["lastSelect"] = int(time.time())
         save_state(self.state)
@@ -250,8 +345,129 @@ class Engine:
             px = prices([sym]).get(sym)
             if not px:
                 continue
-            self.open_paper(sym, strat, px)
+            if self.live_ok(strat):
+                self.open_live(sym, strat, px)
+            else:
+                self.open_paper(sym, strat, px)
         save_state(st)
+
+    # --- 실주문 ---
+    def live_day(self):
+        ll = self.state["liveLedger"]
+        d = cb.today_key()
+        if ll["day"] != d:
+            ll.update({"day": d, "dayPnl": 0.0, "dayTrades": 0})
+        return ll
+
+    def owner_paused(self):
+        """업비트 봇이 대시보드에서 일시정지 상태면 바이낸스 실주문도 새로 하지 않음"""
+        try:
+            h = self.cloud._auth()
+            r = requests.get(f"{cb.FS_BASE}/users/{self.cloud.uid}/status/current", headers=h, timeout=10)
+            f = r.json().get("fields", {}) if r.status_code == 200 else {}
+            return cb.from_fs(f.get("botState", {"stringValue": ""})) == "paused"
+        except Exception:
+            return False
+
+    def live_ok(self, strat):
+        if not self.live:
+            return False
+        rb = self.state["ruleBook"].get(strat["rid"]) or {}
+        if rb.get("status") != "proven":
+            return False
+        ll = self.live_day()
+        if ll["dayPnl"] <= -self.daily_loss:
+            return False
+        if sum(1 for p in self.state["positions"].values() if p.get("live")) >= self.max_live:
+            return False
+        if self.owner_paused():
+            return False
+        return True
+
+    def open_live(self, sym, strat, px):
+        side = strat["side"]
+        try:
+            if not self.live.filters:
+                self.live.sync()
+                self.live.load_filters()
+            qty, need = self.live.qty_for(sym, self.order_usdt, px)
+            if not qty:
+                log(f"[실주문 건너뜀] {sym} 최소 주문 {need:.0f} USDT > 설정 {self.order_usdt:.0f} USDT → 모의로 처리")
+                return self.open_paper(sym, strat, px)
+            self.live.prepare(sym)
+            avg, filled = self.live.market(sym, "BUY" if side == "long" else "SELL", qty)
+        except Exception as e:
+            log(f"[실주문 실패] {sym}: {e} → 모의로 처리")
+            return self.open_paper(sym, strat, px)
+        if filled <= 0 or avg <= 0:
+            log(f"[실주문 확인 실패] {sym} 체결 수량 0 → 모의로 처리")
+            return self.open_paper(sym, strat, px)
+        sp = strat["spec"]
+        cost = 2 * FEE * 100
+        mv = sp.get("tp", 0.5) + cost
+        tp = avg * (1 + mv / 100) if side == "long" else avg * (1 - mv / 100)
+        sl = avg * (1 + sp["sl"] / 100) if side == "long" else avg * (1 - sp["sl"] / 100)
+        self.state["positions"][sym] = {"side": side, "entry": avg, "tp": tp, "sl": sl, "usdt": filled * avg, "qty": filled,
+                                        "live": True, "at": int(time.time() * 1000),
+                                        "deadline": int(time.time()) + sp["hold"] * TF * 60,
+                                        "rid": strat["rid"], "desc": strat["desc"], "maxFav": 0.0}
+        save_state(self.state)
+        log(f"★[실주문 진입] {sym} {'롱' if side == 'long' else '숏'} {filled} ({filled * avg:.1f} USDT) @ {avg:.6g} · "
+            f"익절 {tp:.6g} · 손절 {sl:.6g} · {strat['desc']}")
+
+    def close_live(self, sym, price, reason):
+        p = self.state["positions"][sym]
+        long_ = p["side"] == "long"
+        try:
+            avg, filled = self.live.market(sym, "SELL" if long_ else "BUY", p["qty"], reduce=True)
+        except Exception as e:
+            log(f"[실주문 청산 실패] {sym}: {e} — 다음 확인 때 다시 시도 (바이낸스 앱에서 직접 정리 가능)")
+            return
+        avg = avg or price
+        gross = (avg / p["entry"] - 1) if long_ else (p["entry"] / avg - 1)
+        pct = (gross - 2 * FEE) * 100
+        usdt = p["usdt"] * pct / 100
+        ll = self.live_day()
+        ll["trades"] += 1
+        ll["wins"] += 1 if pct > 0 else 0
+        ll["pnlUsdt"] = round(ll["pnlUsdt"] + usdt, 4)
+        ll["dayPnl"] = round(ll["dayPnl"] + usdt, 4)
+        ll["dayTrades"] += 1
+        self.state["positions"].pop(sym)
+        self.rule_record(p["rid"], pct)
+        tl = self.state["tradeLog"]
+        tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
+                   "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "live": True,
+                   "heldMin": round((time.time() * 1000 - p["at"]) / 60000), "maxFav": round(p.get("maxFav", 0), 2)})
+        del tl[:-100]
+        save_state(self.state)
+        log(f"★[실주문 청산] {sym} {'롱' if long_ else '숏'} {pct:+.2f}% ({usdt:+.2f} USDT, {reason}) · "
+            f"오늘 실주문 {ll['dayTrades']}회 {ll['dayPnl']:+.2f} USDT"
+            + (f" · 하루 손실 한도 도달 → 9시까지 실주문 중지" if ll["dayPnl"] <= -self.daily_loss else ""))
+
+    def reconcile(self):
+        """시작할 때: 장부의 실보유와 거래소 실제 포지션 맞춰 보기 (모르는 포지션은 건드리지 않음)"""
+        if not self.live:
+            return
+        try:
+            self.live.sync()
+            self.live.load_filters()
+            ex = self.live.positions()
+        except Exception as e:
+            log(f"[경고] 바이낸스 실계좌 확인 실패: {e} — 키·IP·선물 허용 확인 필요. 실주문은 계속 시도하지 않고 모의로 처리")
+            self.live = None
+            return
+        for sym, p in list(self.state["positions"].items()):
+            if p.get("live") and sym not in ex:
+                log(f"[경고] {sym} 실보유가 거래소에 없음(직접 정리·청산된 것으로 봄) → 장부에서 제외")
+                self.state["positions"].pop(sym)
+        mine = {s for s, p in self.state["positions"].items() if p.get("live")}
+        for sym, amt in ex.items():
+            if sym not in mine:
+                log(f"[안내] 봇이 열지 않은 포지션 {sym} {amt} — 봇은 건드리지 않음")
+        save_state(self.state)
+        log(f"바이낸스 실계좌 연결됨 · 실주문 켜짐(통과 규칙만) · 1회 {self.order_usdt:.0f} USDT · "
+            f"하루 손실 한도 {self.daily_loss:.0f} USDT · 동시 실보유 최대 {self.max_live}")
 
     def open_paper(self, sym, strat, px):
         side, sp = strat["side"], strat["spec"]
@@ -284,12 +500,15 @@ class Engine:
             p["maxFav"] = max(p.get("maxFav", 0.0), fav)
             hit_tp = price >= p["tp"] if long_ else price <= p["tp"]
             hit_sl = price <= p["sl"] if long_ else price >= p["sl"]
-            if hit_tp:
-                self.close_paper(sym, price, "익절")
-            elif hit_sl:
-                self.close_paper(sym, price, "손절")
-            elif time.time() >= p["deadline"]:
-                self.close_paper(sym, price, "보유시간 초과")
+            reason = "익절" if hit_tp else ("손절" if hit_sl else ("보유시간 초과" if time.time() >= p["deadline"] else None))
+            if reason:
+                if p.get("live"):
+                    if self.live:
+                        self.close_live(sym, price, reason)
+                    else:
+                        log(f"[경고] {sym} 실보유 청산 시점이지만 실계좌 연결이 꺼져 있음 → 바이낸스 앱에서 직접 정리 필요")
+                else:
+                    self.close_paper(sym, price, reason)
         save_state(self.state)
 
     def close_paper(self, sym, price, reason):
@@ -346,10 +565,11 @@ class Engine:
             if cur:
                 g = (cur / p["entry"] - 1) if p["side"] == "long" else (p["entry"] / cur - 1)
                 pct = round((g - 2 * FEE - SLIP) * 100, 2)
-            pos.append({"symbol": sym, "side": p["side"], "entry": p["entry"], "tp": p["tp"], "sl": p["sl"], "price": cur,
+            pos.append({"symbol": sym, "side": p["side"], "live": bool(p.get("live")), "entry": p["entry"], "tp": p["tp"], "sl": p["sl"], "price": cur,
                         "pnlPct": pct, "at": p["at"], "deadline": p["deadline"] * 1000, "desc": p["desc"]})
         return {
-            "mode": "paper", "updatedAt": int(time.time() * 1000), "tf": TF,
+            "mode": "live" if self.live else "paper", "updatedAt": int(time.time() * 1000), "tf": TF,
+            "liveLedger": self.state["liveLedger"], "liveOrderUsdt": self.order_usdt, "liveDailyLoss": self.daily_loss,
             "trades": n, "wins": lg["wins"], "pnlUsdt": round(lg["pnlUsdt"], 2),
             "avgPct": round(lg["sumPct"] / n, 3) if n else None,
             "long": {"n": lg["long"]["n"], "avgPct": round(lg["long"]["sumPct"] / lg["long"]["n"], 3) if lg["long"]["n"] else None},
@@ -391,7 +611,9 @@ class Engine:
 
     def run(self):
         uid = self.cloud.connect()
-        log(f"시작 · 모의매매 전용(실제 주문 없음) · {TF}분봉 · 1회 {PAPER_USDT:.0f} USDT · 계정 {uid[:6]}…")
+        log(f"시작 · {'실주문 켜짐(통과 규칙만, 나머지 모의)' if self.live else '모의매매 전용(실제 주문 없음)'} · "
+            f"{TF}분봉 · 모의 1회 {PAPER_USDT:.0f} USDT · 계정 {uid[:6]}…")
+        self.reconcile()
         last_update = time.time()
         while True:
             if time.time() - last_update > 600:
