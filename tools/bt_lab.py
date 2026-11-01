@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-"""이번 실험: '힘 부족(익절폭 > 기대 움직임)' 관문 — 매수 신호 때 그 종목 최근 60분 1분봉 평균 움직임으로
-보유시간 안에 기대되는 움직임(평균|1분 변화| × √보유분)을 구해, 익절폭이 그보다 몇 배 이상 크면 막기
-배경: 실패 원인 1위 '보유시간 안에 목표 미도달(힘 부족)' 96건(전체 실패의 약 32%), 직전 3시간 실전 손실 3건 모두 이 원인
-질문: 보지 않은 다음 6시간에서 막힌 거래가 남은 거래보다 나쁜가? 기준(익절폭/기대 움직임 0.5·0.75·1.0·1.5배)별 비교
+"""이번 실험: 청산 판단 '수익 중 시한 임박 정리' — 보유시간의 일정 비율이 지났고 지금 순손익(수수료·미끄러짐 포함)이
+기준 % 이상 플러스면 그 자리에서 정리. 배경: 실패 원인 1위 '보유시간 안에 목표 미도달' 121건, 실전 '보유시간 초과' 매도
+13건 평균 미끄러짐 -0.17%. 질문: 보지 않은 다음 6시간에서 이 정리가 '끝까지 들고 가기'보다 거래당 순익이 나은가?
 - 롤링 워크포워드: 과거 3일로 현재 봇 기준대로 전략을 고르고 다음 6시간 성적, 10개 창. 같은 난수 → 공정 비교
 """
 import importlib.util, json, os, random, time
@@ -31,8 +30,11 @@ for i in range(0, len(MARKETS), 20):
 
 
 
-def backtest_idx(series, spec, start, end):
-    """bot.backtest 와 같은 계산, 거래마다 신호 봉 위치도 함께 돌려줌"""
+VARIANTS = [None] + [(f, th) for f in (0.5, 0.7, 0.85) for th in (0.0, 0.2, 0.4)]
+
+
+def sim(series, spec, start, end, var):
+    """bot.backtest 와 같은 계산 + var=(보유시간 비율, 순손익 기준%) 이면 그 조건에서 종가 정리. (순익%, 조기정리여부) 목록"""
     sig = series.signal(spec)
     out, i, cd = [], start, -1
     slip = getattr(series, "slip", bot.BT_SLIPPAGE)
@@ -42,15 +44,19 @@ def backtest_idx(series, spec, start, end):
         j = i + 1
         entry = series.o[j] * (1 + slip) * (1 + bot.FEE_RATE)
         tp, sl = bot.target_price(entry, spec.get("tp", bot.TARGET_NET_PCT)), entry * (1 + spec["sl"] / 100)
-        ex, k = None, j
+        ex, k, early = None, j, False
         while k < end:
             if series.l[k] <= sl: ex = sl; break
             if series.h[k] >= tp: ex = tp; break
             if k - j >= spec["hold"]: ex = series.c[k]; break
+            if var and k - j >= var[0] * spec["hold"]:
+                net = (series.c[k] * (1 - slip) * (1 - bot.FEE_RATE) / entry - 1) * 100
+                if net >= var[1]:
+                    ex, early = series.c[k], True; break
             k += 1
         if ex is None: break
         pnl = (ex * (1 - slip) * (1 - bot.FEE_RATE) / entry - 1) * 100
-        out.append((i, pnl)); i = k + 1
+        out.append((pnl, early)); i = k + 1
         if pnl < 0: cd = i + bot.LOSS_COOLDOWN_MIN
     return out
 
@@ -70,7 +76,7 @@ def pick(cands):
 
 
 print("현재 봇 값:", bot.EXPLORE_MIN_TRADES, bot.EXPLORE_MIN_EDGE, bot.EXPLORE_HOLDOUT_FLOOR, "· 시험 수", bot.BT_TRIALS, flush=True)
-rows = []   # (종목 변화율{60,120,240분}, 거래 순익%, 종목+시간대)
+res = {str(v): [] for v in VARIANTS}
 t0 = time.time()
 for mk in MARKETS:
     try:
@@ -103,30 +109,19 @@ for mk in MARKETS:
         stop = min(end + STEP, s.n)
         sp, ho = pick(cands)
         if sp:
-            for i, pnl in backtest_idx(s, sp, end, stop):
-                mv = sum(abs(s.c[k] / s.c[k - 1] - 1) for k in range(i - 59, i + 1)) / 60 * 100
-                reach = mv * sp["hold"] ** 0.5
-                ratio = sp.get("tp", bot.TARGET_NET_PCT) / reach if reach > 0 else 99
-                rows.append((ratio, pnl, mk + ts[i][:13], sp["hold"]))
-                nt += 1
+            for v in VARIANTS:
+                r = sim(s, sp, end, stop, v)
+                res[str(v)] += r
+                if v is None: nt += len(r)
     print(f"== {mk} 거래 {nt} ({time.time() - t0:.0f}s)", flush=True)
 
-def line(name, r):
-    st = bot.stats(r)
-    return f"{name}: {st['n']}건 · 승률 {st['winrate'] * 100:.0f}% · 거래당 {st['edge']:+.3f}% · 합계 {st['total']:+.1f}%"
-allr = [r[1] for r in rows]
+base = bot.stats([p for p, _ in res["None"]])
 print(f"\n#### 합계 (보지 않은 다음 6시간 × {WINDOWS}개 창)")
-print(line("현재 봇 그대로", allr))
-out = {"all": bot.stats(allr), "gate": {}}
-rs = sorted(r[0] for r in rows)
-if rs:
-    print("익절폭/기대 움직임 분포: 25%", round(rs[len(rs) // 4], 2), "· 중앙", round(rs[len(rs) // 2], 2), "· 75%", round(rs[len(rs) * 3 // 4], 2))
-for th in (0.5, 0.75, 1.0, 1.5, 2.0):
-    blk = [r for r in rows if r[0] > th]; keep = [r for r in rows if r[0] <= th]
-    bs, ks = bot.stats([r[1] for r in blk]), bot.stats([r[1] for r in keep])
-    print(f"관문 '익절폭 > 기대 움직임 x{th}' 막기: 막힌 {bs['n']}건 거래당 {bs['edge']:+.3f}% (시간대·종목 {len(set(r[2] for r in blk))}) · 남은 {ks['n']}건 거래당 {ks['edge']:+.3f}% · 차이 {ks['edge'] - bs['edge']:+.3f}%p")
-    out["gate"][str(th)] = {"blocked": bs, "kept": ks}
-for lo, hi in ((0, 0.5), (0.5, 1.0), (1.0, 1.5), (1.5, 99)):
-    g = [r[1] for r in rows if lo < r[0] <= hi]
-    print(line(f"구간 {lo}~{hi}배", g))
+print(f"현재 봇 그대로: {base['n']}건 · 승률 {base['winrate'] * 100:.0f}% · 거래당 {base['edge']:+.3f}% · 합계 {base['total']:+.1f}%")
+out = {"all": base, "var": {}}
+for v in VARIANTS[1:]:
+    r = res[str(v)]
+    st = bot.stats([p for p, _ in r]); ne = sum(e for _, e in r)
+    print(f"시한 {v[0] * 100:.0f}% 경과·순익 {v[1]:+.1f}% 이상 정리: {st['n']}건(조기정리 {ne}) · 승률 {st['winrate'] * 100:.0f}% · 거래당 {st['edge']:+.3f}% · 합계 {st['total']:+.1f}% · 차이 {st['edge'] - base['edge']:+.3f}%p")
+    out["var"][str(v)] = {**st, "early": ne}
 json.dump(out, open("bt_summary.json", "w"), ensure_ascii=False, indent=1)

@@ -103,6 +103,8 @@ LIVE_DAY_MIN_WINRATE = 0.50      # 승률이 이보다 낮으면 다음 날 9시
 # 규칙 장부: 종목+규칙마다 실전 성적을 날짜와 상관없이 계속 기록
 RULE_EVAL_TRADES = 5             # 이 횟수를 채울 때까지 규칙을 바꾸지 않음, 이후 판정
 RULE_RECHECK = (10, 20, 40)      # 이 횟수마다 다시 판정 (5회는 표본이 작아 운 영향 큼)
+RULE_PROMOTE_MIN_AVG = 0.15      # 실주문 자격(통과): 거래당 +0.15% 이상 — 0% 근처는 체결 비용·운 차이로 실전에서 뒤집히기 쉬움
+RULE_POST_CHECK = 5              # 통과 '이후' 실주문 5회마다 다시 봄 → 거래당 0% 이하면 다시 검증(모의)로 내림
 RULE_BOOK_MAX = 300              # 장부에 남길 최대 규칙 수 (퇴출 규칙부터 정리)
 UNIVERSE_DAYS = 30               # 거래대금 순위 기간(최근 30일)
 UNIVERSE_MIN_LISTED_DAYS = 90    # 상장 90일 미만 종목 제외
@@ -1022,6 +1024,19 @@ def gate_coin_trend(bot, mk, price, ctx):
     return chg <= COIN_TREND_PCT, f"{mk.split('-')[1]} 최근 {COIN_TREND_MIN}분 {chg:+.2f}% (기준 {COIN_TREND_PCT}%)"
 
 
+REACH_MIN = 60                   # 힘 부족 관문: 최근 몇 분 1분봉 움직임으로 기대 움직임을 잴지
+REACH_X = 1.5                    # 익절폭이 '기대 움직임(평균|1분 변화| × √보유분)'의 이 배수보다 크면 막음 (bt-lab 10-31: 1.5배 초과 16건 거래당 -0.36% vs 나머지 83건 -0.04%)
+
+
+def gate_reach(bot, mk, price, ctx):
+    """실패 원인 1위 '보유시간 안에 목표 미도달(힘 부족)' 대응 — 그 종목의 요즘 움직임으로는 보유시간 안에
+    익절폭까지 가기 어려운 매수(조용한 코인에 큰 익절폭)를 따로 잼"""
+    reach, tp = (ctx or {}).get("reachPct"), (ctx or {}).get("tpPct")
+    if not reach or tp is None:
+        return False, "움직임 기록 없음"
+    return tp > reach * REACH_X, f"{mk.split('-')[1]} 익절 +{tp:.1f}% · 보유시간 기대 움직임 {reach:.2f}% (익절폭이 {tp / reach:.1f}배, 기준 {REACH_X:.1f}배 초과)"
+
+
 # entry=True 관문은 1분마다가 아니라 매수 신호가 날 때마다 그 종목 기준으로 확인: fn(bot, 종목, 현재가, ctx)
 MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
@@ -1034,6 +1049,7 @@ MARKET_GATES = [
     {"id": "weak_holdout", "name": "검증 근거 약함", "desc": f"전략의 검증구간 거래가 {WEAK_HO_MIN_TRADES}회 미만이거나 거래당 {WEAK_HO_MIN_EDGE:+.1f}% 미만이면 사지 않음", "fn": gate_weak_holdout, "entry": True},
     {"id": "breadth", "name": "시장 폭 약세", "desc": f"거래 대상 종목 중 {BREADTH_DOWN_FRAC * 100:.0f}% 이상이 최근 {BREADTH_MIN}분 하락 중이면 사지 않음(알트 동반 하락)", "fn": gate_breadth, "entry": True},
     {"id": "coin_trend", "name": "종목 하락 추세", "desc": f"그 종목이 최근 {COIN_TREND_MIN}분 {COIN_TREND_PCT}% 이하로 밀려 있으면 사지 않음(혼자 흘러내리는 코인 눌림 매수 방지)", "fn": gate_coin_trend, "entry": True},
+    {"id": "reach", "name": "힘 부족", "desc": f"그 종목 최근 {REACH_MIN}분 움직임으로 본 보유시간 기대 움직임보다 익절폭이 {REACH_X:.1f}배 넘게 크면 사지 않음(목표 미도달 방지)", "fn": gate_reach, "entry": True},
 ]
 
 # ---- 청산 판단 (보유 중) — 관문과 같은 '관찰 → 승인 → 적용' 구조 ----
@@ -1216,10 +1232,24 @@ class Bot:
         n = rb["trades"]
         avg = rb["sumPct"] / n
         coin = rb["market"].split("-")[1]
-        if n == RULE_EVAL_TRADES or n in RULE_RECHECK or (n > RULE_EVAL_TRADES and rb["status"] == "proven" and avg <= 0):
+        post = rb.get("post") or {}
+        post_bad = (rb["status"] == "proven" and post.get("n", 0) >= RULE_POST_CHECK
+                    and post["n"] % RULE_POST_CHECK == 0 and post["sumPct"] / post["n"] <= 0)
+        if post_bad:
+            rb["status"] = "testing"
+            rb["demoted"] = rb.get("demoted", 0) + 1
+            log(f"[규칙 판정] {coin} {rb['id']} 통과 이후 실주문 {post['n']}회 거래당 {post['sumPct'] / post['n']:+.2f}% "
+                f"→ 다시 검증(모의)로 내림 (실돈 주문 중지, 시험은 계속)")
+        elif n == RULE_EVAL_TRADES or n in RULE_RECHECK or (n > RULE_EVAL_TRADES and rb["status"] == "proven" and avg <= 0):
             old = rb["status"]
-            rb["status"] = "proven" if avg > 0 else "retired"
-            verdict = "계속 사용" if rb["status"] == "proven" else "퇴출(다시 채택 안 함)"
+            if avg >= RULE_PROMOTE_MIN_AVG:
+                rb["status"] = "proven"
+            elif avg <= 0:
+                rb["status"] = "retired"
+            else:
+                rb["status"] = "testing"          # 플러스지만 여유가 작음 → 모의로 더 지켜봄
+            verdict = {"proven": "계속 사용(실주문 자격)", "retired": "퇴출(다시 채택 안 함)",
+                       "testing": f"플러스지만 +{RULE_PROMOTE_MIN_AVG}% 미만 → 다음 판정까지 검증(모의) 계속"}[rb["status"]]
             log(f"[규칙 판정] {coin} {rb['id']} 실전·검증 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}% "
                 f"(백테스트 예상 {rb.get('btEdge') or 0:+.2f}%) → {verdict}")
             if rb["status"] == "retired" and old != "retired" and self.state["strategies"].get(rb["market"], {}).get("rid") == rid:
@@ -1551,6 +1581,47 @@ class Bot:
                         "avgPct": round(sp / n, 3) if n else None, "pnl": round(pn)})
         return out
 
+    def spec_view(self):
+        """분석 전용: 규칙 장부 전체(퇴출 포함)를 규칙 특성(익절폭·보유시간·조건 개수·백테스트 우위)별로 묶은 실전 성적.
+        어떤 모양의 규칙이 실전에서 덜 손해 보는지 보는 용도이며 매매에는 영향 없음"""
+        try:
+            def edge_b(e):
+                return None if e is None else ("우위 0.3% 미만" if e < 0.3 else "우위 0.3~0.5%" if e < 0.5 else "우위 0.5% 이상")
+            keys = (("tp", "익절폭", lambda sp, r: "익절 +%g%%" % sp.get("tp") if sp.get("tp") is not None else None),
+                    ("hold", "보유시간", lambda sp, r: "최대 %d분" % sp.get("hold") if sp.get("hold") else None),
+                    ("ncond", "조건 개수", lambda sp, r: "조건 %d개" % len(sp.get("conds") or []) if sp.get("conds") else None),
+                    ("edge", "백테스트 우위", lambda sp, r: edge_b(r.get("btEdge"))))
+            out = []
+            for k, label, fn in keys:
+                g = {}
+                for r in self.state.get("ruleBook", {}).values():
+                    n = r.get("trades") or 0
+                    if n <= 0:
+                        continue
+                    b = fn(r.get("spec") or {}, r)
+                    if b is None:
+                        continue
+                    st = g.setdefault(b, {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0.0, "rules": 0, "topN": 0, "topSum": 0.0})
+                    st["n"] += n; st["wins"] += r.get("wins") or 0
+                    st["sumPct"] += r.get("sumPct") or 0.0; st["pnl"] += r.get("pnl") or 0
+                    st["rules"] += 1
+                    if n > st["topN"]:                     # 거래가 가장 많은 규칙 하나 — 한 규칙이 칸 평균을 끌고 가는지 보려고
+                        st["topN"], st["topSum"] = n, r.get("sumPct") or 0.0
+                rows = []
+                for b, v in g.items():
+                    row = {"bucket": b, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
+                           "pnl": round(v["pnl"]), "rules": v["rules"], "topShare": round(v["topN"] / v["n"], 3)}
+                    if v["n"] > v["topN"]:                 # 그 규칙 하나를 뺀 평균 (쏠림 확인용)
+                        row["exTopAvg"] = round((v["sumPct"] - v["topSum"]) / (v["n"] - v["topN"]), 3)
+                    rows.append(row)
+                rows.sort(key=lambda x: -x["avgPct"])
+                if rows:
+                    out.append({"key": k, "label": label, "rows": rows})
+            return out
+        except Exception as e:
+            log(f"[경고] 규칙 특성별 성적 집계 실패: {e}")
+            return []
+
     def exec_record(self, kind, slip_pct, tp_gap=None):
         """체결 비용 기록(분석 전용, 매매에는 영향 없음): 시장가 주문이 신호가 대비 얼마나 밀려 체결됐는지.
         익절은 '목표가에 지정가 매도를 미리 걸어뒀다면' 더 받았을 몫(tp_gap)도 함께 누적 → 지정가 전환 판단 근거"""
@@ -1683,6 +1754,10 @@ class Bot:
                 price = self.upbit.prices([mk]).get(mk)
                 if price:
                     ctx = {"signalPrice": series.c[-1], "entryVol": round(avg_range_pct(series), 4)}
+                    if len(series.c) > REACH_MIN:         # 힘 부족 관문용: 평균|1분 변화| × √보유분
+                        mv = sum(abs(series.c[k] / series.c[k - 1] - 1) for k in range(len(series.c) - REACH_MIN, len(series.c))) / REACH_MIN * 100
+                        ctx["reachPct"] = round(mv * spec["hold"] ** 0.5, 3)
+                        ctx["tpPct"] = spec.get("tp", TARGET_NET_PCT)
                     if len(series.c) > COIN_TREND_MIN:    # 종목 하락 추세 관문용
                         ctx["coinChg"] = round((series.c[-1] / series.c[-1 - COIN_TREND_MIN] - 1) * 100, 3)
                     try:
@@ -2211,6 +2286,7 @@ class Bot:
                      "ai": self.state.get("aiReport"),
                      "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
                      "hourStats": self.hours_view(),
+                     "specStats": self.spec_view(),
                      "execStats": [{"kind": k, "n": v["n"], "avgSlip": round(v["sumSlip"] / v["n"], 3), "worse": v["worse"],
                                     "avgTpGap": round(v["sumTpGap"] / v["n"], 3) if k == "sell:익절" else None}
                                    for k, v in self.state.get("execStats", {}).items() if v.get("n")],
