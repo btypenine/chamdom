@@ -297,6 +297,21 @@ body.compact #sumCard { display: flex !important; }
       <div class="list" id="apprList"></div>
     </section>
 
+    <section class="card" id="bnCard" hidden>
+      <div class="head-row"><h2>바이낸스 선물 <span class="sub">(모의매매 · 15분봉 · 롱+숏)</span></h2><span class="mode paper">모의</span></div>
+      <div class="sub" id="bnState"></div>
+      <div class="stats">
+        <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
+        <div><div class="label">거래당 평균</div><div class="stat-val num" id="bnAvg">-</div></div>
+        <div><div class="label">모의 손익</div><div class="stat-val num" id="bnPnl">-</div></div>
+        <div><div class="label">롱</div><div class="stat-val num" id="bnLong">-</div></div>
+        <div><div class="label">숏</div><div class="stat-val num" id="bnShort">-</div></div>
+        <div><div class="label">규칙 통과/검증/퇴출</div><div class="stat-val num" id="bnRules">-</div></div>
+      </div>
+      <div class="list" id="bnPos"></div>
+      <details><summary class="sub">최근 모의 거래 · 기록</summary><div class="list" id="bnRecent"></div><div class="logbox" id="bnLog"></div></details>
+    </section>
+
     <section class="card" id="perfCard" hidden>
       <div class="head-row"><h2>오늘 성과 <span class="sub">(09시 기준)</span></h2><span class="mode" id="mode"></span></div>
       <div class="stats">
@@ -559,6 +574,9 @@ onAuthStateChanged(auth, async (user) => {
     (snap) => { lastStatus = snap.exists() ? snap.data() : null; $("reqOpen").hidden = !auth.currentUser; renderStatus(); },
     (e) => toast("상태 불러오기 실패: " + e.code)));
 
+  unsubs.push(onSnapshot(doc(db, "users", user.uid, "status", "binance"),
+    (snap) => renderBinance(snap.exists() ? snap.data() : null), () => {}));
+
   const tq = query(collection(db, "users", user.uid, "trades"), orderBy("at", "desc"), limit(30));
   unsubs.push(onSnapshot(tq, (snap) => renderTrades(snap.docs.map((d) => d.data())),
     (e) => toast("거래 기록 불러오기 실패: " + e.code)));
@@ -762,6 +780,43 @@ $("nickReset").addEventListener("click", () => {
   const g = (u.providerData.find((p) => p.providerId === "google.com") || {}).displayName || "";
   saveNick(g);
 });
+
+// ---------- 바이낸스 선물 (모의) ----------
+function renderBinance(b) {
+  $("bnCard").hidden = !b;
+  if (!b) return;
+  const pct = (x) => x == null ? "-" : (x > 0 ? "+" : "") + Number(x).toFixed(2) + "%";
+  const stale = !b.updatedAt || Date.now() - b.updatedAt > 3 * 60 * 1000;
+  $("bnState").textContent = stale ? "바이낸스 엔진 응답 없음 · 회사 PC의 start_binance.bat 확인" :
+    (b.phase ? "진행 중: " + b.phase : `실행 중 · 마지막 갱신 ${ago(b.updatedAt)} · 대상 ${(b.strategies || []).length}종목`);
+  $("bnTrades").textContent = `${b.trades || 0}회 / ${b.wins || 0}회`;
+  $("bnAvg").textContent = pct(b.avgPct);
+  $("bnPnl").textContent = b.pnlUsdt == null ? "-" : (b.pnlUsdt > 0 ? "+" : "") + b.pnlUsdt.toFixed(2) + " USDT";
+  $("bnLong").textContent = `${b.long?.n || 0}회 ${pct(b.long?.avgPct)}`;
+  $("bnShort").textContent = `${b.short?.n || 0}회 ${pct(b.short?.avgPct)}`;
+  $("bnRules").textContent = `${b.rules?.proven || 0}/${b.rules?.testing || 0}/${b.rules?.retired || 0}`;
+  const box = $("bnPos"); box.textContent = "";
+  for (const p of (b.positions || [])) {
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = "<span><b></b> <span class='sub d'></span></span><span class='num r'></span>";
+    el.querySelector("b").textContent = `${p.side === "long" ? "롱" : "숏"} ${p.symbol.replace("USDT", "")}`;
+    el.querySelector(".d").textContent = p.desc || "";
+    const r = el.querySelector(".r"); r.textContent = pct(p.pnlPct);
+    if (p.pnlPct > 0) r.classList.add("up"); else if (p.pnlPct < 0) r.classList.add("down");
+    box.append(el);
+  }
+  const rb = $("bnRecent"); rb.textContent = "";
+  for (const t of (b.recent || []).slice().reverse()) {
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = "<span><b></b> <span class='sub d'></span></span><span class='num r'></span>";
+    el.querySelector("b").textContent = `${t.side === "long" ? "롱" : "숏"} ${String(t.symbol).replace("USDT", "")}`;
+    el.querySelector(".d").textContent = `${t.t} · ${t.exit}`;
+    const r = el.querySelector(".r"); r.textContent = pct(t.pct);
+    if (t.pct > 0) r.classList.add("up"); else if (t.pct < 0) r.classList.add("down");
+    rb.append(el);
+  }
+  $("bnLog").textContent = (b.activity || []).slice().reverse().join("\n");
+}
 
 // ---------- 요청하기 ----------
 let aiReplies = {};
