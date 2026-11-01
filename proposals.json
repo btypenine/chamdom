@@ -297,7 +297,8 @@
       "pr": "https://github.com/btypenine/chamdom/pull/25",
       "branch": "ai/20261101-spec-concentration",
       "createdAt": "2026-11-01T11:58:00+09:00",
-      "status": "pending"
+      "status": "merged",
+      "mergedAt": "2026-11-01T12:35:00+09:00"
     }
   ]
 }
