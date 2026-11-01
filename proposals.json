@@ -287,6 +287,17 @@
       "createdAt": "2026-11-01T05:55:00+09:00",
       "status": "merged",
       "mergedAt": "2026-11-01T10:33:00+09:00"
+    },
+    {
+      "id": "ai-20261101-spec-concentration",
+      "title": "규칙 모양별 성적에 '한 규칙 쏠림' 표시",
+      "summary": "한 칸 거래의 30% 이상이 규칙 하나에서 나오면 그 규칙을 뺀 거래당 평균을 함께 표시(분석 전용)",
+      "why": "'조건 1개'가 +0.00%로 제일 좋아 보이지만 56회 중 41%가 KAT 규칙 하나 덕분이고, 빼면 -0.42%로 다른 칸과 비슷함. 착시로 잘못된 개선을 막기 위함",
+      "risk": "매매 영향 없음. 화면 한 줄 추가",
+      "pr": "https://github.com/btypenine/chamdom/pull/25",
+      "branch": "ai/20261101-spec-concentration",
+      "createdAt": "2026-11-01T11:58:00+09:00",
+      "status": "pending"
     }
   ]
 }
