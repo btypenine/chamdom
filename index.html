@@ -392,7 +392,7 @@ body.compact #sumCard { display: flex !important; }
 
     <section class="card" id="specCard" hidden>
       <h2>규칙 모양별 실전 성적</h2>
-      <div class="sub">지금까지 실전·검증에 쓰인 모든 규칙(퇴출 포함)을 익절폭·보유시간·조건 개수·백테스트 우위별로 묶은 결과입니다. 어떤 모양의 규칙이 실전에서 잘 되는지 보는 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 20회 미만이라 참고만 하세요.</div>
+      <div class="sub">지금까지 실전·검증에 쓰인 모든 규칙(퇴출 포함)을 익절폭·보유시간·조건 개수·백테스트 우위별로 묶은 결과입니다. 어떤 모양의 규칙이 실전에서 잘 되는지 보는 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 20회 미만이라 참고만 하세요. ⚠ 표시는 그 칸 거래의 30% 이상이 규칙 하나에서 나온 경우로, 그 규칙을 빼면 평균이 어떻게 되는지 함께 보여 줍니다.</div>
       <div class="list" id="specStats"></div>
     </section>
 
@@ -1175,6 +1175,20 @@ function renderMore(s, stale) {
       el.lastChild.textContent = `${r.n}회 · 승 ${Math.round(r.wins / r.n * 100)}% · 거래당 ${ap >= 0 ? "+" : ""}${ap.toFixed(2)}%`;
       if (ap) el.lastChild.classList.add(ap > 0 ? "up" : "down");
       spbox.append(el);
+      // 한 규칙 쏠림: 거래 30% 이상이 규칙 하나에서 나왔으면 '그 규칙 빼면' 평균을 바로 아래에 같이 보여 줌 (착시 방지)
+      const ts = Number(r.topShare) || 0;
+      if (ts >= 0.3 && r.exTopAvg != null && r.rules > 1) {
+        const ex = Number(r.exTopAvg);
+        const sub = document.createElement("div"); sub.className = "li";
+        sub.innerHTML = "<span></span><span class='num'></span>";
+        sub.style.borderTop = "none"; sub.style.paddingTop = "0"; sub.style.fontSize = "12px";
+        if (r.n < 20) sub.style.opacity = "0.6";
+        sub.firstChild.textContent = `   규칙 ${r.rules}개 중 1개가 ${Math.round(ts * 100)}%`;
+        sub.firstChild.style.whiteSpace = "pre";
+        sub.lastChild.textContent = `⚠ 빼면 거래당 ${ex >= 0 ? "+" : ""}${ex.toFixed(2)}%`;
+        sub.lastChild.classList.add(ex > 0 ? "up" : "down");
+        spbox.append(sub);
+      }
     }
   }
 

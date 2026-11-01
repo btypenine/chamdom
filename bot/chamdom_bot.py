@@ -1601,11 +1601,19 @@ class Bot:
                     b = fn(r.get("spec") or {}, r)
                     if b is None:
                         continue
-                    st = g.setdefault(b, {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0.0})
+                    st = g.setdefault(b, {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0.0, "rules": 0, "topN": 0, "topSum": 0.0})
                     st["n"] += n; st["wins"] += r.get("wins") or 0
                     st["sumPct"] += r.get("sumPct") or 0.0; st["pnl"] += r.get("pnl") or 0
-                rows = [{"bucket": b, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
-                         "pnl": round(v["pnl"])} for b, v in g.items()]
+                    st["rules"] += 1
+                    if n > st["topN"]:                     # 거래가 가장 많은 규칙 하나 — 한 규칙이 칸 평균을 끌고 가는지 보려고
+                        st["topN"], st["topSum"] = n, r.get("sumPct") or 0.0
+                rows = []
+                for b, v in g.items():
+                    row = {"bucket": b, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
+                           "pnl": round(v["pnl"]), "rules": v["rules"], "topShare": round(v["topN"] / v["n"], 3)}
+                    if v["n"] > v["topN"]:                 # 그 규칙 하나를 뺀 평균 (쏠림 확인용)
+                        row["exTopAvg"] = round((v["sumPct"] - v["topSum"]) / (v["n"] - v["topN"]), 3)
+                    rows.append(row)
                 rows.sort(key=lambda x: -x["avgPct"])
                 if rows:
                     out.append({"key": k, "label": label, "rows": rows})
