@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""이번 실험: 봉 길이(시간 단위) 비교 — 1분봉 vs 5분·15분·60분봉
+"""이번 실험(2차): 봉 길이별 + 'BTC 상승 국면에서만 매수' 필터 비교
+1차 결과(11-01): 보지 않은 구간 거래당 1분 -0.48% · 5분 -0.10% · 15분 -0.68% · 60분 -0.69% → 모두 마이너스.
+질문: 시장(BTC)이 오르는 국면에서만 매수하면 나아지는가? 같은 기간 BTC 자체 등락도 함께 기록(시장 탓인지 확인).
+- BTC 국면: BTC 종가 > BTC 지수이동평균(1분 6시간·5분 1일·15분 2일·60분 5일 길이)일 때만 신규 매수
+(아래는 1차 설명)
+봉 길이(시간 단위) 비교 — 1분봉 vs 5분·15분·60분봉
 배경: 직전 실험에서 현재 봇(1분봉)이 고르는 전략의 '보지 않은 다음 구간' 성적이 거래당 -0.382%.
 1분봉의 짧은 움직임은 수수료·체결 밀림(왕복 약 0.2~0.3%)을 넘기 어려울 수 있음.
 질문: 같은 전략 생성·선정 방식을 더 긴 봉에 적용하면, 보지 않은 다음 구간에서 거래당 순익이 나아지는가?
@@ -16,6 +21,7 @@ MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-SOL", "KRW-DOGE", "KRW-XLM", "KRW-ADA", "K
            "KRW-WLD", "KRW-ENA", "KRW-TRUMP", "KRW-AVAX", "KRW-HBAR", "KRW-LINK", "KRW-UNI", "KRW-APT", "KRW-ARB", "KRW-SHIB",
            "KRW-AAVE", "KRW-PENGU", "KRW-KAT", "KRW-BAT", "KRW-AXS"]
 TFS = {1: (4320, 360), 5: (2880, 288), 15: (1920, 192), 60: (1440, 120)}   # 봉 단위(분): (학습 봉 수, 시험 봉 수)
+REGIME_LEN = {1: 360, 5: 288, 15: 192, 60: 120}
 WINDOWS = 8
 
 
@@ -63,6 +69,42 @@ def pick(cands):
     return best[0] if best else None
 
 
+def sim(series, spec, start, end, ok=None):
+    """bot.backtest 와 같은 계산, ok[i] 가 False 면 그 봉에서는 신규 매수 안 함"""
+    sig = series.signal(spec)
+    out, i, cd = [], start, -1
+    slip = getattr(series, "slip", bot.BT_SLIPPAGE)
+    while i < end - 1:
+        if i < cd or not sig[i] or (ok is not None and not ok[i]):
+            i += 1; continue
+        j = i + 1
+        entry = series.o[j] * (1 + slip) * (1 + bot.FEE_RATE)
+        tp, sl = bot.target_price(entry, spec.get("tp", bot.TARGET_NET_PCT)), entry * (1 + spec["sl"] / 100)
+        ex, k = None, j
+        while k < end:
+            if series.l[k] <= sl: ex = sl; break
+            if series.h[k] >= tp: ex = tp; break
+            if k - j >= spec["hold"]: ex = series.c[k]; break
+            k += 1
+        if ex is None: break
+        pnl = (ex * (1 - slip) * (1 - bot.FEE_RATE) / entry - 1) * 100
+        out.append(pnl); i = k + 1
+        if pnl < 0: cd = i + bot.LOSS_COOLDOWN_MIN
+    return out
+
+
+btc = {}
+btc_move = {}
+for tf, (train, step) in TFS.items():
+    cs = fetch("KRW-BTC", tf, train + WINDOWS * step)
+    closes = [c["trade_price"] for c in cs]
+    e = bot.ema(closes, REGIME_LEN[tf])
+    btc[tf] = {c["candle_date_time_utc"][:16]: closes[i] > e[i] for i, c in enumerate(cs)}
+    btc_move[tf] = (closes[-1] / closes[train] - 1) * 100 if len(closes) > train else None
+    up_share = sum(1 for i in range(train, len(closes)) if closes[i] > e[i]) / max(1, len(closes) - train)
+    print(f"BTC {tf}분봉 시험 기간 등락 {btc_move[tf]:+.2f}% · 상승 국면 비율 {up_share * 100:.0f}%", flush=True)
+
+resf = {tf: [] for tf in TFS}
 res = {tf: [] for tf in TFS}
 tp_hist = {tf: {} for tf in TFS}
 t0 = time.time()
@@ -71,7 +113,9 @@ for mk in MARKETS:
     for tf, (train, step) in TFS.items():
         total = train + WINDOWS * step
         try:
-            s = bot.Series(fetch(mk, tf, total))
+            cl = fetch(mk, tf, total)
+            s = bot.Series(cl)
+            ok = [btc[tf].get(c["candle_date_time_utc"][:16], False) for c in cl]
         except Exception as e:
             line.append(f"{tf}분 실패"); continue
         if s.n < total - 20:
@@ -96,8 +140,9 @@ for mk in MARKETS:
                 cands.append((sp, tr, bot.stats(bot.backtest(sub, sp, start=split))))
             sp = pick(cands)
             if sp:
-                r = bot.backtest(s, sp, start=end, end=min(end + step, s.n))
+                r = sim(s, sp, end, min(end + step, s.n))
                 res[tf] += r
+                resf[tf] += sim(s, sp, end, min(end + step, s.n), ok)
                 nt += len(r)
                 tp_hist[tf][sp["tp"]] = tp_hist[tf].get(sp["tp"], 0) + len(r)
         line.append(f"{tf}분 {nt}건")
@@ -112,5 +157,10 @@ for tf in TFS:
     print(f"{tf:>2}분봉: {st['n']}건 · 승률 {st['winrate'] * 100:.0f}% · 거래당 {st['edge']:+.3f}% · 합계 {st['total']:+.1f}% · "
           f"손익비 {min(st['pf'], 99):.2f} · 시험 기간 {days[tf]:.1f}일 · 하루 약 {st['n'] / max(days[tf], 0.1) / len(MARKETS):.2f}건/종목 · "
           f"익절폭 분포 {dict(sorted(tp_hist[tf].items()))}")
+print("\n#### BTC 상승 국면에서만 매수했다면")
+for tf in TFS:
+    st = bot.stats(resf[tf]) if resf[tf] else {"n": 0, "winrate": 0, "edge": 0, "total": 0, "pf": 0}
+    print(f"{tf:>2}분봉: {st['n']}건 · 승률 {st['winrate'] * 100:.0f}% · 거래당 {st['edge']:+.3f}% · 합계 {st['total']:+.1f}% · "
+          f"손익비 {min(st['pf'], 99):.2f} · (같은 기간 BTC {btc_move[tf]:+.2f}%)")
 import json
 json.dump({str(k): v for k, v in summary.items()}, open("bt_summary.json", "w"), ensure_ascii=False)
