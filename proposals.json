@@ -309,7 +309,8 @@
       "pr": "https://github.com/btypenine/chamdom/pull/26",
       "branch": "ai/20261102-big-tp",
       "createdAt": "2026-11-02T20:40:00+09:00",
-      "status": "pending"
+      "status": "merged",
+      "mergedAt": "2026-11-02T20:36:00+09:00"
     }
   ]
 }
