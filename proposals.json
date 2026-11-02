@@ -333,8 +333,9 @@
    "pr": "https://github.com/btypenine/chamdom/pull/28",
    "branch": "ai/20261103-monkey-baseline",
    "createdAt": "2026-11-03T00:55:00+09:00",
-   "status": "pending",
-   "requestId": "req-vzd1oqvthjs7"
+   "status": "merged",
+   "requestId": "req-vzd1oqvthjs7",
+   "mergedAt": "2026-11-03T03:34:00+09:00"
   }
  ]
 }
