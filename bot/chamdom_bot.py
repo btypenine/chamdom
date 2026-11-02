@@ -82,6 +82,8 @@ BT_HOLDOUT_MIN_TRADES = 5        # 최근 검증 구간 최소 거래 수
 BT_HOLDOUT_MIN_WINRATE = 0.80    # 최근 검증 구간 최소 승률
 PROVEN_ONLY_LIVE = True          # 실전 통과(proven) 규칙만 실제 돈으로 주문, 검증 중 규칙은 모의 체결로 계속 시험·학습
 SHADOW_SLIPPAGE = 0.0015         # 모의 체결 미끄러짐(매수·매도 각각) — 실전 평균보다 약간 보수적으로
+MONKEY_MAX_OPEN = 40             # 원숭이 기준선(무작위 진입 비교) 동시 추적 최대 수 — 분석 전용
+MONKEY_RECENT = 50               # 최근 성적은 마지막 50건으로 따로 봄
 BT_SLIPPAGE = 0.001              # (고정값 쓸 때) 시장가 체결 미끄러짐 0.1% (매수·매도 각각)
 BT_SLIP_BASE = 0.0003            # 종목별 미끄러짐 = 0.03% + 호가 한 칸/가격 (BTC≈0.03%, 100원대 코인≈0.5~1%)
 EXPLORE_MIN_TRADES = 6           # 탐험 모드: 학습 구간 최소 거래 수
@@ -1508,6 +1510,10 @@ class Bot:
         log(f"[{tag}] {market} {cost:,.0f}원 @ {unit:,.4f} · 목표 {self.state['positions'][market]['tp']:,.4f} "
             f"· 손절 {self.state['positions'][market]['sl']:,.4f} · {describe(spec)}")
         self._record("buy", market, unit, cost, describe(spec), None, paper=shadow)
+        try:
+            self.monkey_spawn(market, spec)
+        except Exception as e:                    # 분석 전용 기록 실패가 매매를 막으면 안 됨
+            log(f"[경고] 원숭이 기준선 기록 실패: {e}")
         self.upload_status()
 
     def exit(self, market, price, reason):
@@ -1546,6 +1552,8 @@ class Bot:
         actual_pct = pnl / pos["cost"] * 100
         self.hour_record(pos, pnl, actual_pct)
         self.tp_limit_record(market, pos, reason, actual_pct)
+        if pos.get("monkey"):                             # 원숭이 기준선: 같은 시각에 산 우리 거래 성적
+            self.monkey_record("ours", actual_pct)
         for rid, mk_ in (pos.get("exitMarks") or {}).items():
             if self.exit_stat(rid)["mode"] != "active" or reason != next((r["name"] for r in EXIT_RULES if r["id"] == rid), ""):
                 self.exit_record(rid, mk_["pct"], actual_pct, mk_["at"])   # 관찰: 그때 정리했다면 vs 실제
@@ -2031,6 +2039,69 @@ class Bot:
                 + ("막아서 손실을 피함" if pct <= 0 else "막지 않았으면 이익이었음"))
         save_state(self.state)
 
+    # ---------- 원숭이 기준선 (분석 전용, 매매 영향 없음) ----------
+    def monkey_spawn(self, market, spec):
+        """우리가 살 때마다, 같은 순간 대상 종목 중 무작위 1개를 같은 익절·손절·보유시간으로 '샀다고 치고' 추적.
+        우리 거래당 성적이 이 무작위 진입보다 나은지로 '실력'을 잼 (수수료·미끄러짐 동일 반영)"""
+        monkeys = self.state.setdefault("monkeys", {})
+        if len(monkeys) >= MONKEY_MAX_OPEN:
+            return
+        pool = [m for m in self.state["universe"]["markets"] if m != market and m not in monkeys]
+        if not pool:
+            return
+        mk = random.choice(pool)
+        price = self.upbit.prices([mk]).get(mk)
+        if not price:
+            return
+        unit = price * (1 + SHADOW_SLIPPAGE) / (1 - FEE_RATE)      # 검증 모의매매와 같은 비용 가정
+        monkeys[mk] = {"unit": unit, "tp": target_price(unit, spec.get("tp", TARGET_NET_PCT)),
+                       "sl": unit * (1 + spec["sl"] / 100), "deadline": int(time.time()) + spec["hold"] * 60,
+                       "at": int(time.time() * 1000)}
+        self.state["positions"][market]["monkey"] = True
+
+    def monkey_record(self, side, pct):
+        st = self.state.setdefault("monkeyStats", {})
+        b = st.setdefault(side, {"n": 0, "wins": 0, "sumPct": 0.0, "recent": []})
+        b["n"] += 1
+        b["wins"] += 1 if pct > 0 else 0
+        b["sumPct"] += pct
+        b["recent"] = (b["recent"] + [round(pct, 3)])[-MONKEY_RECENT:]
+
+    def manage_monkeys(self):
+        monkeys = self.state.get("monkeys") or {}
+        if not monkeys:
+            return
+        prices = self.upbit.prices(list(monkeys.keys()))
+        done = False
+        for mk, g in list(monkeys.items()):
+            price = prices.get(mk)
+            if not price:
+                if time.time() >= g["deadline"] + 3600:   # 상장폐지 등으로 값이 끊기면 버림
+                    del monkeys[mk]
+                continue
+            if not (price >= g["tp"] or price <= g["sl"] or time.time() >= g["deadline"]):
+                continue
+            pct = (price * (1 - SHADOW_SLIPPAGE) * (1 - FEE_RATE) / g["unit"] - 1) * 100
+            del monkeys[mk]
+            self.monkey_record("monkey", pct)
+            done = True
+        if done:
+            save_state(self.state)
+
+    def monkey_view(self):
+        st = self.state.get("monkeyStats") or {}
+        def side(k):
+            b = st.get(k)
+            if not b or not b["n"]:
+                return None
+            r = b.get("recent") or []
+            return {"n": b["n"], "wins": b["wins"], "avgPct": round(b["sumPct"] / b["n"], 3),
+                    "recentN": len(r), "recentAvg": round(sum(r) / len(r), 3) if r else None}
+        o, m = side("ours"), side("monkey")
+        if not o and not m:
+            return None
+        return {"ours": o, "monkey": m, "open": len(self.state.get("monkeys") or {})}
+
     def exits_view(self):
         out = []
         for r in EXIT_RULES:
@@ -2305,6 +2376,7 @@ class Bot:
                      "ai": self.state.get("aiReport"),
                      "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
                      "hourStats": self.hours_view(),
+                     "monkeyStats": self.monkey_view(),
                      "specStats": self.spec_view(),
                      "execStats": [{"kind": k, "n": v["n"], "avgSlip": round(v["sumSlip"] / v["n"], 3), "worse": v["worse"],
                                     "avgTpGap": round(v["sumTpGap"] / v["n"], 3) if k == "sell:익절" else None}
@@ -2536,6 +2608,10 @@ class Bot:
                 self.manage_positions()
                 self.manage_ghosts()
                 self.manage_hold_ghosts()
+                try:
+                    self.manage_monkeys()
+                except Exception as e:
+                    log(f"[경고] 원숭이 기준선 추적 실패: {e}")
                 self.gate_check()
                 if not self.error:
                     self.scan_entries()
