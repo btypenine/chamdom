@@ -1288,12 +1288,15 @@ class Bot:
             st["wins"] += 1 if pnl > 0 else 0
 
     def cond_weights(self):
-        """실전 거래당 순익이 좋은 조건일수록 가중치↑ (0.3~3배)"""
-        w = {}
-        for name, st in self.state.get("condStats", {}).items():
-            if st["n"] >= COND_LEARN_MIN:
-                w[name] = min(3.0, max(0.3, 1 + (st["sumPct"] / st["n"]) / 0.3))
-        return w
+        """실전 거래당 순익이 좋은 조건일수록 가중치↑ (0.3~3배)
+        기준은 '0%'가 아니라 '전체 조건 평균' — 모든 조건이 손실이어도 상대적으로 나은 조건을 더 자주 시도함
+        (절대 기준이면 전부 0.3배 하한에 붙어 균등 = 학습이 사실상 꺼짐)"""
+        cs = {k: v for k, v in self.state.get("condStats", {}).items() if v.get("n", 0) >= COND_LEARN_MIN}
+        tot_n = sum(v["n"] for v in cs.values())
+        if not tot_n:
+            return {}
+        base = sum(v["sumPct"] for v in cs.values()) / tot_n
+        return {name: min(3.0, max(0.3, 1 + (st["sumPct"] / st["n"] - base) / 0.3)) for name, st in cs.items()}
 
     def rule_open(self, market, spec):
         """채택한 규칙을 장부에 등록 (이미 있으면 그대로)"""
@@ -2267,6 +2270,7 @@ class Bot:
         else:
             state, msg = "running", self.summary()
         lg = self.ledger
+        cw = self.cond_weights()
         data.update({"phase": "", "activity": list(ACTIVITY)[-40:], "positions": self.positions_detail(),
                      "cooldownUntil": lg["cooldownUntil"] * 1000, "nextOrder": round(self.order_size()),
                      "canEnter": self.can_enter()[1] or "가능", "lastOptimize": self.state["lastOptimize"] * 1000})
@@ -2293,7 +2297,8 @@ class Bot:
                      "userRequests": self.state.get("userRequests", [])[-40:],
                      "explore": EXPLORE_MODE,
                      "role": self.cfg.get("ROLE", "owner"), "updateChannel": self.cfg.get("UPDATE_CHANNEL", "main"),
-                     "condStats": [{"name": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3)}
+                     "condStats": [{"name": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
+                                    "weight": round(cw[k], 2) if k in cw else None}
                                    for k, v in self.state.get("condStats", {}).items() if v["n"]],
                      "cooling": sorted(m.split("-")[1] for m, t in self.state.get("coolMarkets", {}).items() if t > time.time()),
                      "report": self.state["lastReport"],
