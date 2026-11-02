@@ -321,7 +321,8 @@
       "pr": "https://github.com/btypenine/chamdom/pull/27",
       "branch": "ai/20261102-cond-relative",
       "createdAt": "2026-11-02T20:58:00+09:00",
-      "status": "pending"
+      "status": "merged",
+      "mergedAt": "2026-11-02T21:38:00+09:00"
     }
   ]
 }
