@@ -1037,6 +1037,18 @@ def gate_reach(bot, mk, price, ctx):
     return tp > reach * REACH_X, f"{mk.split('-')[1]} 익절 +{tp:.1f}% · 보유시간 기대 움직임 {reach:.2f}% (익절폭이 {tp / reach:.1f}배, 기준 {REACH_X:.1f}배 초과)"
 
 
+BIG_TP_PCT = 1.5                 # 큰 익절폭 관문: 전략 익절폭이 이 % 이상이면 막음 (11-02 실전·검증 374건: 익절 +1.5% 이상 253건 거래당 -0.47% vs 미만 121건 -0.25%,
+                                 # 한 규칙 쏠림 빼도 -0.64%대 vs -0.08~-0.48% → 같은 방향. 최근 60건도 -1.00% vs -0.56%)
+
+
+def gate_big_tp(bot, mk, price, ctx):
+    """실패 원인 1위 '보유시간 안에 목표 미도달' 대응 — 힘 부족(종목 움직임 대비)과 달리 익절폭 자체만 봄. 관찰로 시작"""
+    tp = (ctx or {}).get("tpPct")
+    if tp is None:
+        return False, "익절폭 기록 없음"
+    return tp >= BIG_TP_PCT, f"{mk.split('-')[1]} 익절 +{tp:g}% (기준 +{BIG_TP_PCT:g}% 이상)"
+
+
 # entry=True 관문은 1분마다가 아니라 매수 신호가 날 때마다 그 종목 기준으로 확인: fn(bot, 종목, 현재가, ctx)
 MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
@@ -1050,6 +1062,7 @@ MARKET_GATES = [
     {"id": "breadth", "name": "시장 폭 약세", "desc": f"거래 대상 종목 중 {BREADTH_DOWN_FRAC * 100:.0f}% 이상이 최근 {BREADTH_MIN}분 하락 중이면 사지 않음(알트 동반 하락)", "fn": gate_breadth, "entry": True},
     {"id": "coin_trend", "name": "종목 하락 추세", "desc": f"그 종목이 최근 {COIN_TREND_MIN}분 {COIN_TREND_PCT}% 이하로 밀려 있으면 사지 않음(혼자 흘러내리는 코인 눌림 매수 방지)", "fn": gate_coin_trend, "entry": True},
     {"id": "reach", "name": "힘 부족", "desc": f"그 종목 최근 {REACH_MIN}분 움직임으로 본 보유시간 기대 움직임보다 익절폭이 {REACH_X:.1f}배 넘게 크면 사지 않음(목표 미도달 방지)", "fn": gate_reach, "entry": True},
+    {"id": "big_tp", "name": "큰 익절폭", "desc": f"전략의 익절폭이 +{BIG_TP_PCT:g}% 이상이면 사지 않음(작은 목표가 실전에서 덜 짐)", "fn": gate_big_tp, "entry": True},
 ]
 
 # ---- 청산 판단 (보유 중) — 관문과 같은 '관찰 → 승인 → 적용' 구조 ----
@@ -1753,7 +1766,8 @@ class Bot:
             if series.signal(spec)[-1]:
                 price = self.upbit.prices([mk]).get(mk)
                 if price:
-                    ctx = {"signalPrice": series.c[-1], "entryVol": round(avg_range_pct(series), 4)}
+                    ctx = {"signalPrice": series.c[-1], "entryVol": round(avg_range_pct(series), 4),
+                           "tpPct": spec.get("tp", TARGET_NET_PCT)}
                     if len(series.c) > REACH_MIN:         # 힘 부족 관문용: 평균|1분 변화| × √보유분
                         mv = sum(abs(series.c[k] / series.c[k - 1] - 1) for k in range(len(series.c) - REACH_MIN, len(series.c))) / REACH_MIN * 100
                         ctx["reachPct"] = round(mv * spec["hold"] ** 0.5, 3)
