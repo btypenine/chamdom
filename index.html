@@ -1100,6 +1100,22 @@ function renderMore(s, stale) {
       + (r.recentN >= 3 && r.recentN < r.n ? ` · 최근 ${r.recentN}건 ${pctTxt(r.recentAvg)}p (${r.recentBetter}건 더 나음)` : "");
     gbox.append(el);
   }
+  // 관문 겹침: 매수 순간 관찰 중 관문이 몇 개 동시에 감지했는지별 성적 (분석 전용)
+  const ovl = Array.isArray(s.overlapStats) ? s.overlapStats : [];
+  if (ovl.length) {
+    $("gateCard").hidden = false;
+    const el = document.createElement("div"); el.className = "li stack";
+    el.innerHTML = `<div class="head-row"><b>관문 겹침 성적</b><span class="gate-mode">분석</span></div><div class="sub d"></div>`;
+    el.querySelector(".d").textContent = "매수 순간 관찰 중 관문이 몇 개 동시에 감지했는지별 거래당 성적 (실전·검증 합산, 매매 영향 없음)";
+    for (const o of ovl) {
+      const row = document.createElement("div"); row.className = "num st";
+      row.textContent = `${o.hits >= 3 ? "3개 이상" : o.hits + "개"} 감지: ${o.n}건 · 승률 ${Math.round(o.wins / o.n * 100)}% · 거래당 ${pctTxt(o.avgPct)}`
+        + (o.recentN >= 5 && o.recentN < o.n ? ` · 최근 ${o.recentN}건 ${pctTxt(o.recentAvg)}` : "");
+      if (o.n < 20) row.style.opacity = "0.6";
+      el.append(row);
+    }
+    gbox.append(el);
+  }
   renderApprovals();
   renderRequests();
   renderTiles();

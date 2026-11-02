@@ -1077,6 +1077,7 @@ BTC_EXIT_PCT = -0.5              # 매수 후 BTC가 이만큼 빠졌고 포지�
 
 TP_LIMIT_MAX_MIN = 400  # 지정가 익절 관찰: 보유가 이보다 길면 1분봉 조회량이 커서 건너뜀(분석 전용)
 EXIT_RECENT_N = 20     # 청산 규칙 '최근 N건' 흐름 표시용(판정 기준은 누적 그대로)
+OVERLAP_RECENT = 30    # 관문 겹침 성적 '최근 N건' 흐름 표시용(분석 전용)
 
 
 def exit_btc_drop(bot, pos, price):
@@ -1559,6 +1560,7 @@ class Bot:
                 self.exit_record(rid, mk_["pct"], actual_pct, mk_["at"])   # 관찰: 그때 정리했다면 vs 실제
         if "gateHits" in pos:                             # 관문 기능 이후 산 거래만 관문 성적에 반영
             self.gate_record(pos["gateHits"], pnl / pos["cost"] * 100, pos["at"])
+            self.overlap_record(pos["gateHits"], pnl / pos["cost"] * 100)
         analysis = None
         if pnl <= 0:
             analysis = self.post_mortem(market, pos, price, reason, pnl)
@@ -1568,6 +1570,7 @@ class Bot:
                    "heldMin": round((time.time() * 1000 - pos["at"]) / 60000, 1),
                    "btWinrate": pos.get("btWinrate"), "mart": pos.get("mart"),
                    "cause": analysis["label"] if analysis else None, "paper": shadow,
+                   "gates": pos.get("gateHits"),
                    "details": [c["detail"] for c in analysis["causes"]] if analysis else None})
         del tl[:-AI_TRADE_LOG]
         if pnl <= 0:
@@ -1577,6 +1580,29 @@ class Bot:
             + ("" if pnl > 0 else f" · {LOSS_COOLDOWN_MIN}분 대기"))
         self._record("sell", market, price, proceeds, reason, round(pnl), analysis, paper=shadow)
         self.upload_status()
+
+    def overlap_record(self, hits, pct):
+        """분석 전용: 매수 순간 '관찰 중 관문이 몇 개 동시에 감지했는지'별 실전·검증 성적 — 매매에는 영향 없음.
+        관문 하나하나는 약해도 여러 개가 겹칠 때만 나쁜지 보려는 것"""
+        try:
+            k = str(min(len(hits or []), 3))
+            st = self.state.setdefault("overlapStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "recent": []})
+            st["n"] += 1
+            st["wins"] += 1 if pct > 0 else 0
+            st["sumPct"] += pct
+            st["recent"] = (st.get("recent", []) + [round(pct, 3)])[-OVERLAP_RECENT:]
+        except Exception as e:
+            log(f"[경고] 관문 겹침 성적 기록 실패: {e}")
+
+    def overlap_view(self):
+        out = []
+        for k, v in sorted((self.state.get("overlapStats") or {}).items()):
+            if not v.get("n"):
+                continue
+            r = v.get("recent") or []
+            out.append({"hits": int(k), "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
+                        "recentN": len(r), "recentAvg": round(sum(r) / len(r), 3) if r else None})
+        return out or None
 
     def hour_record(self, pos, pnl, pct):
         """분석 전용: 매수한 시각(한국시간)별 실전 성적 누적 — 매매에는 영향 없음"""
@@ -2377,6 +2403,7 @@ class Bot:
                      "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
                      "hourStats": self.hours_view(),
                      "monkeyStats": self.monkey_view(),
+                     "overlapStats": self.overlap_view(),
                      "specStats": self.spec_view(),
                      "execStats": [{"kind": k, "n": v["n"], "avgSlip": round(v["sumSlip"] / v["n"], 3), "worse": v["worse"],
                                     "avgTpGap": round(v["sumTpGap"] / v["n"], 3) if k == "sell:익절" else None}
