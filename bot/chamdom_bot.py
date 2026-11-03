@@ -106,7 +106,9 @@ LIVE_DAY_MIN_WINRATE = 0.50      # 승률이 이보다 낮으면 다음 날 9시
 RULE_EVAL_TRADES = 5             # 이 횟수를 채울 때까지 규칙을 바꾸지 않음, 이후 판정
 RULE_RECHECK = (10, 20, 40)      # 이 횟수마다 다시 판정 (5회는 표본이 작아 운 영향 큼)
 RULE_PROMOTE_MIN_AVG = 0.15      # 실주문 자격(통과): 거래당 +0.15% 이상 — 0% 근처는 체결 비용·운 차이로 실전에서 뒤집히기 쉬움
-RULE_POST_CHECK = 5              # 통과 '이후' 실주문 5회마다 다시 봄 → 거래당 0% 이하면 다시 검증(모의)로 내림
+RULE_POST_CHECK = 5              # (참고용) 통과 '이후' 성적 집계 단위
+RULE_OUT_WINDOW = 5              # 3아웃제: 규칙마다 5회 묶음으로 성적을 봄 → 그 5회 거래당 0% 이하면 '1아웃'
+RULE_OUT_LIMIT = 3               # 3아웃이면 퇴출(다시 채택 안 함). 1·2아웃은 실주문 자격만 잃고 모의로 계속 시험
 RULE_BOOK_MAX = 300              # 장부에 남길 최대 규칙 수 (퇴출 규칙부터 정리)
 UNIVERSE_DAYS = 30               # 거래대금 순위 기간(최근 30일)
 UNIVERSE_MIN_LISTED_DAYS = 90    # 상장 90일 미만 종목 제외
@@ -1263,32 +1265,46 @@ class Bot:
         n = rb["trades"]
         avg = rb["sumPct"] / n
         coin = rb["market"].split("-")[1]
-        post = rb.get("post") or {}
-        post_bad = (rb["status"] == "proven" and post.get("n", 0) >= RULE_POST_CHECK
-                    and post["n"] % RULE_POST_CHECK == 0 and post["sumPct"] / post["n"] <= 0)
-        if post_bad:
-            rb["status"] = "testing"
-            rb["demoted"] = rb.get("demoted", 0) + 1
-            log(f"[규칙 판정] {coin} {rb['id']} 통과 이후 실주문 {post['n']}회 거래당 {post['sumPct'] / post['n']:+.2f}% "
-                f"→ 다시 검증(모의)로 내림 (실돈 주문 중지, 시험은 계속)")
-        elif n == RULE_EVAL_TRADES or n in RULE_RECHECK or (n > RULE_EVAL_TRADES and rb["status"] == "proven" and avg <= 0):
-            old = rb["status"]
-            if avg >= RULE_PROMOTE_MIN_AVG:
+        # 3아웃제: 5회 묶음마다 성적표 → 나쁘면 1아웃, 3아웃이면 퇴출 (규칙 하나하나를 '선수'처럼 관리)
+        win = rb.get("win")
+        if win is None:                               # 이전 버전 규칙: 지금 묶음에 든 횟수만큼 평균으로 채워 시작
+            k = (n - 1) % RULE_OUT_WINDOW
+            win = {"n": k, "sumPct": round((rb["sumPct"] - pct) / (n - 1) * k, 4) if n > 1 else 0.0}
+        win["n"] += 1
+        win["sumPct"] = round(win["sumPct"] + pct, 4)
+        rb["win"] = win
+        old = rb["status"]
+        proven_sour = old == "proven" and avg <= 0    # 실주문 중 누적이 0% 이하로 꺾이면 묶음을 기다리지 않고 바로 1아웃
+        if win["n"] >= RULE_OUT_WINDOW or proven_sour:
+            wavg = win["sumPct"] / win["n"]
+            wn = win["n"]
+            rb["win"] = {"n": 0, "sumPct": 0.0}
+            if wavg <= 0 or proven_sour:
+                rb["outs"] = rb.get("outs", 0) + 1
+                if rb["outs"] >= RULE_OUT_LIMIT:
+                    rb["status"] = "retired"
+                    verdict = f"{rb['outs']}아웃 → 퇴출(다시 채택 안 함)"
+                else:
+                    rb["status"] = "testing"
+                    if old == "proven":
+                        rb["demoted"] = rb.get("demoted", 0) + 1
+                    verdict = (f"{rb['outs']}아웃 → " + ("실주문 자격 잃고 " if old == "proven" else "")
+                               + f"검증(모의) 계속 ({RULE_OUT_LIMIT}아웃이면 퇴출)")
+            elif avg >= RULE_PROMOTE_MIN_AVG:
                 rb["status"] = "proven"
-            elif avg <= 0:
-                rb["status"] = "retired"
+                verdict = "계속 사용(실주문 자격)" + (f" · 아웃 {rb['outs']}개" if rb.get("outs") else "")
             else:
-                rb["status"] = "testing"          # 플러스지만 여유가 작음 → 모의로 더 지켜봄
-            verdict = {"proven": "계속 사용(실주문 자격)", "retired": "퇴출(다시 채택 안 함)",
-                       "testing": f"플러스지만 +{RULE_PROMOTE_MIN_AVG}% 미만 → 다음 판정까지 검증(모의) 계속"}[rb["status"]]
-            log(f"[규칙 판정] {coin} {rb['id']} 실전·검증 {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}% "
-                f"(백테스트 예상 {rb.get('btEdge') or 0:+.2f}%) → {verdict}")
+                rb["status"] = "testing"          # 이번 묶음은 플러스지만 누적 여유가 작음 → 모의로 더 지켜봄
+                verdict = f"이번 묶음 플러스, 누적 +{RULE_PROMOTE_MIN_AVG}% 미만 → 검증(모의) 계속"
+            log(f"[규칙 판정] {coin} {rb['id']} 이번 {wn}회 거래당 {wavg:+.2f}% · 누적 {n}회 승률 {rb['wins'] / n * 100:.0f}% "
+                f"거래당 {avg:+.2f}% (백테스트 예상 {rb.get('btEdge') or 0:+.2f}%) → {verdict}")
             if rb["status"] == "retired" and old != "retired" and self.state["strategies"].get(rb["market"], {}).get("rid") == rid:
                 del self.state["strategies"][rb["market"]]
         else:
-            left = RULE_EVAL_TRADES - n
+            left = RULE_OUT_WINDOW - win["n"]
+            outs = rb.get("outs", 0)
             log(f"[규칙 기록] {coin} {rb['id']} {'검증(모의)' if pos.get('paper') else '실전'} {n}회 · 승률 {rb['wins'] / n * 100:.0f}% · 거래당 {avg:+.2f}%"
-                + (f" · 판정까지 {left}회" if left > 0 else ""))
+                + f" · 판정까지 {left}회" + (f" · {outs}아웃" if outs else ""))
         self.trim_rulebook()
         save_state(self.state)
 
@@ -1344,7 +1360,7 @@ class Bot:
             rb = self.state["ruleBook"].get(cur.get("rid") or rule_id(market, cur))
             if rb and rb["status"] == "proven":
                 return cur
-            if rb and rb["status"] == "testing" and rb["trades"] < RULE_EVAL_TRADES:
+            if rb and rb["status"] == "testing" and rb.get("outs", 0) < RULE_OUT_LIMIT:
                 # 6시간 동안 한 번도 신호가 없던 규칙은 붙잡고 있지 않음 (기록은 장부에 남음)
                 # 단, 이 규칙으로 산 코인을 아직 들고 있으면 신호가 났던 것 → 유지 (안 그러면 매도 후 1/5회에서 끊겨 판정 못 함)
                 holding = (self.state["positions"].get(market) or {}).get("rid") == rb["id"]
@@ -1363,7 +1379,7 @@ class Bot:
             # 실전 1~4회에서 끊긴 검증 중 규칙(종목이 상위권에서 잠시 빠졌다 돌아온 경우 등)은 5회를 마저 채움
             for rb in self.state["ruleBook"].values():
                 if (rb["market"] == market and rb["status"] == "testing" and rb.get("spec")
-                        and 0 < rb["trades"] < RULE_EVAL_TRADES):
+                        and rb["trades"] > 0 and rb.get("outs", 0) < RULE_OUT_LIMIT):
                     if best is None or (rb.get("lastAt") or 0) > (best[1].get("lastAt") or 0):
                         best = (0, rb)
         if best:
@@ -1430,7 +1446,7 @@ class Bot:
             if kept:
                 rb = self.rule_open(mk, kept)
                 chosen[mk] = kept
-                why = "실전에서 통한 규칙" if rb["status"] == "proven" else f"실전 검증 중 {rb['trades']}/{RULE_EVAL_TRADES}회"
+                why = "실전에서 통한 규칙" if rb["status"] == "proven" else f"실전 검증 중 {rb['trades']}회 · {rb.get('outs', 0)}아웃"
                 log(f"  유지 {mk.split('-')[1]}: {rb['desc']} ({why})")
                 continue
             self.push_progress(f"전략 백테스트 {idx}/{len(markets)} ({mk.split('-')[1]})")
@@ -2481,6 +2497,7 @@ class Bot:
                          "avgPct": round(r["sumPct"] / n, 3) if n else None, "pnl": r["pnl"],
                          "btEdge": r.get("btEdge"), "btWinrate": r.get("btWinrate"),
                          "postN": (r.get("post") or {}).get("n", 0),
+                         "outs": r.get("outs", 0), "winN": (r.get("win") or {}).get("n", n % RULE_OUT_WINDOW),
                          "postAvg": round(r["post"]["sumPct"] / r["post"]["n"], 3) if (r.get("post") or {}).get("n") else None,
                          "active": self.state["strategies"].get(r["market"], {}).get("rid") == r["id"],
                          "lastAt": r.get("lastAt") or r["firstAt"]})
@@ -2636,7 +2653,7 @@ class Bot:
             f"마틴게일 최대 {self.cfg['MARTINGALE_MAX_LEVEL']}단계 · 하루 손실 한도 {self.cfg['DAILY_LOSS_LIMIT']:,}원")
         if EXPLORE_MODE:
             log(f"탐험 모드: 상위 {TOP_N}종목 · 1회 {EXPLORE_ORDER_KRW:,}원 고정 · 마틴게일 끔 · 동시 보유 최대 {MAX_OPEN_POSITIONS} · "
-                f"손실 난 종목만 {LOSS_COOLDOWN_MIN}분 정지 · 규칙은 실전 {RULE_EVAL_TRADES}회로 판정")
+                f"손실 난 종목만 {LOSS_COOLDOWN_MIN}분 정지 · 규칙은 5회마다 판정·{RULE_OUT_LIMIT}아웃 퇴출")
         self.roll_day()
         uni = self.state["universe"]
         if any(m.split("-")[1] in STABLE_COINS for m in uni["markets"]):

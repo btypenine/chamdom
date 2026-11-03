@@ -1254,7 +1254,11 @@ function renderMore(s, stale) {
     el.innerHTML = `<span><b></b> <span class="tag"></span><br><span class="sub d"></span></span><span class="num r"></span>`;
     el.querySelector("b").textContent = r.coin + (r.active ? " ●" : "");
     const tag = el.querySelector(".tag");
-    tag.textContent = r.status === "proven" ? "실전 통과" : r.status === "retired" ? "퇴출" : `검증 중 ${r.trades}/5`;
+    // 3아웃제: 5회 묶음마다 나쁘면 1아웃, 3아웃이면 퇴출
+    const outs = r.outs || 0, winN = r.winN != null ? r.winN : r.trades % 5;
+    const outTxt = outs ? ` · ${"●".repeat(outs)}${"○".repeat(Math.max(0, 3 - outs))} ${outs}아웃` : "";
+    tag.textContent = (r.status === "proven" ? "실전 통과" : r.status === "retired" ? "퇴출" : `검증 중 ${winN}/5`) + outTxt;
+    tag.title = "5회마다 성적표: 그 5회 거래당 0% 이하면 1아웃, 3아웃이면 퇴출 (1·2아웃은 모의로 계속 시험)";
     tag.style.cssText = "font-size:11px;padding:1px 6px;border-radius:8px;" + (r.status === "proven" ? "background:#1f6f43;color:#d6ffe6" : r.status === "retired" ? "background:#5a2323;color:#ffd6d6" : "background:#2e333c;color:#cfd3da");
     el.querySelector(".d").textContent = r.desc;
     el.querySelector(".r").textContent = r.trades
