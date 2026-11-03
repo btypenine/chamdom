@@ -393,6 +393,17 @@
    "createdAt": "2026-11-03T23:58:00+09:00",
    "status": "pending",
    "requestId": "req-w0nttflbpc09"
+  },
+  {
+   "id": "ai-20261104-btc-quiet",
+   "title": "BTC 잠잠함 관문 (관찰)",
+   "summary": "BTC가 최근 60분 고저폭 0.4% 미만으로 거의 안 움직일 때의 매수를 '막았을 거래'로 따로 잼. 관찰로 시작, 매매 영향 없음.",
+   "why": "BTC 급락 때 막았을 30건 +0.31% vs 통과 -0.47%, 변동 큰 시간대 43건 +0.41% vs -0.52% → 움직이는 장이 오히려 나음. 실패 원인 1위가 '힘 부족 시간 초과'(144건)라 잠잠한 장이 원인인지 확인.",
+   "risk": "관찰 전용이라 매매 영향 없음. 기준 0.4%는 첫 추정값.",
+   "pr": "https://github.com/btypenine/chamdom/pull/34",
+   "branch": "ai/20261104-btc-quiet",
+   "createdAt": "2026-11-04T02:58:00+09:00",
+   "status": "pending"
   }
  ]
 }
