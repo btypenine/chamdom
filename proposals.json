@@ -358,6 +358,18 @@
    "branch": "ai/20261103-gate-evidence",
    "createdAt": "2026-11-03T08:55:00+09:00",
    "status": "pending"
+  },
+  {
+   "id": "ai-20261103-monkey-pair",
+   "title": "원숭이 기준선 '짝 비교' 추가 (분석 전용)",
+   "summary": "우리 매수마다 같은 순간 산 원숭이 1건과 짝지어 '우리 − 원숭이' 차이를 쌓고, 규칙 장부 카드에 짝 비교 줄(근거 세기 z 포함)을 표시함.",
+   "why": "'원숭이보다 못한가?' 요청에 더 빨리·정확히 답하기 위함. 지금은 평균끼리 따로 비교해 시장 공통 움직임이 섞임(현재 우리 6회 -0.07% vs 원숭이 8회 +0.46%, 표본 작음)",
+   "risk": "분석 기록·화면만 변경, 매매 영향 없음",
+   "pr": "https://github.com/btypenine/chamdom/pull/31",
+   "branch": "ai/20261103-monkey-pair",
+   "createdAt": "2026-11-03T11:58:00+09:00",
+   "status": "pending",
+   "requestId": "req-vzd1oqvthjs7"
   }
  ]
 }
