@@ -1069,6 +1069,20 @@ function renderMore(s, stale) {
   $("gateCard").hidden = !gs.length;
   const gbox = $("gates"); gbox.textContent = "";
   const pctTxt = (v) => v == null ? "-" : (v > 0 ? "+" : "") + Number(v).toFixed(2) + "%";
+  // 근거 세기: 최근 거래 기록의 거래당 손익 흩어짐(표준편차)으로 '차이가 우연일 수 있는지'를 대략 잼 (z = 차이 ÷ 표준오차)
+  const tradeSd = (() => {
+    const xs = (Array.isArray(s.tradeLog) ? s.tradeLog : []).filter(t => t && t.cost > 0 && t.pnl != null).map(t => t.pnl / t.cost * 100);
+    if (xs.length < 10) return 1.5;
+    const mu = xs.reduce((a, b) => a + b, 0) / xs.length;
+    return Math.max(0.3, Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / xs.length));
+  })();
+  const evidTxt = (diff, n1, n2) => {
+    if (diff == null || !(n1 > 0)) return "";
+    const z = diff / (tradeSd * Math.sqrt(1 / n1 + (n2 > 0 ? 1 / n2 : 0)));
+    const a = Math.abs(Math.round(z * 10) / 10);
+    if (a < 1) return ` · 차이는 우연 수준(z ${z.toFixed(1)})`;
+    return ` · 이 규칙이 ${z > 0 ? "도움" : "손해"} 쪽 · 근거 ${a < 2 ? "약함" : "있음"}(z ${z > 0 ? "+" : ""}${z.toFixed(1)})`;
+  };
   for (const g of gs) {
     const el = document.createElement("div"); el.className = "li stack";
     el.innerHTML = `<div class="head-row"><b></b><span class="gate-mode"></span></div><div class="gate-now"></div><div class="sub d"></div><div class="num st"></div>`;
@@ -1081,7 +1095,8 @@ function renderMore(s, stale) {
     el.querySelector(".d").textContent = g.desc;
     const left = Math.max(0, (g.nextEval || 20) - g.blockedN);
     el.querySelector(".st").textContent = `막았을 거래 ${g.blockedN}건 ${pctTxt(g.blockedAvg)}/건 vs 통과 거래 ${g.passedN}건 ${pctTxt(g.passedAvg)}/건`
-      + ` · ${g.episodes}개 시간대` + (left ? ` · 판정까지 ${left}건` : "") + (g.ghosts ? ` · 가상 거래 추적 ${g.ghosts}건` : "");
+      + ` · ${g.episodes}개 시간대` + (left ? ` · 판정까지 ${left}건` : "") + (g.ghosts ? ` · 가상 거래 추적 ${g.ghosts}건` : "")
+      + (g.blockedAvg != null && g.passedAvg != null ? evidTxt(g.passedAvg - g.blockedAvg, g.blockedN, g.passedN) : "");
     gbox.append(el);
   }
 
@@ -1097,7 +1112,8 @@ function renderMore(s, stale) {
     el.querySelector(".d").textContent = r.desc;
     const left = Math.max(0, (r.nextEval || 20) - r.n);
     el.querySelector(".st").textContent = `조기 정리했다면 ${r.n}건 평균 ${pctTxt(r.avgDiff)}p (${r.better}건 더 나음) · ${r.episodes}개 시간대` + (left ? ` · 판정까지 ${left}건` : "") + (r.ghosts ? ` · 가상 추적 ${r.ghosts}건` : "")
-      + (r.recentN >= 3 && r.recentN < r.n ? ` · 최근 ${r.recentN}건 ${pctTxt(r.recentAvg)}p (${r.recentBetter}건 더 나음)` : "");
+      + (r.recentN >= 3 && r.recentN < r.n ? ` · 최근 ${r.recentN}건 ${pctTxt(r.recentAvg)}p (${r.recentBetter}건 더 나음)` : "")
+      + evidTxt(r.avgDiff, r.n, 0);
     gbox.append(el);
   }
   // 관문 겹침: 매수 순간 관찰 중 관문이 몇 개 동시에 감지했는지별 성적 (분석 전용)
