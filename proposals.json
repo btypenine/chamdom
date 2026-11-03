@@ -357,7 +357,7 @@
       "pr": "https://github.com/btypenine/chamdom/pull/30",
       "branch": "ai/20261103-gate-evidence",
       "createdAt": "2026-11-03T08:55:00+09:00",
-      "status": "pending"
+      "status": "merged"
     },
     {
       "id": "ai-20261103-monkey-pair",
@@ -368,7 +368,7 @@
       "pr": "https://github.com/btypenine/chamdom/pull/31",
       "branch": "ai/20261103-monkey-pair",
       "createdAt": "2026-11-03T11:58:00+09:00",
-      "status": "pending",
+      "status": "merged",
       "requestId": "req-vzd1oqvthjs7"
     },
     {
@@ -380,7 +380,7 @@
       "pr": "https://github.com/btypenine/chamdom/pull/32",
       "branch": "ai/20261103-btc-pump",
       "createdAt": "2026-11-03T20:55:00+09:00",
-      "status": "pending"
+      "status": "merged"
     }
   ]
 }
