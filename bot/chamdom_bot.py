@@ -912,6 +912,20 @@ def gate_btc_trend(bot):
     return chg <= BTC_TREND_PCT, f"BTC {BTC_TREND_MIN}분 {chg:+.2f}% (기준 {BTC_TREND_PCT}%)"
 
 
+BTC_PUMP_MIN = 30               # BTC 급등 추격 관문: 최근 몇 분
+BTC_PUMP_PCT = 0.5              # BTC가 이 % 이상 올라 있으면 막음 (11-03 실전·검증: BTC 급락 관문이 '막았을' 29건 거래당 +0.20% vs 통과 317건 -0.48%
+                                # → 급락 직후 매수가 오히려 나았음. 반대로 BTC가 막 뛴 직후 알트 추격 매수가 나쁜지 관찰로 잼)
+
+
+def gate_btc_pump(bot):
+    """BTC가 30분 새 급히 오른 직후의 매수를 따로 잼 — 실패 원인 '신호 늦게 따라감'·'서서히 하락'과 겹치는지 확인용. 관찰로 시작"""
+    c = bot.btc_closes()
+    if len(c) < BTC_PUMP_MIN + 1:
+        return False, "BTC 시세 확인 중"
+    chg = (c[-1] / c[-1 - BTC_PUMP_MIN] - 1) * 100
+    return chg >= BTC_PUMP_PCT, f"BTC {BTC_PUMP_MIN}분 {chg:+.2f}% (기준 +{BTC_PUMP_PCT}%)"
+
+
 BTC_DAY_HOURS = 24              # BTC 하루 약세 관문: 최근 몇 시간 변화를 볼지(60분봉)
 BTC_DAY_PCT = -3.0              # 이 % 이하로 빠져 있으면 막음
 BTC_DAY_REFRESH = 600           # 60분봉은 10분마다만 다시 받음
@@ -1056,6 +1070,7 @@ MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
     {"id": "btc_trend", "name": "BTC 하락 추세", "desc": f"BTC가 최근 {BTC_TREND_MIN}분 동안 {BTC_TREND_PCT}% 이하로 밀려 있으면 새로 사지 않음", "fn": gate_btc_trend},
     {"id": "btc_day", "name": "BTC 하루 약세", "desc": f"BTC가 최근 {BTC_DAY_HOURS}시간 {BTC_DAY_PCT}% 이하로 빠져 있으면 새로 사지 않음(악재로 하루 내내 밀리는 장)", "fn": gate_btc_day},
+    {"id": "btc_pump", "name": "BTC 급등 추격", "desc": f"BTC가 최근 {BTC_PUMP_MIN}분 +{BTC_PUMP_PCT}% 이상 뛰어 있으면 새로 사지 않음(급등 직후 추격 방지)", "fn": gate_btc_pump},
     {"id": "event", "name": "경제 일정", "desc": "FOMC·미국 물가(CPI) 발표 등 정해진 일정 앞뒤로 새로 사지 않음 (일정표: bot/events.json)", "fn": gate_event},
     {"id": "volatile_hours", "name": "변동 큰 시간대", "desc": "미국장 시작(23~00시)·유럽장 시작(17시)에는 새로 사지 않음", "fn": gate_volatile_hours},
     {"id": "dawn_hours", "name": "새벽 시간대", "desc": f"새벽 {DAWN_HOURS.start:02d}~{DAWN_HOURS.stop - 1:02d}시(한국시간)에는 새로 사지 않음", "fn": gate_dawn_hours},
