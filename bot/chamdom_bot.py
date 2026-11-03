@@ -1555,6 +1555,8 @@ class Bot:
         self.tp_limit_record(market, pos, reason, actual_pct)
         if pos.get("monkey"):                             # 원숭이 기준선: 같은 시각에 산 우리 거래 성적
             self.monkey_record("ours", actual_pct)
+            if isinstance(pos["monkey"], str):            # 짝 비교: 같은 순간 산 원숭이와 1:1로 묶어 차이를 잼
+                self.monkey_pair(pos["monkey"], "ours", actual_pct)
         for rid, mk_ in (pos.get("exitMarks") or {}).items():
             if self.exit_stat(rid)["mode"] != "active" or reason != next((r["name"] for r in EXIT_RULES if r["id"] == rid), ""):
                 self.exit_record(rid, mk_["pct"], actual_pct, mk_["at"])   # 관찰: 그때 정리했다면 vs 실제
@@ -2080,10 +2082,32 @@ class Bot:
         if not price:
             return
         unit = price * (1 + SHADOW_SLIPPAGE) / (1 - FEE_RATE)      # 검증 모의매매와 같은 비용 가정
+        pid = uuid.uuid4().hex[:8]
         monkeys[mk] = {"unit": unit, "tp": target_price(unit, spec.get("tp", TARGET_NET_PCT)),
                        "sl": unit * (1 + spec["sl"] / 100), "deadline": int(time.time()) + spec["hold"] * 60,
-                       "at": int(time.time() * 1000)}
-        self.state["positions"][market]["monkey"] = True
+                       "at": int(time.time() * 1000), "pair": pid}
+        self.state["positions"][market]["monkey"] = pid
+
+    def monkey_pair(self, pid, side, pct):
+        """짝 비교(분석 전용): 우리 거래와 같은 순간 산 원숭이 1건을 묶어 '우리 − 원숭이' 차이를 쌓음.
+        같은 시각이라 시장 전체 오르내림이 서로 지워져, 따로 평균 낸 비교보다 적은 표본으로도 실력 차이가 드러남"""
+        try:
+            pairs = self.state.setdefault("monkeyPairs", {})
+            cut = time.time() * 1000 - 2 * 86400 * 1000             # 짝이 끝내 안 맞으면(재시작·상장폐지) 이틀 뒤 버림
+            for k in [k for k, v in pairs.items() if v.get("at", 0) < cut]:
+                del pairs[k]
+            p = pairs.setdefault(pid, {"at": int(time.time() * 1000)})
+            p[side] = round(pct, 3)
+            if "ours" in p and "monkey" in p:
+                d = p["ours"] - p["monkey"]
+                del pairs[pid]
+                st = self.state.setdefault("monkeyPairStats", {"n": 0, "sumD": 0.0, "sumD2": 0.0, "recent": []})
+                st["n"] += 1
+                st["sumD"] += d
+                st["sumD2"] += d * d
+                st["recent"] = (st["recent"] + [round(d, 3)])[-MONKEY_RECENT:]
+        except Exception:
+            pass
 
     def monkey_record(self, side, pct):
         st = self.state.setdefault("monkeyStats", {})
@@ -2110,6 +2134,8 @@ class Bot:
             pct = (price * (1 - SHADOW_SLIPPAGE) * (1 - FEE_RATE) / g["unit"] - 1) * 100
             del monkeys[mk]
             self.monkey_record("monkey", pct)
+            if g.get("pair"):
+                self.monkey_pair(g["pair"], "monkey", pct)
             done = True
         if done:
             save_state(self.state)
@@ -2126,7 +2152,18 @@ class Bot:
         o, m = side("ours"), side("monkey")
         if not o and not m:
             return None
-        return {"ours": o, "monkey": m, "open": len(self.state.get("monkeys") or {})}
+        pair = None
+        ps = self.state.get("monkeyPairStats")
+        if ps and ps.get("n"):
+            n = ps["n"]
+            avg = ps["sumD"] / n
+            sd = math.sqrt(max(ps["sumD2"] / n - avg * avg, 0.0) * n / (n - 1)) if n > 1 else None
+            se = sd / math.sqrt(n) if sd else None
+            r = ps.get("recent") or []
+            pair = {"n": n, "avgDiff": round(avg, 3), "se": round(se, 3) if se else None,
+                    "z": round(avg / se, 2) if se else None,
+                    "recentN": len(r), "recentAvg": round(sum(r) / len(r), 3) if r else None}
+        return {"ours": o, "monkey": m, "open": len(self.state.get("monkeys") or {}), "pair": pair}
 
     def exits_view(self):
         out = []

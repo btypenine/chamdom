@@ -1211,6 +1211,21 @@ function renderMore(s, stale) {
       if (Math.min(mky.ours.n, mky.monkey.n) < 30) el.style.opacity = "0.6";
       gapRows.push(el);
     }
+    // 짝 비교: 같은 순간 산 우리 거래 1건 − 원숭이 1건 차이의 평균 (시장 전체 움직임이 지워져 더 정확)
+    const pr = mky.pair;
+    if (pr && pr.n) {
+      const el = document.createElement("div"); el.className = "li";
+      el.innerHTML = "<span></span><span class='num'></span>";
+      el.firstChild.textContent = "└ 짝 비교";
+      el.firstChild.style.whiteSpace = "nowrap";
+      const z = pr.z, az = z == null ? 0 : Math.abs(z);
+      const verdict = z == null ? "표본 부족" : az < 1 ? "차이는 우연 수준" : `원숭이보다 ${z > 0 ? "나은" : "못한"} 쪽 · ${az < 2 ? "근거 약함" : "근거 있음"}`;
+      el.lastChild.textContent = `${pr.n}쌍 · 거래당 ${pr.avgDiff >= 0 ? "+" : ""}${pr.avgDiff.toFixed(2)}%p · ${verdict}${z == null ? "" : `(z ${z >= 0 ? "+" : ""}${z.toFixed(1)})`}`;
+      el.lastChild.classList.add(pr.avgDiff >= 0 ? "up" : "down");
+      el.lastChild.title = "같은 순간에 산 우리 거래와 원숭이 거래를 1:1로 묶은 차이. 시장 전체가 오르내린 영향이 서로 지워져 따로 평균 낸 비교보다 정확함. 30쌍 미만이면 흐리게 표시";
+      if (pr.n < 30) el.style.opacity = "0.6";
+      gapRows.push(el);
+    }
   }
   if (gapRows.length) {
     const box = document.createElement("div");
