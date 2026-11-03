@@ -926,6 +926,22 @@ def gate_btc_pump(bot):
     return chg >= BTC_PUMP_PCT, f"BTC {BTC_PUMP_MIN}분 {chg:+.2f}% (기준 +{BTC_PUMP_PCT}%)"
 
 
+BTC_QUIET_MIN = 60              # BTC 잠잠함 관문: 최근 몇 분 1분봉 고저폭을 볼지
+BTC_QUIET_PCT = 0.4             # 그 고저폭이 이 % 미만이면 막음 (11-04 실전·검증: BTC 급락 관문이 '막았을' 30건 거래당 +0.31% vs 통과 329건 -0.47%,
+                                # 변동 큰 시간대 43건 +0.41% vs 316건 -0.52%, 실패 원인 1위 '힘 부족 시간 초과' 144건
+                                # → 시장이 움직일 때는 오히려 낫고, 잠잠할 때 목표까지 못 가는지 관찰로 잼)
+
+
+def gate_btc_quiet(bot):
+    """실패 원인 1위 '보유시간 안에 목표 미도달(힘 부족)' 대응 — BTC가 1시간 동안 거의 안 움직인 잠잠한 장의 매수를 따로 잼. 관찰로 시작"""
+    c = bot.btc_closes()
+    if len(c) < BTC_QUIET_MIN + 1:
+        return False, "BTC 시세 확인 중"
+    w = c[-1 - BTC_QUIET_MIN:]
+    rng = (max(w) / min(w) - 1) * 100
+    return rng < BTC_QUIET_PCT, f"BTC {BTC_QUIET_MIN}분 고저폭 {rng:.2f}% (기준 {BTC_QUIET_PCT}% 미만)"
+
+
 BTC_DAY_HOURS = 24              # BTC 하루 약세 관문: 최근 몇 시간 변화를 볼지(60분봉)
 BTC_DAY_PCT = -3.0              # 이 % 이하로 빠져 있으면 막음
 BTC_DAY_REFRESH = 600           # 60분봉은 10분마다만 다시 받음
@@ -1071,6 +1087,7 @@ MARKET_GATES = [
     {"id": "btc_trend", "name": "BTC 하락 추세", "desc": f"BTC가 최근 {BTC_TREND_MIN}분 동안 {BTC_TREND_PCT}% 이하로 밀려 있으면 새로 사지 않음", "fn": gate_btc_trend},
     {"id": "btc_day", "name": "BTC 하루 약세", "desc": f"BTC가 최근 {BTC_DAY_HOURS}시간 {BTC_DAY_PCT}% 이하로 빠져 있으면 새로 사지 않음(악재로 하루 내내 밀리는 장)", "fn": gate_btc_day},
     {"id": "btc_pump", "name": "BTC 급등 추격", "desc": f"BTC가 최근 {BTC_PUMP_MIN}분 +{BTC_PUMP_PCT}% 이상 뛰어 있으면 새로 사지 않음(급등 직후 추격 방지)", "fn": gate_btc_pump},
+    {"id": "btc_quiet", "name": "BTC 잠잠함", "desc": f"BTC가 최근 {BTC_QUIET_MIN}분 고저폭 {BTC_QUIET_PCT}% 미만으로 거의 안 움직이면 새로 사지 않음(목표 미도달 방지)", "fn": gate_btc_quiet},
     {"id": "event", "name": "경제 일정", "desc": "FOMC·미국 물가(CPI) 발표 등 정해진 일정 앞뒤로 새로 사지 않음 (일정표: bot/events.json)", "fn": gate_event},
     {"id": "volatile_hours", "name": "변동 큰 시간대", "desc": "미국장 시작(23~00시)·유럽장 시작(17시)에는 새로 사지 않음", "fn": gate_volatile_hours},
     {"id": "dawn_hours", "name": "새벽 시간대", "desc": f"새벽 {DAWN_HOURS.start:02d}~{DAWN_HOURS.stop - 1:02d}시(한국시간)에는 새로 사지 않음", "fn": gate_dawn_hours},
