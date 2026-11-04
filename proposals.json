@@ -404,6 +404,18 @@
    "branch": "ai/20261104-btc-quiet",
    "createdAt": "2026-11-04T02:58:00+09:00",
    "status": "merged"
+  },
+  {
+   "id": "ai-20261104-missed-moves",
+   "title": "놓친 큰 움직임 기록 (분석 전용)",
+   "summary": "대상 종목이 60분 저점 대비 +2% 이상 오른 순간을 기록해 실주문/모의/규칙 대기/규칙 없음으로 나누고, 그때 따라 샀다면 60분 뒤 손익을 잼. 대시보드 규칙 장부에 표시.",
+   "why": "사용자 요청: 수익 낼 포인트가 있었는데 거래가 없다. 놓친 기회가 실제 몇 번이고 왜 놓쳤는지, 쫓아 샀다면 이득이었는지 데이터로 확인하기 위함.",
+   "risk": "매매 영향 없음. 업비트 공개 시세 요청 1분 1회 추가.",
+   "pr": "https://github.com/btypenine/chamdom/pull/35",
+   "branch": "ai/20261104-missed-moves",
+   "createdAt": "2026-11-04T12:20:00+09:00",
+   "status": "pending",
+   "requestId": "req-w1h0t7a3p6sm"
   }
  ]
 }
