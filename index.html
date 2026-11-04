@@ -1243,6 +1243,38 @@ function renderMore(s, stale) {
       gapRows.push(el);
     }
   }
+  // 놓친 큰 움직임: 최근 60분 저점 대비 +2% 이상 오른 순간을 기록 → 우리가 잡았는지, 왜 못 잡았는지, 그때 따라샀다면 (분석 전용)
+  const mv = s.moveStats;
+  if (mv) {
+    const kn = mv.kinds || {};
+    const parts = [["real", "실주문"], ["paper", "모의"], ["wait_proven", "통과규칙 대기"], ["wait", "검증규칙 대기"], ["no_rule", "규칙 없음"]]
+      .filter(([k]) => kn[k]).map(([k, l]) => `${l} ${kn[k]}`);
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = "<span></span><span class='num'></span>";
+    el.firstChild.textContent = "큰 움직임 (24시간)";
+    el.firstChild.style.whiteSpace = "nowrap";
+    el.lastChild.textContent = mv.n24 ? `${mv.n24}건 · ${parts.join(" · ")}` : "없음";
+    el.lastChild.title = "대상 종목이 최근 60분 저점 대비 +2% 이상 오른 순간. 그때 실주문·모의로 들고 있었는지, 규칙은 있었지만 매수 신호가 없었는지, 채택된 규칙이 없었는지로 나눔. 실주문은 실전 통과 규칙만 함";
+    gapRows.push(el);
+    const top = (mv.top || []).slice(0, 3);
+    if (top.length) {
+      const t = document.createElement("div"); t.className = "li";
+      t.innerHTML = "<span></span><span class='num'></span>";
+      t.firstChild.textContent = "└ 가장 컸던 것";
+      t.firstChild.style.whiteSpace = "nowrap";
+      t.lastChild.textContent = top.map(o => `${o.coin} +${o.rise.toFixed(1)}%`).join(" · ");
+      gapRows.push(t);
+    }
+    const f = document.createElement("div"); f.className = "li";
+    f.innerHTML = "<span></span><span class='num'></span>";
+    f.firstChild.textContent = "└ 보고 따라샀다면";
+    f.firstChild.style.whiteSpace = "nowrap";
+    f.lastChild.textContent = mv.followN ? `${mv.followN}건 · 60분 뒤 승률 ${Math.round(mv.followWins / mv.followN * 100)}% · 거래당 ${pct(mv.followAvg)}` : "기록 쌓는 중";
+    if (mv.followN) f.lastChild.classList.add(mv.followAvg >= 0 ? "up" : "down");
+    f.lastChild.title = "+2% 오른 걸 확인한 순간 시장가로 사서 60분 뒤 팔았다면의 손익(수수료·미끄러짐 반영). 눈으로 본 상승을 쫓는 게 이득인지 확인용. 30건 미만이면 흐리게 표시";
+    if (!mv.followN || mv.followN < 30) f.style.opacity = "0.6";
+    gapRows.push(f);
+  }
   if (gapRows.length) {
     const box = document.createElement("div");
     box.style.cssText = "border-bottom:1px solid var(--line);margin-bottom:6px;padding-bottom:4px";

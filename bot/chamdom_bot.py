@@ -84,6 +84,9 @@ PROVEN_ONLY_LIVE = True          # 실전 통과(proven) 규칙만 실제 돈으
 SHADOW_SLIPPAGE = 0.0015         # 모의 체결 미끄러짐(매수·매도 각각) — 실전 평균보다 약간 보수적으로
 MONKEY_MAX_OPEN = 40             # 원숭이 기준선(무작위 진입 비교) 동시 추적 최대 수 — 분석 전용
 MONKEY_RECENT = 50               # 최근 성적은 마지막 50건으로 따로 봄
+MOVE_RISE_PCT = 2.0              # 놓친 큰 움직임: 최근 60분 저점 대비 이만큼(%) 오르면 '큰 움직임'으로 기록 — 분석 전용
+MOVE_WINDOW_MIN = 60             # 저점을 찾는 구간(분)
+MOVE_FOLLOW_MIN = 60             # 감지 시점에 따라 샀다면 몇 분 뒤 성적을 볼지
 BT_SLIPPAGE = 0.001              # (고정값 쓸 때) 시장가 체결 미끄러짐 0.1% (매수·매도 각각)
 BT_SLIP_BASE = 0.0003            # 종목별 미끄러짐 = 0.03% + 호가 한 칸/가격 (BTC≈0.03%, 100원대 코인≈0.5~1%)
 EXPLORE_MIN_TRADES = 6           # 탐험 모드: 학습 구간 최소 거래 수
@@ -2188,6 +2191,76 @@ class Bot:
         if done:
             save_state(self.state)
 
+    # ---------- 놓친 큰 움직임 (분석 전용, 매매 영향 없음) ----------
+    def move_watch(self):
+        """대상 종목 가격을 1분마다 보고, 최근 60분 저점 대비 +2% 이상 오른 움직임을 기록함.
+        그때 우리가 실주문·모의로 들고 있었는지, 규칙은 있었지만 신호가 없었는지, 규칙 자체가 없었는지 나눠 셈.
+        또 '감지한 순간 따라 샀다면' 60분 뒤 비용 반영 손익을 재서, 눈으로 본 상승을 쫓는 게 이득인지 확인함."""
+        now = time.time()
+        if now - getattr(self, "_move_at", 0) < 60:
+            return
+        self._move_at = now
+        mks = [m for m in self.state["universe"]["markets"] if m.split("-")[1] not in PROTECTED_COINS]
+        if not mks:
+            return
+        prices = self.upbit.prices(mks)
+        hist = self.__dict__.setdefault("_move_px", {})
+        mw = self.state.setdefault("moveWatch", {"open": [], "done": []})
+        changed = False
+        for o in list(mw["open"]):                        # 60분 뒤 따라샀다면 성적 확정
+            if now - o["at"] / 1000 < MOVE_FOLLOW_MIN * 60:
+                continue
+            p = prices.get(o["market"])
+            mw["open"].remove(o)
+            if p:
+                buy = o["price"] * (1 + SHADOW_SLIPPAGE) * (1 + FEE_RATE)
+                o["followPct"] = round((p * (1 - SHADOW_SLIPPAGE) * (1 - FEE_RATE) / buy - 1) * 100, 3)
+                mw["done"] = (mw["done"] + [o])[-300:]
+            changed = True
+        last = self.state.setdefault("moveLast", {})
+        for mk, p in prices.items():
+            h = [x for x in hist.get(mk, []) if now - x[0] <= MOVE_WINDOW_MIN * 60] + [(now, p)]
+            hist[mk] = h
+            if now - h[0][0] < 30 * 60 or now - last.get(mk, 0) < MOVE_WINDOW_MIN * 60:
+                continue                                  # 30분 이상 지켜본 뒤부터, 같은 종목은 60분에 한 번만
+            lo = min(x[1] for x in h)
+            rise = (p / lo - 1) * 100 if lo else 0
+            if rise < MOVE_RISE_PCT:
+                continue
+            pos = self.state["positions"].get(mk)
+            if pos:
+                kind = "paper" if pos.get("paper") else "real"
+            elif mk in self.state["strategies"]:
+                rb = self.state["ruleBook"].get(self.state["strategies"][mk].get("rid") or rule_id(mk, self.state["strategies"][mk]))
+                kind = "wait_proven" if rb and rb.get("status") == "proven" else "wait"
+            else:
+                kind = "no_rule"
+            last[mk] = now
+            mw["open"].append({"at": int(now * 1000), "market": mk, "price": p, "rise": round(rise, 2), "kind": kind})
+            log(f"[큰 움직임] {mk.split('-')[1]} 60분 저점 대비 +{rise:.1f}% · "
+                + {"real": "실주문 보유 중", "paper": "모의로 보유 중", "wait_proven": "통과 규칙 있으나 신호 없음",
+                   "wait": "검증 중 규칙 있으나 신호 없음", "no_rule": "채택된 규칙 없음"}[kind])
+            changed = True
+        if changed:
+            save_state(self.state)
+
+    def moves_view(self):
+        mw = self.state.get("moveWatch") or {}
+        cut = (time.time() - 86400) * 1000
+        rows = [o for o in (mw.get("done") or []) + (mw.get("open") or []) if o["at"] >= cut]
+        if not rows and not mw.get("done"):
+            return None
+        kinds = {}
+        for o in rows:
+            kinds[o["kind"]] = kinds.get(o["kind"], 0) + 1
+        fol = [o["followPct"] for o in (mw.get("done") or []) if o.get("followPct") is not None]
+        top = sorted(rows, key=lambda o: -o["rise"])[:5]
+        return {"n24": len(rows), "kinds": kinds,
+                "followN": len(fol), "followAvg": round(sum(fol) / len(fol), 3) if fol else None,
+                "followWins": sum(1 for f in fol if f > 0),
+                "top": [{"coin": o["market"].split("-")[1], "rise": o["rise"], "kind": o["kind"],
+                         "followPct": o.get("followPct")} for o in top]}
+
     def monkey_view(self):
         st = self.state.get("monkeyStats") or {}
         def side(k):
@@ -2488,6 +2561,7 @@ class Bot:
                      "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
                      "hourStats": self.hours_view(),
                      "monkeyStats": self.monkey_view(),
+                     "moveStats": self.moves_view(),
                      "overlapStats": self.overlap_view(),
                      "specStats": self.spec_view(),
                      "execStats": [{"kind": k, "n": v["n"], "avgSlip": round(v["sumSlip"] / v["n"], 3), "worse": v["worse"],
@@ -2725,6 +2799,10 @@ class Bot:
                     self.manage_monkeys()
                 except Exception as e:
                     log(f"[경고] 원숭이 기준선 추적 실패: {e}")
+                try:
+                    self.move_watch()
+                except Exception as e:
+                    log(f"[경고] 큰 움직임 기록 실패: {e}")
                 self.gate_check()
                 if not self.error:
                     self.scan_entries()
