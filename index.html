@@ -426,7 +426,7 @@ body.compact #sumCard { display: flex !important; }
 
     <section class="card" id="execCard" hidden>
       <h2>체결 비용 (시장가 밀림)</h2>
-      <div class="sub">실제 돈으로 낸 시장가 주문이 봇이 본 가격(신호가)보다 얼마나 불리하게 체결됐는지입니다. 매수는 +일수록, 매도는 −일수록 손해입니다. 익절 줄의 '지정가였다면'은 목표가에 매도 주문을 미리 걸어뒀다면 건당 더 받았을 몫으로, 익절 지정가 전환을 판단하는 근거입니다. 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 10회 미만입니다. '지정가 익절 관찰'은 모의 거래까지 포함해, 보유 중 1분봉 고가가 목표가를 넘었으면 지정가로 익절됐다고 보고 실제와 비교한 거래당 차이입니다(+면 지정가가 나음).</div>
+      <div class="sub">실제 돈으로 낸 시장가 주문이 봇이 본 가격(신호가)보다 얼마나 불리하게 체결됐는지입니다. 매수는 +일수록, 매도는 −일수록 손해입니다. 익절 줄의 '지정가였다면'은 목표가에 매도 주문을 미리 걸어뒀다면 건당 더 받았을 몫으로, 익절 지정가 전환을 판단하는 근거입니다. 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 10회 미만입니다. '지정가 익절 관찰'은 모의 거래까지 포함해, 보유 중 1분봉 고가가 목표가를 넘었으면 지정가로 익절됐다고 보고 실제와 비교한 거래당 차이입니다(+면 지정가가 나음). '익절 누수'는 최근 거래 기록 중 익절로 끝난 거래의 목표 익절폭과 실제 순익(수수료·밀림 포함)의 차이를 실전과 검증 모의로 나눠 보여 줍니다. 실전 누수가 모의보다 크면 모의 검증 성적이 실전보다 좋게 나오고 있다는 뜻입니다.</div>
       <div class="list" id="execStats"></div>
     </section>
 
@@ -1434,6 +1434,32 @@ function renderMore(s, stale) {
     el.lastChild.textContent = `${tpl.n}건 · 목표가 넘음 ${tpl.touched} (놓친 익절 ${tpl.missed}) · 거래당 ${epct(tpl.avgDiff)}`;
     if (tpl.avgDiff > 0.05) el.lastChild.classList.add("up");
     ebox.append(el);
+  }
+
+  {  // 익절 누수: 목표 익절폭 vs 실제 순익 (최근 거래 기록, 실전·검증 모의 분리)
+    const leak = (paper) => {
+      const xs = (Array.isArray(s.tradeLog) ? s.tradeLog : []).filter(t => t && t.cost > 0 && t.pnl != null
+        && String(t.exit || "").startsWith("익절") && !!t.paper === paper).map(t => {
+          const m = /익절\+([\d.]+)%/.exec(String(t.strategy || ""));
+          return m ? [Number(m[1]), t.pnl / t.cost * 100] : null;
+        }).filter(Boolean);
+      if (!xs.length) return null;
+      const tp = xs.reduce((a, x) => a + x[0], 0) / xs.length, net = xs.reduce((a, x) => a + x[1], 0) / xs.length;
+      return { n: xs.length, tp, net, gap: net - tp };
+    };
+    const lv = leak(false), pp = leak(true);
+    if (lv || pp) {
+      $("execCard").hidden = false;
+      const part = (nm, v) => v ? `${nm} ${v.n}건 목표 ${epct(v.tp)} → 순익 ${epct(v.net)} (${v.gap >= 0 ? "+" : ""}${v.gap.toFixed(2)}%p)` : `${nm} 없음`;
+      const el = document.createElement("div"); el.className = "li";
+      el.innerHTML = "<span></span><span class='num'></span>";
+      el.firstChild.textContent = "익절 누수";
+      el.firstChild.style.whiteSpace = "nowrap";
+      if (!lv || lv.n < 10) el.style.opacity = "0.6";
+      el.lastChild.textContent = `${part("실전", lv)} · ${part("모의", pp)}`;
+      if (lv && pp && lv.gap < pp.gap - 0.2) el.lastChild.classList.add("down");
+      ebox.append(el);
+    }
   }
 
   // 실시간 기록 (최신이 위)
