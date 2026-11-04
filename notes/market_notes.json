@@ -9,6 +9,16 @@
     "https://tech-insider.org/crypto-decline-samsung-alphabet-earnings-fed-10-2-dissent-2026/"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-05T00:33:00+09:00",
+   "btcMove": "BTC 60분 저점 대비 +2.5% (봇 [큰 움직임] 로그 00:05), 30분 +1.33% (관문 지표 00:33)",
+   "summary": "사실: 11-04 23:30~11-05 00:30 사이 BTC가 1시간 저점 대비 +2.5% 상승, 봇의 BTC 급등 추격 관문이 반복 감지. 같은 무렵 DOGE +3.0%, PEPE +5.7% 등 동반 상승. 추정: 미국 중간선거(11-03) 결과 발표 뒤 위험자산 반등 흐름(BTC 7.7만 달러 회복 보도)으로 보이나, 이 1시간의 직접 원인 뉴스는 확인 못 함.",
+   "sources": [
+    "https://crypto.news/bitcoin-price-democrats-midterm-election-results/",
+    "https://www.benzinga.com/crypto/cryptocurrency/26/11/62861114/bitcoin-rallies-2-could-tightening-supply-spark-a-bigger-rally"
+   ],
+   "confirmed": false
   }
  ]
 }
