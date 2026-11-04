@@ -1603,6 +1603,7 @@ class Bot:
         self.rule_record(pos, pnl)
         actual_pct = pnl / pos["cost"] * 100
         self.hour_record(pos, pnl, actual_pct)
+        self.btcflow_record(pos, pnl, actual_pct)
         self.tp_limit_record(market, pos, reason, actual_pct)
         if pos.get("monkey"):                             # 원숭이 기준선: 같은 시각에 산 우리 거래 성적
             self.monkey_record("ours", actual_pct)
@@ -1668,6 +1669,50 @@ class Bot:
             st["pnl"] += pnl
         except Exception as e:
             log(f"[경고] 시간대 성적 기록 실패: {e}")
+
+    @staticmethod
+    def btcflow_buckets(pos):
+        """매수 순간 BTC 흐름 → (30분 변화 구간, 60분 고저폭 구간). 기록이 없으면 None"""
+        c, r = pos.get("btc30"), pos.get("btcRng60")
+        cb = None if c is None else ("1:-0.5% 이하" if c <= -0.5 else "2:-0.5~-0.2%" if c < -0.2 else "3:-0.2~+0.2%" if c <= 0.2
+                                     else "4:+0.2~+0.5%" if c < 0.5 else "5:+0.5% 이상")
+        rb = None if r is None else ("1:0.4% 미만" if r < 0.4 else "2:0.4~0.8%" if r < 0.8 else "3:0.8% 이상")
+        return cb, rb
+
+    def btcflow_record(self, pos, pnl, pct):
+        """분석 전용: 매수 순간 BTC 흐름(30분 변화·60분 고저폭) 구간별 실전·검증 성적 누적 — 매매에는 영향 없음.
+        BTC 급락·하락 추세·급등·잠잠함 관문의 '막았을/통과' 두 칸 비교를 구간별 곡선으로 넓혀 봄"""
+        try:
+            cb, rb = self.btcflow_buckets(pos)
+            fs = self.state.setdefault("btcFlowStats", {})
+            for key, b in (("chg", cb), ("rng", rb)):
+                if b is None:
+                    continue
+                st = fs.setdefault(key, {}).setdefault(b, {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0.0, "live": 0, "liveSum": 0.0})
+                st["n"] += 1
+                st["wins"] += 1 if pnl > 0 else 0
+                st["sumPct"] += pct
+                st["pnl"] += pnl
+                if not pos.get("paper"):
+                    st["live"] += 1
+                    st["liveSum"] += pct
+        except Exception as e:
+            log(f"[경고] BTC 흐름별 성적 기록 실패: {e}")
+
+    def btcflow_view(self):
+        fs = self.state.get("btcFlowStats") or {}
+        out = []
+        for key, label in (("chg", "BTC 30분 변화"), ("rng", "BTC 60분 고저폭")):
+            rows = []
+            for b, v in sorted((fs.get(key) or {}).items()):
+                if not v.get("n"):
+                    continue
+                rows.append({"bucket": b.split(":", 1)[1], "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
+                             "pnl": round(v["pnl"]), "liveN": v.get("live", 0),
+                             "liveAvg": round(v["liveSum"] / v["live"], 3) if v.get("live") else None})
+            if rows:
+                out.append({"key": key, "label": label, "rows": rows})
+        return out or None
 
     def hours_view(self):
         """3시간 묶음(00-02, 03-05 …)으로 합쳐 대시보드에 보냄"""
@@ -1862,6 +1907,14 @@ class Bot:
                         mv = sum(abs(series.c[k] / series.c[k - 1] - 1) for k in range(len(series.c) - REACH_MIN, len(series.c))) / REACH_MIN * 100
                         ctx["reachPct"] = round(mv * spec["hold"] ** 0.5, 3)
                         ctx["tpPct"] = spec.get("tp", TARGET_NET_PCT)
+                    try:                                  # BTC 흐름별 성적(분석 전용)용: 매수 순간 BTC 30분 변화·60분 고저폭
+                        bc = self.btc_closes()
+                        if len(bc) > BTC_QUIET_MIN:
+                            ctx["btc30"] = round((bc[-1] / bc[-1 - BTC_DROP_MIN] - 1) * 100, 3)
+                            w_ = bc[-1 - BTC_QUIET_MIN:]
+                            ctx["btcRng60"] = round((max(w_) / min(w_) - 1) * 100, 3)
+                    except Exception:
+                        pass
                     if len(series.c) > COIN_TREND_MIN:    # 종목 하락 추세 관문용
                         ctx["coinChg"] = round((series.c[-1] / series.c[-1 - COIN_TREND_MIN] - 1) * 100, 3)
                     try:
@@ -2560,6 +2613,7 @@ class Bot:
                      "ai": self.state.get("aiReport"),
                      "aiEnabled": bool(self.cfg["ANTHROPIC_API_KEY"]),
                      "hourStats": self.hours_view(),
+                     "btcFlowStats": self.btcflow_view(),
                      "monkeyStats": self.monkey_view(),
                      "moveStats": self.moves_view(),
                      "overlapStats": self.overlap_view(),
