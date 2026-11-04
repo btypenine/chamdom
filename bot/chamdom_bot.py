@@ -87,6 +87,8 @@ MONKEY_RECENT = 50               # 최근 성적은 마지막 50건으로 따로
 MOVE_RISE_PCT = 2.0              # 놓친 큰 움직임: 최근 60분 저점 대비 이만큼(%) 오르면 '큰 움직임'으로 기록 — 분석 전용
 MOVE_WINDOW_MIN = 60             # 저점을 찾는 구간(분)
 MOVE_FOLLOW_MIN = 60             # 감지 시점에 따라 샀다면 몇 분 뒤 성적을 볼지
+MOVE_CHECK_MIN = (15, 30)        # 따라샀다면: 중간 시점 손익도 기록 (보유시간을 얼마로 잡을지 판단용) — 분석 전용
+MOVE_STOP_PCT = -1.5             # 따라샀다면: 이 손절선을 걸었다면 어땠을지 가정 계산 — 분석 전용
 BT_SLIPPAGE = 0.001              # (고정값 쓸 때) 시장가 체결 미끄러짐 0.1% (매수·매도 각각)
 BT_SLIP_BASE = 0.0003            # 종목별 미끄러짐 = 0.03% + 호가 한 칸/가격 (BTC≈0.03%, 100원대 코인≈0.5~1%)
 EXPLORE_MIN_TRADES = 6           # 탐험 모드: 학습 구간 최소 거래 수
@@ -2261,9 +2263,23 @@ class Bot:
         mw = self.state.setdefault("moveWatch", {"open": [], "done": []})
         changed = False
         for o in list(mw["open"]):                        # 60분 뒤 따라샀다면 성적 확정
+            p = prices.get(o["market"])
+            if p and now - o["at"] / 1000 < MOVE_FOLLOW_MIN * 60:
+                try:                                      # 가는 길 기록: 15·30분 시점 손익, 60분 안 최고·최저 (비용 반영)
+                    buy = o["price"] * (1 + SHADOW_SLIPPAGE) * (1 + FEE_RATE)
+                    cur = round((p * (1 - SHADOW_SLIPPAGE) * (1 - FEE_RATE) / buy - 1) * 100, 3)
+                    o["hi"] = max(o.get("hi", cur), cur)
+                    o["lo"] = min(o.get("lo", cur), cur)
+                    el = (now - o["at"] / 1000) / 60
+                    for m in MOVE_CHECK_MIN:
+                        if el >= m and f"f{m}" not in o:
+                            o[f"f{m}"] = cur
+                    changed = True
+                except Exception:
+                    pass
+                continue
             if now - o["at"] / 1000 < MOVE_FOLLOW_MIN * 60:
                 continue
-            p = prices.get(o["market"])
             mw["open"].remove(o)
             if p:
                 buy = o["price"] * (1 + SHADOW_SLIPPAGE) * (1 + FEE_RATE)
@@ -2337,7 +2353,22 @@ class Bot:
         fol = [o["followPct"] for o in (mw.get("done") or []) if o.get("followPct") is not None]
         top = sorted(rows, key=lambda o: -o["rise"])[:5]
         ep = self.move_episodes([o for o in (mw.get("done") or []) if o.get("followPct") is not None])
-        return {"n24": len(rows), "kinds": kinds, **ep,
+        hold = {}
+        try:                                              # 보유시간별·손절 가정 성적 (가는 길이 기록된 건만)
+            path = [o for o in (mw.get("done") or []) if o.get("followPct") is not None and "lo" in o
+                    and all(f"f{m}" in o for m in MOVE_CHECK_MIN)]
+            if path:
+                avg = lambda xs: round(sum(xs) / len(xs), 3)
+                hold = {"pathN": len(path), "hiAvg": avg([o["hi"] for o in path]), "loAvg": avg([o["lo"] for o in path]),
+                        "stopAvg": avg([MOVE_STOP_PCT if o["lo"] <= MOVE_STOP_PCT else o["followPct"] for o in path]),
+                        "stopHit": sum(1 for o in path if o["lo"] <= MOVE_STOP_PCT), "stopPct": MOVE_STOP_PCT,
+                        "byMin": [{"min": m, "avg": avg([o[f"f{m}"] for o in path]),
+                                   "wins": sum(1 for o in path if o[f"f{m}"] > 0)} for m in MOVE_CHECK_MIN]
+                                 + [{"min": MOVE_FOLLOW_MIN, "avg": avg([o["followPct"] for o in path]),
+                                     "wins": sum(1 for o in path if o["followPct"] > 0)}]}
+        except Exception as e:
+            log(f"[경고] 큰 움직임 보유시간별 계산 실패: {e}")
+        return {"n24": len(rows), "kinds": kinds, **ep, **hold,
                 "followN": len(fol), "followAvg": round(sum(fol) / len(fol), 3) if fol else None,
                 "followWins": sum(1 for f in fol if f > 0),
                 "top": [{"coin": o["market"].split("-")[1], "rise": o["rise"], "kind": o["kind"],
