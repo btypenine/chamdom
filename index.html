@@ -1280,6 +1280,18 @@ function renderMore(s, stale) {
     f.lastChild.title = "+2% 오른 걸 확인한 순간 시장가로 사서 60분 뒤 팔았다면의 손익(수수료·미끄러짐 반영). 눈으로 본 상승을 쫓는 게 이득인지 확인용. 30건 미만이면 흐리게 표시";
     if (!mv.followN || mv.followN < 30) f.style.opacity = "0.6";
     gapRows.push(f);
+    if (mv.episodes) {
+      const e = document.createElement("div"); e.className = "li";
+      e.innerHTML = "<span></span><span class='num'></span>";
+      e.firstChild.textContent = "└ 사건 단위로";
+      e.firstChild.style.whiteSpace = "nowrap";
+      const sp = (n, a) => n ? `${n}건 ${pct(a)}` : "없음";
+      e.lastChild.textContent = `${mv.episodes}번 · 사건당 ${pct(mv.epAvg)} · 혼자 ${sp(mv.soloN, mv.soloAvg)} · 동반 ${sp(mv.groupN, mv.groupAvg)}`;
+      e.lastChild.classList.add(mv.epAvg >= 0 ? "up" : "down");
+      e.lastChild.title = "시장 전체가 한꺼번에 뛰면 한 사건이 수십 건으로 셈해져 착시가 생김. 30분 넘게 끊기지 않고 이어진 감지를 한 사건으로 묶어 사건마다 평균. '혼자'는 앞뒤 10분에 다른 종목 감지가 3건 미만, '동반'은 그 이상. 사건 10번 미만이면 흐리게 표시";
+      if (mv.episodes < 10) e.style.opacity = "0.6";
+      gapRows.push(e);
+    }
   }
   if (gapRows.length) {
     const box = document.createElement("div");

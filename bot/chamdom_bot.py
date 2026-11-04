@@ -2297,6 +2297,34 @@ class Bot:
         if changed:
             save_state(self.state)
 
+    @staticmethod
+    def move_episodes(done):
+        """'보고 따라샀다면' 성적을 시간 묶음별로 나눠 봄 (분석 전용).
+        시장 전체가 한꺼번에 뛰면 한 번의 사건이 수십 건으로 셈해져 표본이 부풀려지므로,
+        30분 넘게 비지 않고 이어진 감지들을 한 묶음(사건)으로 보고 묶음마다 평균을 낸 뒤 다시 평균함.
+        또 앞뒤 10분 안에 다른 종목 감지가 3건 이상이면 '동반 상승', 아니면 '혼자 상승'으로 나눔."""
+        try:
+            d = sorted(done, key=lambda o: o["at"])
+            if not d:
+                return {}
+            eps, cur = [], [d[0]]
+            for o in d[1:]:
+                if o["at"] - cur[-1]["at"] > 30 * 60 * 1000:
+                    eps.append(cur); cur = []
+                cur.append(o)
+            eps.append(cur)
+            means = [sum(o["followPct"] for o in e) / len(e) for e in eps]
+            solo, group = [], []
+            for o in d:
+                near = sum(1 for x in d if x is not o and abs(x["at"] - o["at"]) <= 10 * 60 * 1000)
+                (group if near >= 3 else solo).append(o["followPct"])
+            avg = lambda xs: round(sum(xs) / len(xs), 3) if xs else None
+            return {"episodes": len(eps), "epAvg": avg(means), "epWins": sum(1 for m in means if m > 0),
+                    "soloN": len(solo), "soloAvg": avg(solo), "groupN": len(group), "groupAvg": avg(group)}
+        except Exception as e:
+            log(f"[경고] 큰 움직임 묶음 계산 실패: {e}")
+            return {}
+
     def moves_view(self):
         mw = self.state.get("moveWatch") or {}
         cut = (time.time() - 86400) * 1000
@@ -2308,7 +2336,8 @@ class Bot:
             kinds[o["kind"]] = kinds.get(o["kind"], 0) + 1
         fol = [o["followPct"] for o in (mw.get("done") or []) if o.get("followPct") is not None]
         top = sorted(rows, key=lambda o: -o["rise"])[:5]
-        return {"n24": len(rows), "kinds": kinds,
+        ep = self.move_episodes([o for o in (mw.get("done") or []) if o.get("followPct") is not None])
+        return {"n24": len(rows), "kinds": kinds, **ep,
                 "followN": len(fol), "followAvg": round(sum(fol) / len(fol), 3) if fol else None,
                 "followWins": sum(1 for f in fol if f > 0),
                 "top": [{"coin": o["market"].split("-")[1], "rise": o["rise"], "kind": o["kind"],
