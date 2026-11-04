@@ -438,7 +438,8 @@
       "pr": "https://github.com/btypenine/chamdom/pull/37",
       "branch": "ai/20261104-move-episodes",
       "createdAt": "2026-11-04T17:58:00+09:00",
-      "status": "pending"
+      "status": "merged",
+      "mergedAt": "2026-11-04T21:33:00+09:00"
     },
     {
       "id": "ai-20261104-tp-leak",
