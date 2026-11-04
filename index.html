@@ -406,6 +406,12 @@ body.compact #sumCard { display: flex !important; }
       <div class="list" id="hourStats"></div>
     </section>
 
+    <section class="card" id="btcFlowCard" hidden>
+      <h2>BTC 흐름별 성적</h2>
+      <div class="sub">매수 순간 BTC가 30분 동안 얼마나 움직였는지, 1시간 출렁임 폭이 얼마였는지 구간별 결과입니다(실전+검증 모의). BTC 관문들의 '막았을/통과' 비교를 구간별로 넓혀 본 분석용이며 매매에는 영향이 없습니다. 흐린 줄은 10회 미만.</div>
+      <div class="list" id="btcFlowStats"></div>
+    </section>
+
     <section class="card" id="specCard" hidden>
       <h2>규칙 모양별 실전 성적</h2>
       <div class="sub">지금까지 실전·검증에 쓰인 모든 규칙(퇴출 포함)을 익절폭·보유시간·조건 개수·백테스트 우위별로 묶은 결과입니다. 어떤 모양의 규칙이 실전에서 잘 되는지 보는 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 20회 미만이라 참고만 하세요. ⚠ 표시는 그 칸 거래의 30% 이상이 규칙 하나에서 나온 경우로, 그 규칙을 빼면 평균이 어떻게 되는지 함께 보여 줍니다.</div>
@@ -1326,6 +1332,28 @@ function renderMore(s, stale) {
     el.lastChild.textContent = `${h.n}회 · 승 ${Math.round(h.wins / h.n * 100)}% · 평균 ${ap >= 0 ? "+" : ""}${ap.toFixed(2)}% · ${h.pnl >= 0 ? "+" : ""}${Number(h.pnl).toLocaleString()}원`;
     if (ap) el.lastChild.classList.add(ap > 0 ? "up" : "down");
     hbox.append(el);
+  }
+
+  // BTC 흐름별 성적 (분석 전용)
+  const bfg = (Array.isArray(s.btcFlowStats) ? s.btcFlowStats : []).filter(g => g && Array.isArray(g.rows) && g.rows.length);
+  $("btcFlowCard").hidden = !bfg.length;
+  const bfbox = $("btcFlowStats"); bfbox.textContent = "";
+  for (const g of bfg) {
+    const hd = document.createElement("div"); hd.className = "li";
+    hd.innerHTML = "<span></span><span class='num'></span>";
+    hd.firstChild.textContent = g.label; hd.firstChild.style.fontWeight = "700";
+    bfbox.append(hd);
+    for (const r of g.rows) {
+      const el = document.createElement("div"); el.className = "li";
+      el.innerHTML = "<span></span><span class='num'></span>";
+      el.firstChild.textContent = r.bucket; el.firstChild.style.whiteSpace = "nowrap";
+      if (r.n < 10) el.style.opacity = "0.6";
+      const ap = r.avgPct == null ? 0 : r.avgPct;
+      el.lastChild.textContent = `${r.n}회 · 승 ${Math.round(r.wins / r.n * 100)}% · 평균 ${ap >= 0 ? "+" : ""}${ap.toFixed(2)}%`
+        + (r.liveN ? ` · 실전 ${r.liveN}회 ${r.liveAvg >= 0 ? "+" : ""}${Number(r.liveAvg).toFixed(2)}%` : "");
+      if (ap) el.lastChild.classList.add(ap > 0 ? "up" : "down");
+      bfbox.append(el);
+    }
   }
 
   // 규칙 모양별 실전 성적
