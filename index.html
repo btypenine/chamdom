@@ -1248,6 +1248,22 @@ function renderMore(s, stale) {
       if (pr.n < 30) el.style.opacity = "0.6";
       gapRows.push(el);
     }
+    // 조건별 짝 비교: 어떤 진입 조건이 들어간 거래가 같은 순간 원숭이보다 못한지 (5쌍 이상만, 분석 전용)
+    const mc = (mky.conds || []).filter(c => c.n >= 5);
+    if (mky.conds && mky.conds.length) {
+      const CNm = { rsi_below: "RSI과매도", bb_below: "볼린저하단", ema_up: "상승추세", ema_cross: "골든크로스", drop: "단기급락", breakout: "고점돌파", vol_spike: "거래량급증", green: "양봉" };
+      const el = document.createElement("div"); el.className = "li";
+      el.innerHTML = "<span></span><span class='num'></span>";
+      el.firstChild.textContent = "└ 조건별 짝 비교";
+      el.firstChild.style.whiteSpace = "nowrap";
+      el.lastChild.textContent = mc.length
+        ? mc.map(c => `${CNm[c.cond] || c.cond} ${c.avgDiff >= 0 ? "+" : ""}${c.avgDiff.toFixed(2)}%p(${c.n})`).join(" · ")
+        : "기록 쌓는 중 (조건마다 5쌍 이상부터 표시)";
+      el.lastChild.style.whiteSpace = "normal";
+      el.lastChild.title = "그 조건이 들어간 우리 거래 − 같은 순간 원숭이 거래의 평균 차이. 낮은(−) 조건일수록 무작위보다 못한 신호. 괄호는 쌍 수, 30쌍 미만이면 흐리게 표시";
+      if (!mc.length || Math.min(...mc.map(c => c.n)) < 30) el.style.opacity = "0.6";
+      gapRows.push(el);
+    }
   }
   // 놓친 큰 움직임: 최근 60분 저점 대비 +2% 이상 오른 순간을 기록 → 우리가 잡았는지, 왜 못 잡았는지, 그때 따라샀다면 (분석 전용)
   const mv = s.moveStats;
