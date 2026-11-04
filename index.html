@@ -1280,6 +1280,19 @@ function renderMore(s, stale) {
     f.lastChild.title = "+2% 오른 걸 확인한 순간 시장가로 사서 60분 뒤 팔았다면의 손익(수수료·미끄러짐 반영). 눈으로 본 상승을 쫓는 게 이득인지 확인용. 30건 미만이면 흐리게 표시";
     if (!mv.followN || mv.followN < 30) f.style.opacity = "0.6";
     gapRows.push(f);
+    if (mv.pathN && mv.byMin) {
+      const h = document.createElement("div"); h.className = "li";
+      h.innerHTML = "<span></span><span class='num'></span>";
+      h.firstChild.textContent = "└ 보유시간별";
+      h.firstChild.style.whiteSpace = "nowrap";
+      const best = mv.byMin.reduce((a, b) => (b.avg > a.avg ? b : a));
+      h.lastChild.textContent = mv.byMin.map(r => `${r.min}분 ${pct(r.avg)}`).join(" · ")
+        + ` · 손절${mv.stopPct}%면 ${pct(mv.stopAvg)}`;
+      h.lastChild.classList.add(best.avg >= 0 ? "up" : "down");
+      h.lastChild.title = `따라샀다면 몇 분 뒤 파는 게 나았는지(가는 길이 기록된 ${mv.pathN}건, 수수료·미끄러짐 반영). 60분 안 평균 최고 ${pct(mv.hiAvg)} / 최저 ${pct(mv.loAvg)}. 손절 ${mv.stopPct}%를 걸었다면 ${mv.stopHit}건이 걸렸고 거래당 ${pct(mv.stopAvg)}(1분 간격 확인이라 실제 손절은 조금 더 밀릴 수 있음). 30건 미만이면 흐리게 표시`;
+      if (mv.pathN < 30) h.style.opacity = "0.6";
+      gapRows.push(h);
+    }
     if (mv.episodes) {
       const e = document.createElement("div"); e.className = "li";
       e.innerHTML = "<span></span><span class='num'></span>";
