@@ -2042,7 +2042,12 @@ class Bot:
             return                                         # 아직 판단 근거 부족 → 다음 거래에서 다시 봄
         st["nextEval"] = b["n"] + GATE_RECHECK
         ba, pa = b["sumPct"] / b["n"], p["sumPct"] / p["n"]
-        want = "active" if (ba < 0 and ba <= pa - GATE_MARGIN) else "shadow"
+        if st["mode"] == "active":
+            # 이미 적용 중이면 '더 이상 도움이 안 될 때'(막은 거래가 손실이 아니거나 통과 거래보다 나쁘지 않을 때)만 되돌림
+            # → 문턱 근처에서 적용↔관찰이 오락가락하지 않게 함(들어갈 때 0.15%p, 나올 때 0%p)
+            want = "active" if (ba < 0 and ba < pa) else "shadow"
+        else:
+            want = "active" if (ba < 0 and ba <= pa - GATE_MARGIN) else "shadow"
         why = (f"막았을 거래 {b['n']}건 거래당 {ba:+.2f}% vs 통과 거래 {p['n']}건 {pa:+.2f}% ({len(st['hours'])}개 시간대)")
         st.setdefault("history", []).append({"at": int(time.time() * 1000), "want": want, "blockedAvg": round(ba, 3),
                                              "passedAvg": round(pa, 3), "n": b["n"]})
@@ -2050,6 +2055,8 @@ class Bot:
         log(f"[관문 판정] {g['name']}: {why} → " + ("적용이 낫다고 봄" if want == "active" else "관찰 유지가 낫다고 봄"))
         if want != st["mode"]:
             self.propose("gate", g["id"], g["name"], st["mode"], want, why)
+        else:
+            self.withdraw("gate", g["id"], why)
 
     # ---------- 승인 요청 (봇이 스스로 바꾸고 싶은 것) ----------
     def propose(self, kind, target, name, cur, want, why):
@@ -2067,6 +2074,17 @@ class Bot:
         self.state["proposals"] = [p for p in props if p["status"] == "pending"] + \
             [p for p in props if p["status"] != "pending"][-10:]
         save_state(self.state)
+
+    def withdraw(self, kind, target, why):
+        """새 판정이 지금 상태 유지가 낫다고 보면, 아직 결정 안 된 같은 대상의 승인 요청은 봇이 스스로 거둬들임(설정은 안 바뀜)"""
+        hit = False
+        for pr in self.state.get("proposals", []):
+            if pr["status"] == "pending" and pr["kind"] == kind and pr["target"] == target:
+                pr.update({"status": "withdrawn", "decidedAt": int(time.time() * 1000), "withdrawWhy": why})
+                hit = True
+                log(f"[승인 요청 취소] {pr['title']} · 새 판정은 지금 상태 유지가 낫다고 봄 · {why}")
+        if hit:
+            save_state(self.state)
 
     def decide(self, pid, approve):
         """대시보드 승인/거절 처리. 봇 제안은 바로 반영, AI(코드) 제안은 기록만 → 다음 AI 점검 때 병합/닫기"""
@@ -2138,11 +2156,16 @@ class Bot:
         if st["n"] >= st["nextEval"] and len(st["hours"]) >= GATE_EVAL_EPISODES:
             st["nextEval"] = st["n"] + GATE_RECHECK
             avg = st["sumDiff"] / st["n"]
-            want = "active" if avg >= EXIT_MARGIN else "shadow"
+            if st["mode"] == "active":
+                want = "active" if avg > 0 else "shadow"      # 적용 중이면 조기 정리가 손해일 때만 되돌림(오락가락 방지)
+            else:
+                want = "active" if avg >= EXIT_MARGIN else "shadow"
             why = f"조기 정리했다면 {st['n']}건 평균 {avg:+.2f}%p ({st['better']}건 더 나음, {len(st['hours'])}개 시간대)"
             log(f"[청산 판정] {r['name']}: {why} → " + ("적용이 낫다고 봄" if want == "active" else "관찰 유지가 낫다고 봄"))
             if want != st["mode"]:
                 self.propose("exit", rid, r["name"], st["mode"], want, why)
+            else:
+                self.withdraw("exit", rid, why)
 
     def manage_hold_ghosts(self):
         gs = self.state.get("holdGhosts") or {}
