@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title Chamdom Binance (paper)
+title Chamdom Binance
 cd /d "%~dp0"
 :loop
 python binance_bot.py
