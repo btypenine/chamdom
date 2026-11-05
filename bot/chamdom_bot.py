@@ -1624,7 +1624,9 @@ class Bot:
         if pos.get("monkey"):                             # 원숭이 기준선: 같은 시각에 산 우리 거래 성적
             self.monkey_record("ours", actual_pct)
             if isinstance(pos["monkey"], str):            # 짝 비교: 같은 순간 산 원숭이와 1:1로 묶어 차이를 잼
-                self.monkey_pair(pos["monkey"], "ours", actual_pct)
+                rb_ = self.state["ruleBook"].get(pos.get("rid") or "") or {}
+                conds_ = [c[0] for c in (rb_.get("spec") or {}).get("conds", [])]
+                self.monkey_pair(pos["monkey"], "ours", actual_pct, conds_)
         for rid, mk_ in (pos.get("exitMarks") or {}).items():
             if self.exit_stat(rid)["mode"] != "active" or reason != next((r["name"] for r in EXIT_RULES if r["id"] == rid), ""):
                 self.exit_record(rid, mk_["pct"], actual_pct, mk_["at"])   # 관찰: 그때 정리했다면 vs 실제
@@ -2208,7 +2210,7 @@ class Bot:
                        "at": int(time.time() * 1000), "pair": pid}
         self.state["positions"][market]["monkey"] = pid
 
-    def monkey_pair(self, pid, side, pct):
+    def monkey_pair(self, pid, side, pct, conds=None):
         """짝 비교(분석 전용): 우리 거래와 같은 순간 산 원숭이 1건을 묶어 '우리 − 원숭이' 차이를 쌓음.
         같은 시각이라 시장 전체 오르내림이 서로 지워져, 따로 평균 낸 비교보다 적은 표본으로도 실력 차이가 드러남"""
         try:
@@ -2218,9 +2220,17 @@ class Bot:
                 del pairs[k]
             p = pairs.setdefault(pid, {"at": int(time.time() * 1000)})
             p[side] = round(pct, 3)
+            if conds:
+                p["conds"] = list(conds)
             if "ours" in p and "monkey" in p:
                 d = p["ours"] - p["monkey"]
                 del pairs[pid]
+                # 조건별 짝 비교(분석 전용): 어떤 진입 조건이 들어간 거래가 원숭이보다 못한지/나은지
+                for c in p.get("conds") or []:
+                    cst = self.state.setdefault("monkeyCondStats", {}).setdefault(c, {"n": 0, "sumD": 0.0, "sumD2": 0.0})
+                    cst["n"] += 1
+                    cst["sumD"] = round(cst["sumD"] + d, 4)
+                    cst["sumD2"] = round(cst["sumD2"] + d * d, 4)
                 st = self.state.setdefault("monkeyPairStats", {"n": 0, "sumD": 0.0, "sumD2": 0.0, "recent": []})
                 st["n"] += 1
                 st["sumD"] += d
@@ -2411,7 +2421,17 @@ class Bot:
             pair = {"n": n, "avgDiff": round(avg, 3), "se": round(se, 3) if se else None,
                     "z": round(avg / se, 2) if se else None,
                     "recentN": len(r), "recentAvg": round(sum(r) / len(r), 3) if r else None}
-        return {"ours": o, "monkey": m, "open": len(self.state.get("monkeys") or {}), "pair": pair}
+        conds = []
+        for c, v in (self.state.get("monkeyCondStats") or {}).items():
+            n = v.get("n", 0)
+            if not n:
+                continue
+            avg = v["sumD"] / n
+            sd = math.sqrt(max(v["sumD2"] / n - avg * avg, 0.0) * n / (n - 1)) if n > 1 else None
+            se = sd / math.sqrt(n) if sd else None
+            conds.append({"cond": c, "n": n, "avgDiff": round(avg, 3), "z": round(avg / se, 2) if se else None})
+        conds.sort(key=lambda x: x["avgDiff"])
+        return {"ours": o, "monkey": m, "open": len(self.state.get("monkeys") or {}), "pair": pair, "conds": conds}
 
     def exits_view(self):
         out = []
