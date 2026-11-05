@@ -460,6 +460,7 @@ body.compact #sumCard { display: flex !important; }
       <div class="head-row"><h2>바이낸스 선물 <span class="sub">(15분봉 · 롱+숏)</span></h2><span class="mode paper" id="bnMode">모의</span></div>
       <div class="sub" id="bnState"></div>
       <div class="msg" id="bnLive" hidden></div>
+      <div class="sub" id="bnWhy" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
         <div><div class="label">거래당 평균</div><div class="stat-val num" id="bnAvg">-</div></div>
@@ -851,6 +852,16 @@ function renderBinance(b) {
   const ll = b.liveLedger || {};
   $("bnLive").hidden = !isLive;
   if (isLive) $("bnLive").textContent = `실주문(통과 규칙만): 누적 ${ll.trades || 0}회 · 익절 ${ll.wins || 0}회 · ${(ll.pnlUsdt || 0) >= 0 ? "+" : ""}${(ll.pnlUsdt || 0).toFixed(2)} USDT · 오늘 ${ll.dayTrades || 0}회 ${(ll.dayPnl || 0) >= 0 ? "+" : ""}${(ll.dayPnl || 0).toFixed(2)} USDT (한도 -${b.liveDailyLoss || 0}) · 1회 ${b.liveOrderUsdt || 0} USDT`;
+  // 실주문을 안 한(모의로 간) 이유: 오늘 신호가 나왔을 때 어디서 걸렸는지
+  const sk = b.liveSkip || {}, cnt = sk.counts || {};
+  const parts = Object.entries(cnt).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k} ${v}회`);
+  const near = (b.nearProven || []).map((r) => `${String(r.symbol).replace("USDT", "")} ${r.side === "long" ? "롱" : "숏"} ${r.n}회 ${pct(r.avgPct)}`);
+  let why = "";
+  if (!isLive) why = "실주문 꺼짐 · bot_config.env 를 바꿨다면 start_binance 창을 껐다 켜야 반영됨(설정은 시작할 때만 읽음)";
+  else if (!(b.rules?.proven)) why = `실주문 대기: 통과한 규칙이 아직 0개 · 통과 문턱 모의 ${b.ruleEval || 5}회 이상·거래당 +${(b.rulePromote ?? 0.15).toFixed(2)}% 이상`;
+  if (parts.length) why += (why ? " · " : "") + "오늘 신호가 모의로 간 이유: " + parts.join(", ");
+  if (isLive && near.length) why += " · 통과에 가까운 규칙: " + near.join(", ");
+  $("bnWhy").hidden = !why; $("bnWhy").textContent = why;
   $("bnTrades").textContent = `${b.trades || 0}회 / ${b.wins || 0}회`;
   $("bnAvg").textContent = pct(b.avgPct);
   $("bnPnl").textContent = b.pnlUsdt == null ? "-" : (b.pnlUsdt > 0 ? "+" : "") + b.pnlUsdt.toFixed(2) + " USDT";
