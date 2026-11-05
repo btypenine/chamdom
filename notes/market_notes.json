@@ -19,6 +19,16 @@
     "https://www.benzinga.com/crypto/cryptocurrency/26/11/62861114/bitcoin-rallies-2-could-tightening-supply-spark-a-bigger-rally"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-06T00:33:00+09:00",
+   "btcMove": "30분 -1.63%, 120분 -3.29%, 24시간 -3.84% (봇 관문 기준치)",
+   "summary": "[사실] 봇 기록상 BTC 2시간 -3.3% 급락, 대상 39종목 중 97% 하락(30분 평균 -2.98%). [추정] 원인 뉴스는 웹 검색에서 날짜가 확인되는 기사를 찾지 못해 미확인 — 레버리지 청산 연쇄 가능성만 추정.",
+   "sources": [
+    "https://tedpillows.substack.com/p/crypto-and-finance-market-report-bd5",
+    "https://fortune.com/article/price-of-bitcoin-11-05-2026/"
+   ],
+   "confirmed": false
   }
  ]
 }
