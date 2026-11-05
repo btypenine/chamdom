@@ -520,7 +520,7 @@
       "pr": "https://github.com/btypenine/chamdom/pull/44",
       "branch": "ai/20261106-judge-hysteresis",
       "createdAt": "2026-11-06T06:05:00+09:00",
-      "status": "pending"
+      "status": "merged"
     },
     {
       "id": "ai-20261106-bn-live-why",
@@ -531,7 +531,7 @@
       "pr": "https://github.com/btypenine/chamdom/pull/45",
       "branch": "ai/20261106-bn-live-why",
       "createdAt": "2026-11-06T06:05:00+09:00",
-      "status": "pending",
+      "status": "merged",
       "requestId": "req-w3vzwvisp70s"
     }
   ]
