@@ -369,19 +369,31 @@ class Engine:
         except Exception:
             return False
 
+    def live_skip(self, why):
+        """신호가 나왔는데 실주문 대신 모의로 간 이유를 세어 둠(대시보드 '실주문 안 한 이유' 표시용, 판단에는 안 씀)"""
+        sk = self.state.setdefault("liveSkip", {})
+        d = cb.today_key()
+        if sk.get("day") != d:
+            sk.clear()
+            sk.update({"day": d, "counts": {}})
+        sk["counts"][why] = sk["counts"].get(why, 0) + 1
+        sk["last"] = why
+        sk["lastAt"] = int(time.time() * 1000)
+        return False
+
     def live_ok(self, strat):
         if not self.live:
-            return False
+            return self.live_skip("실주문 꺼짐(설정 paper·키 확인 실패)")
         rb = self.state["ruleBook"].get(strat["rid"]) or {}
         if rb.get("status") != "proven":
-            return False
+            return self.live_skip("통과 전 규칙(모의 검증 중)")
         ll = self.live_day()
         if ll["dayPnl"] <= -self.daily_loss:
-            return False
+            return self.live_skip("하루 손실 한도 도달")
         if sum(1 for p in self.state["positions"].values() if p.get("live")) >= self.max_live:
-            return False
+            return self.live_skip("동시 실보유 최대")
         if self.owner_paused():
-            return False
+            return self.live_skip("업비트 봇 일시정지")
         return True
 
     def open_live(self, sym, strat, px):
@@ -393,11 +405,13 @@ class Engine:
             qty, need = self.live.qty_for(sym, self.order_usdt, px)
             if not qty:
                 log(f"[실주문 건너뜀] {sym} 최소 주문 {need:.0f} USDT > 설정 {self.order_usdt:.0f} USDT → 모의로 처리")
+                self.live_skip("최소 주문 금액 부족")
                 return self.open_paper(sym, strat, px)
             self.live.prepare(sym)
             avg, filled = self.live.market(sym, "BUY" if side == "long" else "SELL", qty)
         except Exception as e:
             log(f"[실주문 실패] {sym}: {e} → 모의로 처리")
+            self.live_skip("주문 오류")
             return self.open_paper(sym, strat, px)
         if filled <= 0 or avg <= 0:
             log(f"[실주문 확인 실패] {sym} 체결 수량 0 → 모의로 처리")
@@ -576,6 +590,12 @@ class Engine:
             "short": {"n": lg["short"]["n"], "avgPct": round(lg["short"]["sumPct"] / lg["short"]["n"], 3) if lg["short"]["n"] else None},
             "rules": {"testing": sum(1 for r in rb if r["status"] == "testing"), "proven": sum(1 for r in rb if r["status"] == "proven"),
                       "retired": sum(1 for r in rb if r["status"] == "retired")},
+            "liveSkip": self.state.get("liveSkip") or {},
+            "nearProven": sorted(({"symbol": r.get("symbol", ""), "side": r.get("side", ""), "n": r.get("n", 0),
+                                   "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
+                                  for r in rb if r.get("status") == "testing"),
+                                 key=lambda x: (-(x["n"] or 0), -(x["avgPct"] or -99)))[:3],
+            "ruleEval": RULE_EVAL, "rulePromote": RULE_PROMOTE_MIN_AVG,
             "strategies": [{"symbol": k, "desc": v["desc"], "btEdge": v["btEdge"]} for k, v in self.state["strategies"].items()],
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),
