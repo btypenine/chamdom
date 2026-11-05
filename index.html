@@ -223,6 +223,16 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .45); }
 .trend-row .k { color: var(--muted); white-space: nowrap; } .trend-row > span:last-child { text-align: right; } .trend-row .up { color: var(--up); } .trend-row .down { color: var(--down); }
 .trend-key { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
 body.compact #appView > section.card:not(#sumCard):not(#apprCard) { display: none !important; }
+/* 거래소 구분: 모두 / 업비트 / 바이낸스 */
+.seg.seg3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ex-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 15px; font-weight: 700; padding: 6px 2px 0; }
+.ex-head .sub { font-weight: 400; }
+.ex-tag { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; color: #fff; }
+.ex-tag.up { background: #0a4ec2; } .ex-tag.bn { background: #b98900; }
+.tile .ex-tag { font-size: 10px; padding: 1px 6px; margin-right: 4px; vertical-align: 1px; }
+body.ex-up #appView > [data-ex="bn"], body.ex-bn #appView > [data-ex="up"] { display: none !important; }
+body.ex-up .ex-head, body.ex-bn .ex-head, body.compact .ex-head { display: none !important; }
+body:not(.ex-bn) #bnEmpty { display: none !important; }
 body.compact #sumCard { display: flex !important; }
 @media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
 
@@ -237,6 +247,8 @@ body.compact #sumCard { display: flex !important; }
   #appView:not([hidden]) { display: block !important; columns: 3 420px; column-gap: 16px; }
   #appView > section.card { break-inside: avoid; margin: 0 0 16px; }
   #appView > #sumCard { column-span: all; }
+  #appView > .ex-head { break-after: avoid; break-inside: avoid; margin: 0 0 8px; }
+  .topbar #exSeg { width: 240px; order: 1; }
   #sumCard .tiles { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .logbox { max-height: 520px; }
   /* 긴 목록은 카드 안에서 스크롤 → 단 길이가 한쪽으로 쏠리지 않게 */
@@ -262,6 +274,11 @@ body.compact #sumCard { display: flex !important; }
     <button type="button" data-view="compact" aria-pressed="false">요약</button>
     <button type="button" data-view="full" aria-pressed="true">전체</button>
   </div>
+  <div class="seg seg3" id="exSeg" role="group" aria-label="거래소" hidden>
+    <button type="button" data-ex="all" aria-pressed="true">모두</button>
+    <button type="button" data-ex="up" aria-pressed="false">업비트</button>
+    <button type="button" data-ex="bn" aria-pressed="false">바이낸스</button>
+  </div>
   </div>
 
   <!-- 로그인 전 -->
@@ -279,7 +296,15 @@ body.compact #sumCard { display: flex !important; }
       <div class="sub">칸을 누르면 그 항목의 전체 내용으로 이동함</div>
     </section>
 
-    <section class="card" id="stateCard" aria-live="polite">
+    <section class="card" id="apprCard" hidden>
+      <div class="head-row"><h2>승인 대기</h2><span class="pri high" id="apprCount"></span></div>
+      <div class="sub">봇과 AI가 스스로 찾은 개선안임. 근거를 보고 승인하면 반영되고, 거절하면 지금 상태를 유지함. (두 번 눌러 실행)</div>
+      <div class="list" id="apprList"></div>
+    </section>
+
+    <div class="ex-head" data-ex="up" id="upHead"><span class="ex-tag up">업비트</span> 현물 자동매매 <span class="sub">원화(KRW) 마켓</span></div>
+
+    <section class="card" data-ex="up" id="stateCard" aria-live="polite">
       <div class="state">
         <span class="dot offline" id="stateDot"></span>
         <div class="state-text">
@@ -291,13 +316,147 @@ body.compact #sumCard { display: flex !important; }
       <div class="msg" id="stateMsg" hidden></div>
     </section>
 
-    <section class="card" id="apprCard" hidden>
-      <div class="head-row"><h2>승인 대기</h2><span class="pri high" id="apprCount"></span></div>
-      <div class="sub">봇과 AI가 스스로 찾은 개선안임. 근거를 보고 승인하면 반영되고, 거절하면 지금 상태를 유지함. (두 번 눌러 실행)</div>
-      <div class="list" id="apprList"></div>
+    <section class="card" data-ex="up" id="perfCard" hidden>
+      <div class="head-row"><h2>오늘 성과 <span class="sub">(09시 기준)</span></h2><span class="mode" id="mode"></span></div>
+      <div class="stats">
+        <div><div class="label">오늘 손익</div><div class="stat-val num" id="dayPnl">-</div></div>
+        <div><div class="label">거래 / 익절</div><div class="stat-val num" id="dayTrades">-</div></div>
+        <div><div class="label">승률</div><div class="stat-val num" id="winrate">-</div></div>
+        <div><div class="label">시드</div><div class="stat-val num" id="seed">-</div></div>
+        <div><div class="label">잠긴 수익</div><div class="stat-val num" id="locked">-</div></div>
+        <div><div class="label">다음 주문</div><div class="stat-val num" id="nextOrder">-</div></div>
+      </div>
+      <div class="sub" id="perfNote"></div>
+      <div class="msg" id="shadowBox" hidden></div>
+      <div class="msg" id="reportBox" hidden></div>
     </section>
 
-    <section class="card" id="bnCard" hidden>
+    <section class="card" data-ex="up" id="pnlCard" hidden>
+      <div class="head-row"><h2>손익 흐름</h2><span class="sub" id="pnlSum"></span></div>
+      <div class="seg seg6" id="pnlSeg" role="group" aria-label="묶는 단위">
+        <button type="button" data-p="10m" aria-pressed="false">10분</button>
+        <button type="button" data-p="1h" aria-pressed="true">1시간</button>
+        <button type="button" data-p="3h" aria-pressed="false">3시간</button>
+        <button type="button" data-p="1d" aria-pressed="false">1일</button>
+        <button type="button" data-p="3d" aria-pressed="false">3일</button>
+        <button type="button" data-p="1w" aria-pressed="false">1주</button>
+      </div>
+      <div class="pnl-chart" id="pnlChart"><div class="empty">불러오는 중…</div></div>
+      <div class="pnl-tip" id="pnlTip" aria-live="polite"></div>
+      <div class="sub">위: 누적 손익(실매매 매도 기준, 모의 제외) · 아래: 구간별 손익(빨강 이익·파랑 손실). 1일 이상은 09시 기준으로 묶음. 그래프를 누르거나 손가락으로 훑으면 구간 내용이 보임.</div>
+    </section>
+
+    <section class="card" data-ex="up" id="trendCard" hidden>
+      <div class="head-row"><h2>학습 추세</h2><span class="sub" id="trendSum"></span></div>
+      <div class="seg" id="trendSeg" role="group" aria-label="몇 회씩 묶을지">
+        <button type="button" data-n="10" aria-pressed="false">10회씩</button>
+        <button type="button" data-n="20" aria-pressed="true">20회씩</button>
+        <button type="button" data-n="50" aria-pressed="false">50회씩</button>
+      </div>
+      <div class="pnl-chart" id="trendChart"><div class="empty">불러오는 중…</div></div>
+      <div class="pnl-tip" id="trendTip" aria-live="polite"></div>
+      <div class="list" id="trendRows"></div>
+      <div class="sub">반복할수록 나아지는지 보는 카드. 매도 기록을 시간 순서로 N회씩 묶어 '거래당 순익(%)'을 이음(주문 금액과 무관하게 비교). 아래 줄은 묶음 앞 절반과 뒤 절반의 평균 비교(0.1%p 이상 차이면 나아짐/나빠짐). 진한 선: 실매매, 노란 선: 검증 모의. 점선은 0%. 그래프를 누르거나 훑으면 묶음 내용이 보임.</div>
+    </section>
+
+    <section class="card" data-ex="up" id="gateCard" hidden>
+      <h2>시장 판단 · 청산 판단</h2>
+      <div class="sub">종목 전략과 별개로 '지금 새로 사도 되는가', '들고 있는 걸 일찍 정리할까'를 봄. 모두 관찰로 시작하고, 실전 기록으로 효과가 확인되면 '승인 대기'에 올라옴 → 승인해야 적용됨.</div>
+      <div class="list" id="gates"></div>
+    </section>
+
+    <section class="card" data-ex="up" id="posCard" hidden>
+      <h2>봇 보유 중</h2>
+      <div id="positions"></div>
+    </section>
+
+    <section class="card" data-ex="up" id="totCard">
+      <div class="totals">
+        <div><div class="label">원화 잔고</div><div class="total-val num" id="krw">-</div></div>
+        <div><div class="label">총 평가금액</div><div class="total-val num" id="total">-</div></div>
+      </div>
+      <div>
+        <div class="label" style="display:flex;justify-content:space-between"><span>봇 운용 한도 사용</span><span class="num" id="budgetText">-</span></div>
+        <div class="budget-bar"><span id="budgetBar"></span></div>
+      </div>
+    </section>
+
+    <section class="card" data-ex="up" id="assetCard">
+      <h2>보유 자산</h2>
+      <div class="rows" id="holdings"><div class="empty">PC 봇이 연결되면 보유 코인이 여기에 표시됩니다.</div></div>
+    </section>
+
+    <section class="card" data-ex="up" id="stratCard">
+      <div class="head-row"><h2>거래 대상 전략</h2><span class="sub" id="optTime"></span></div>
+      <div class="list" id="strategies"><div class="empty">PC 봇이 전략을 고르면 여기에 표시됩니다.</div></div>
+    </section>
+
+    <section class="card" data-ex="up" id="ruleCard">
+      <h2>규칙 장부 (실전 성적)</h2>
+      <div class="sub">종목+규칙마다 실전 결과를 날짜와 상관없이 쌓습니다. 5회를 채우면 거래당 평균 순수익(수수료 포함)으로 판정 → 플러스면 계속, 마이너스면 퇴출. 10·20·40회에 다시 판정.</div>
+      <div class="list" id="ruleBook"><div class="empty">아직 기록된 규칙이 없습니다.</div></div>
+    </section>
+
+    <section class="card" data-ex="up" id="condCard" hidden>
+      <h2>조건별 실전 성적 (학습)</h2>
+      <div class="sub">규칙에 쓰인 조건마다 실전 결과를 모읍니다. 10회 이상 쌓이면 잘된 조건을 새 규칙 만들 때 더 자주 시도합니다(최대 3배, 최소 0.3배).</div>
+      <div class="list" id="condStats"></div>
+    </section>
+
+    <section class="card" data-ex="up" id="hourCard" hidden>
+      <h2>시간대별 실전 성적</h2>
+      <div class="sub">매수한 시각(한국시간) 기준 3시간 묶음별 결과입니다. 어느 시간대에 잘 되고 안 되는지 보는 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 10회 미만이라 참고만 하세요.</div>
+      <div class="list" id="hourStats"></div>
+    </section>
+
+    <section class="card" data-ex="up" id="btcFlowCard" hidden>
+      <h2>BTC 흐름별 성적</h2>
+      <div class="sub">매수 순간 BTC가 30분 동안 얼마나 움직였는지, 1시간 출렁임 폭이 얼마였는지 구간별 결과입니다(실전+검증 모의). BTC 관문들의 '막았을/통과' 비교를 구간별로 넓혀 본 분석용이며 매매에는 영향이 없습니다. 흐린 줄은 10회 미만.</div>
+      <div class="list" id="btcFlowStats"></div>
+    </section>
+
+    <section class="card" data-ex="up" id="specCard" hidden>
+      <h2>규칙 모양별 실전 성적</h2>
+      <div class="sub">지금까지 실전·검증에 쓰인 모든 규칙(퇴출 포함)을 익절폭·보유시간·조건 개수·백테스트 우위별로 묶은 결과입니다. 어떤 모양의 규칙이 실전에서 잘 되는지 보는 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 20회 미만이라 참고만 하세요. ⚠ 표시는 그 칸 거래의 30% 이상이 규칙 하나에서 나온 경우로, 그 규칙을 빼면 평균이 어떻게 되는지 함께 보여 줍니다.</div>
+      <div class="list" id="specStats"></div>
+    </section>
+
+    <section class="card" data-ex="up" id="failCard" hidden>
+      <h2>실패 원인 통계</h2>
+      <div class="sub">손해로 끝난 거래를 봇이 진단한 결과입니다. 한 거래에 원인이 여러 개일 수 있습니다.</div>
+      <div class="list" id="failStats"></div>
+    </section>
+
+    <section class="card" data-ex="up" id="execCard" hidden>
+      <h2>체결 비용 (시장가 밀림)</h2>
+      <div class="sub">실제 돈으로 낸 시장가 주문이 봇이 본 가격(신호가)보다 얼마나 불리하게 체결됐는지입니다. 매수는 +일수록, 매도는 −일수록 손해입니다. 익절 줄의 '지정가였다면'은 목표가에 매도 주문을 미리 걸어뒀다면 건당 더 받았을 몫으로, 익절 지정가 전환을 판단하는 근거입니다. 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 10회 미만입니다. '지정가 익절 관찰'은 모의 거래까지 포함해, 보유 중 1분봉 고가가 목표가를 넘었으면 지정가로 익절됐다고 보고 실제와 비교한 거래당 차이입니다(+면 지정가가 나음). '익절 누수'는 최근 거래 기록 중 익절로 끝난 거래의 목표 익절폭과 실제 순익(수수료·밀림 포함)의 차이를 실전과 검증 모의로 나눠 보여 줍니다. 실전 누수가 모의보다 크면 모의 검증 성적이 실전보다 좋게 나오고 있다는 뜻입니다.</div>
+      <div class="list" id="execStats"></div>
+    </section>
+
+    <section class="card" data-ex="up" id="tradeCard">
+      <h2>최근 거래</h2>
+      <div class="list" id="trades"><div class="empty">아직 거래가 없습니다.</div></div>
+    </section>
+
+    <section class="card" data-ex="up" id="logCard">
+      <h2>실시간 기록</h2>
+      <div class="logbox" id="activity">PC 봇 기록이 여기에 표시됩니다.</div>
+    </section>
+
+    <section class="card" data-ex="up" id="ctrlCard">
+      <h2>비상 제어</h2>
+      <div class="ctrl">
+        <button class="btn-pause" type="button" data-cmd="pause">일시정지</button>
+        <button class="btn-resume" type="button" data-cmd="resume">재개</button>
+        <button class="btn-close wide" type="button" data-cmd="close_bot_positions">봇이 산 코인 모두 매도</button>
+      </div>
+      <div class="sub">버튼을 한 번 더 눌러야 실행됩니다. PC 봇이 30초 안에 받아서 처리합니다. 보호 코인은 매도하지 않습니다.</div>
+      <div class="cmds" id="cmds"></div>
+    </section>
+
+    <div class="ex-head" data-ex="bn" id="bnHead" hidden><span class="ex-tag bn">바이낸스</span> 선물 엔진 <span class="sub">USDT 무기한 선물</span></div>
+
+    <section class="card" id="bnCard" data-ex="bn" hidden>
       <div class="head-row"><h2>바이낸스 선물 <span class="sub">(15분봉 · 롱+숏)</span></h2><span class="mode paper" id="bnMode">모의</span></div>
       <div class="sub" id="bnState"></div>
       <div class="msg" id="bnLive" hidden></div>
@@ -313,143 +472,7 @@ body.compact #sumCard { display: flex !important; }
       <details><summary class="sub">최근 모의 거래 · 기록</summary><div class="list" id="bnRecent"></div><div class="logbox" id="bnLog"></div></details>
     </section>
 
-    <section class="card" id="perfCard" hidden>
-      <div class="head-row"><h2>오늘 성과 <span class="sub">(09시 기준)</span></h2><span class="mode" id="mode"></span></div>
-      <div class="stats">
-        <div><div class="label">오늘 손익</div><div class="stat-val num" id="dayPnl">-</div></div>
-        <div><div class="label">거래 / 익절</div><div class="stat-val num" id="dayTrades">-</div></div>
-        <div><div class="label">승률</div><div class="stat-val num" id="winrate">-</div></div>
-        <div><div class="label">시드</div><div class="stat-val num" id="seed">-</div></div>
-        <div><div class="label">잠긴 수익</div><div class="stat-val num" id="locked">-</div></div>
-        <div><div class="label">다음 주문</div><div class="stat-val num" id="nextOrder">-</div></div>
-      </div>
-      <div class="sub" id="perfNote"></div>
-      <div class="msg" id="shadowBox" hidden></div>
-      <div class="msg" id="reportBox" hidden></div>
-    </section>
-
-    <section class="card" id="pnlCard" hidden>
-      <div class="head-row"><h2>손익 흐름</h2><span class="sub" id="pnlSum"></span></div>
-      <div class="seg seg6" id="pnlSeg" role="group" aria-label="묶는 단위">
-        <button type="button" data-p="10m" aria-pressed="false">10분</button>
-        <button type="button" data-p="1h" aria-pressed="true">1시간</button>
-        <button type="button" data-p="3h" aria-pressed="false">3시간</button>
-        <button type="button" data-p="1d" aria-pressed="false">1일</button>
-        <button type="button" data-p="3d" aria-pressed="false">3일</button>
-        <button type="button" data-p="1w" aria-pressed="false">1주</button>
-      </div>
-      <div class="pnl-chart" id="pnlChart"><div class="empty">불러오는 중…</div></div>
-      <div class="pnl-tip" id="pnlTip" aria-live="polite"></div>
-      <div class="sub">위: 누적 손익(실매매 매도 기준, 모의 제외) · 아래: 구간별 손익(빨강 이익·파랑 손실). 1일 이상은 09시 기준으로 묶음. 그래프를 누르거나 손가락으로 훑으면 구간 내용이 보임.</div>
-    </section>
-
-    <section class="card" id="trendCard" hidden>
-      <div class="head-row"><h2>학습 추세</h2><span class="sub" id="trendSum"></span></div>
-      <div class="seg" id="trendSeg" role="group" aria-label="몇 회씩 묶을지">
-        <button type="button" data-n="10" aria-pressed="false">10회씩</button>
-        <button type="button" data-n="20" aria-pressed="true">20회씩</button>
-        <button type="button" data-n="50" aria-pressed="false">50회씩</button>
-      </div>
-      <div class="pnl-chart" id="trendChart"><div class="empty">불러오는 중…</div></div>
-      <div class="pnl-tip" id="trendTip" aria-live="polite"></div>
-      <div class="list" id="trendRows"></div>
-      <div class="sub">반복할수록 나아지는지 보는 카드. 매도 기록을 시간 순서로 N회씩 묶어 '거래당 순익(%)'을 이음(주문 금액과 무관하게 비교). 아래 줄은 묶음 앞 절반과 뒤 절반의 평균 비교(0.1%p 이상 차이면 나아짐/나빠짐). 진한 선: 실매매, 노란 선: 검증 모의. 점선은 0%. 그래프를 누르거나 훑으면 묶음 내용이 보임.</div>
-    </section>
-
-    <section class="card" id="gateCard" hidden>
-      <h2>시장 판단 · 청산 판단</h2>
-      <div class="sub">종목 전략과 별개로 '지금 새로 사도 되는가', '들고 있는 걸 일찍 정리할까'를 봄. 모두 관찰로 시작하고, 실전 기록으로 효과가 확인되면 '승인 대기'에 올라옴 → 승인해야 적용됨.</div>
-      <div class="list" id="gates"></div>
-    </section>
-
-    <section class="card" id="posCard" hidden>
-      <h2>봇 보유 중</h2>
-      <div id="positions"></div>
-    </section>
-
-    <section class="card">
-      <div class="totals">
-        <div><div class="label">원화 잔고</div><div class="total-val num" id="krw">-</div></div>
-        <div><div class="label">총 평가금액</div><div class="total-val num" id="total">-</div></div>
-      </div>
-      <div>
-        <div class="label" style="display:flex;justify-content:space-between"><span>봇 운용 한도 사용</span><span class="num" id="budgetText">-</span></div>
-        <div class="budget-bar"><span id="budgetBar"></span></div>
-      </div>
-    </section>
-
-    <section class="card" id="assetCard">
-      <h2>보유 자산</h2>
-      <div class="rows" id="holdings"><div class="empty">PC 봇이 연결되면 보유 코인이 여기에 표시됩니다.</div></div>
-    </section>
-
-    <section class="card" id="stratCard">
-      <div class="head-row"><h2>거래 대상 전략</h2><span class="sub" id="optTime"></span></div>
-      <div class="list" id="strategies"><div class="empty">PC 봇이 전략을 고르면 여기에 표시됩니다.</div></div>
-    </section>
-
-    <section class="card" id="ruleCard">
-      <h2>규칙 장부 (실전 성적)</h2>
-      <div class="sub">종목+규칙마다 실전 결과를 날짜와 상관없이 쌓습니다. 5회를 채우면 거래당 평균 순수익(수수료 포함)으로 판정 → 플러스면 계속, 마이너스면 퇴출. 10·20·40회에 다시 판정.</div>
-      <div class="list" id="ruleBook"><div class="empty">아직 기록된 규칙이 없습니다.</div></div>
-    </section>
-
-    <section class="card" id="condCard" hidden>
-      <h2>조건별 실전 성적 (학습)</h2>
-      <div class="sub">규칙에 쓰인 조건마다 실전 결과를 모읍니다. 10회 이상 쌓이면 잘된 조건을 새 규칙 만들 때 더 자주 시도합니다(최대 3배, 최소 0.3배).</div>
-      <div class="list" id="condStats"></div>
-    </section>
-
-    <section class="card" id="hourCard" hidden>
-      <h2>시간대별 실전 성적</h2>
-      <div class="sub">매수한 시각(한국시간) 기준 3시간 묶음별 결과입니다. 어느 시간대에 잘 되고 안 되는지 보는 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 10회 미만이라 참고만 하세요.</div>
-      <div class="list" id="hourStats"></div>
-    </section>
-
-    <section class="card" id="btcFlowCard" hidden>
-      <h2>BTC 흐름별 성적</h2>
-      <div class="sub">매수 순간 BTC가 30분 동안 얼마나 움직였는지, 1시간 출렁임 폭이 얼마였는지 구간별 결과입니다(실전+검증 모의). BTC 관문들의 '막았을/통과' 비교를 구간별로 넓혀 본 분석용이며 매매에는 영향이 없습니다. 흐린 줄은 10회 미만.</div>
-      <div class="list" id="btcFlowStats"></div>
-    </section>
-
-    <section class="card" id="specCard" hidden>
-      <h2>규칙 모양별 실전 성적</h2>
-      <div class="sub">지금까지 실전·검증에 쓰인 모든 규칙(퇴출 포함)을 익절폭·보유시간·조건 개수·백테스트 우위별로 묶은 결과입니다. 어떤 모양의 규칙이 실전에서 잘 되는지 보는 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 20회 미만이라 참고만 하세요. ⚠ 표시는 그 칸 거래의 30% 이상이 규칙 하나에서 나온 경우로, 그 규칙을 빼면 평균이 어떻게 되는지 함께 보여 줍니다.</div>
-      <div class="list" id="specStats"></div>
-    </section>
-
-    <section class="card" id="failCard" hidden>
-      <h2>실패 원인 통계</h2>
-      <div class="sub">손해로 끝난 거래를 봇이 진단한 결과입니다. 한 거래에 원인이 여러 개일 수 있습니다.</div>
-      <div class="list" id="failStats"></div>
-    </section>
-
-    <section class="card" id="execCard" hidden>
-      <h2>체결 비용 (시장가 밀림)</h2>
-      <div class="sub">실제 돈으로 낸 시장가 주문이 봇이 본 가격(신호가)보다 얼마나 불리하게 체결됐는지입니다. 매수는 +일수록, 매도는 −일수록 손해입니다. 익절 줄의 '지정가였다면'은 목표가에 매도 주문을 미리 걸어뒀다면 건당 더 받았을 몫으로, 익절 지정가 전환을 판단하는 근거입니다. 분석용이며 매매에는 영향이 없습니다. 흐리게 보이는 줄은 10회 미만입니다. '지정가 익절 관찰'은 모의 거래까지 포함해, 보유 중 1분봉 고가가 목표가를 넘었으면 지정가로 익절됐다고 보고 실제와 비교한 거래당 차이입니다(+면 지정가가 나음). '익절 누수'는 최근 거래 기록 중 익절로 끝난 거래의 목표 익절폭과 실제 순익(수수료·밀림 포함)의 차이를 실전과 검증 모의로 나눠 보여 줍니다. 실전 누수가 모의보다 크면 모의 검증 성적이 실전보다 좋게 나오고 있다는 뜻입니다.</div>
-      <div class="list" id="execStats"></div>
-    </section>
-
-    <section class="card" id="tradeCard">
-      <h2>최근 거래</h2>
-      <div class="list" id="trades"><div class="empty">아직 거래가 없습니다.</div></div>
-    </section>
-
-    <section class="card" id="logCard">
-      <h2>실시간 기록</h2>
-      <div class="logbox" id="activity">PC 봇 기록이 여기에 표시됩니다.</div>
-    </section>
-
-    <section class="card" id="ctrlCard">
-      <h2>비상 제어</h2>
-      <div class="ctrl">
-        <button class="btn-pause" type="button" data-cmd="pause">일시정지</button>
-        <button class="btn-resume" type="button" data-cmd="resume">재개</button>
-        <button class="btn-close wide" type="button" data-cmd="close_bot_positions">봇이 산 코인 모두 매도</button>
-      </div>
-      <div class="sub">버튼을 한 번 더 눌러야 실행됩니다. PC 봇이 30초 안에 받아서 처리합니다. 보호 코인은 매도하지 않습니다.</div>
-      <div class="cmds" id="cmds"></div>
-    </section>
+    <section class="card ex-empty" id="bnEmpty" data-ex="bn" hidden><div class="empty">바이낸스 엔진에서 받은 정보가 아직 없음. 회사 PC에서 start_binance.bat 이 실행 중인지 확인.</div></section>
 
     <section class="card">
       <details id="linkBox">
@@ -568,7 +591,7 @@ onAuthStateChanged(auth, async (user) => {
   unsubs.forEach((u) => u()); unsubs = [];
   $("loginView").hidden = !!user;
   $("appView").hidden = !user;
-  $("who").hidden = !user; $("reqOpen").hidden = !user; $("viewSeg").hidden = !user;
+  $("who").hidden = !user; $("reqOpen").hidden = !user; $("viewSeg").hidden = !user; $("exSeg").hidden = !user;
   $("who").textContent = user ? nickOf(user) : "";
   $("codeArea").hidden = true; $("codeText").value = "";
   if (!user) return;
@@ -697,6 +720,7 @@ $("posSheet").addEventListener("close", () => { openMarket = null; });
 
 // ---------- 상단 고정 · 요약/전체 보기 ----------
 let lastTrades = [];
+let lastBinance = null;
 const VIEW_KEY = "chamdomView";
 function setView(v, save = true) {
   document.body.classList.toggle("compact", v === "compact");
@@ -706,8 +730,22 @@ function setView(v, save = true) {
 }
 document.querySelectorAll("#viewSeg [data-view]").forEach((b) => b.addEventListener("click", () => { setView(b.dataset.view); window.scrollTo({ top: 0 }); }));
 try { if (localStorage.getItem(VIEW_KEY) === "compact") setView("compact", false); } catch (e) {}
+const EX_KEY = "chamdomEx";
+let curEx = "all";
+function setEx(x, save = true) {
+  curEx = ["up", "bn"].includes(x) ? x : "all";
+  document.body.classList.toggle("ex-up", curEx === "up");
+  document.body.classList.toggle("ex-bn", curEx === "bn");
+  document.querySelectorAll("#exSeg [data-ex]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.ex === curEx)));
+  if (save) { try { localStorage.setItem(EX_KEY, curEx); } catch (e) {} }
+  renderTiles();
+}
+document.querySelectorAll("#exSeg [data-ex]").forEach((b) => b.addEventListener("click", () => { setEx(b.dataset.ex); window.scrollTo({ top: 0 }); }));
+try { const x = localStorage.getItem(EX_KEY); if (x) setEx(x, false); } catch (e) {}
 window.addEventListener("scroll", () => document.querySelector(".topbar").classList.toggle("scrolled", window.scrollY > 4), { passive: true });
 function goCard(id) {
+  const ex = ($(id) && $(id).dataset.ex) || "all";
+  if (curEx !== "all" && ex !== "all" && ex !== curEx) setEx(ex);
   setView("full");
   requestAnimationFrame(() => {
     const el = $(id); if (!el || el.hidden) return;
@@ -739,12 +777,21 @@ function renderTiles() {
     { k: "규칙 장부", v: `통과 ${cnt("proven")}`, s: `검증 중 ${cnt("testing")} · 퇴출 ${cnt("retired")}`, go: "ruleCard" },
     { k: "최근 매도", v: sell ? signed(sell.pnl) : "-", s: sell ? `${(sell.market || "").split("-")[1] || ""} · ${sell.reason || ""}` : "", go: "tradeCard", cls: sell && sell.pnl > 0 ? "up" : sell && sell.pnl < 0 ? "down" : "" },
     { k: "비상 제어", v: "열기", s: "일시정지 · 재개 · 모두 매도", go: "ctrlCard" },
-  ];
+  ].map((t) => ({ ...t, ex: t.go === "apprCard" ? "all" : "up" }));
+  const bn = lastBinance;
+  if (bn) {
+    const bnStale = !bn.updatedAt || Date.now() - bn.updatedAt > 3 * 60 * 1000;
+    const bp = bn.pnlUsdt == null ? "-" : (bn.pnlUsdt > 0 ? "+" : "") + bn.pnlUsdt.toFixed(2) + " USDT";
+    tiles.push({ k: "선물 " + (bn.mode === "live" ? "손익" : "모의 손익"), v: bnStale ? "응답 없음" : bp, s: `${bn.trades || 0}회 · 익절 ${bn.wins || 0} · 보유 ${(bn.positions || []).length}`, go: "bnCard", ex: "bn", alert: bnStale, cls: !bnStale && bn.pnlUsdt > 0 ? "up" : !bnStale && bn.pnlUsdt < 0 ? "down" : "" });
+  }
+  const shown = tiles.filter((t) => curEx === "all" || t.ex === "all" || t.ex === curEx);
   box.textContent = "";
-  for (const t of tiles) {
+  for (const t of shown) {
     const b = document.createElement("button"); b.type = "button"; b.className = "tile" + (t.alert ? " alert" : "");
     b.innerHTML = `<span class="k"></span><span class="v"></span><span class="s"></span>`;
-    b.querySelector(".k").textContent = t.k; const v = b.querySelector(".v"); v.textContent = t.v; if (t.cls) v.classList.add(t.cls);
+    const kk = b.querySelector(".k");
+    if (curEx === "all" && t.ex !== "all") { const tg = document.createElement("span"); tg.className = "ex-tag " + t.ex; tg.textContent = t.ex === "bn" ? "바이낸스" : "업비트"; kk.append(tg); }
+    kk.append(t.k); const v = b.querySelector(".v"); v.textContent = t.v; if (t.cls) v.classList.add(t.cls);
     b.querySelector(".s").textContent = t.s;
     b.addEventListener("click", () => t.go === "apprCard" ? $("apprCard").scrollIntoView({ behavior: "smooth" }) : goCard(t.go));
     box.append(b);
@@ -790,7 +837,9 @@ $("nickReset").addEventListener("click", () => {
 
 // ---------- 바이낸스 선물 (모의) ----------
 function renderBinance(b) {
-  $("bnCard").hidden = !b;
+  lastBinance = b || null;
+  $("bnCard").hidden = !b; $("bnHead").hidden = !b; $("bnEmpty").hidden = !!b;
+  renderTiles();
   if (!b) return;
   const pct = (x) => x == null ? "-" : (x > 0 ? "+" : "") + Number(x).toFixed(2) + "%";
   const stale = !b.updatedAt || Date.now() - b.updatedAt > 3 * 60 * 1000;
