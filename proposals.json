@@ -472,7 +472,8 @@
       "pr": "https://github.com/btypenine/chamdom/pull/40",
       "branch": "ai/20261105-vol-gate",
       "createdAt": "2026-11-05T02:55:00+09:00",
-      "status": "merged"
+      "status": "merged",
+      "mergedAt": "2026-11-05T23:50:00+09:00"
     },
     {
       "id": "ai-20261105-monkey-cond",
@@ -483,7 +484,8 @@
       "pr": "https://github.com/btypenine/chamdom/pull/41",
       "branch": "ai/20261105-monkey-cond",
       "createdAt": "2026-11-05T08:55:00+09:00",
-      "status": "merged"
+      "status": "merged",
+      "mergedAt": "2026-11-05T23:50:00+09:00"
     },
     {
       "id": "ai-20261105-mid-fade",
@@ -494,7 +496,8 @@
       "pr": "https://github.com/btypenine/chamdom/pull/42",
       "branch": "ai/20261105-mid-fade",
       "createdAt": "2026-11-05T20:55:00+09:00",
-      "status": "merged"
+      "status": "merged",
+      "mergedAt": "2026-11-05T23:50:00+09:00"
     }
   ]
 }
