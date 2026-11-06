@@ -155,6 +155,8 @@ EXPLORE_MIN_TRADES = 6           # 탐험 모드: 학습 구간 최소 거래 �
 EXPLORE_MIN_EDGE = 0.20          # 탐험 모드: 학습 구간 거래당 순익(비용 포함) 최소 % (bt-lab 10-28: 0%→-0.09%/건, 0.2%→+0.22%/건, 거래 수 약 절반)
 EXPLORE_HOLDOUT_FLOOR = -0.10    # 탐험 모드: 검증 구간 거래당 순익이 이보다 나쁘면 탈락
 COND_LEARN_MIN = 10              # 조건별 실전 기록이 이만큼 쌓이면 무작위 전략 생성 확률에 반영
+SHAPE_LEARN_MIN = 20             # 익절폭·보유시간 칸별 실전 기록이 이만큼(+규칙 3개 이상) 쌓이면 생성 확률에 반영
+SHAPE_LEARN_RANGE = (0.5, 2.0)   # 익절폭·보유시간 학습 가중치 범위 (조건 학습 0.3~3배보다 완만하게)
 BT_MIN_WINRATE = 0.90            # (참고용) 이전 고정 기준
 BT_MIN_EDGE_PCT = 0.10           # 거래당 평균 순수익 최소 % (학습·검증 구간 모두)
 BT_MIN_PROFIT_FACTOR = 1.5       # 총이익 / 총손실 최소 (학습 구간)
@@ -721,8 +723,22 @@ def slip_for(price):
     return BT_SLIP_BASE + (tick_size(price) / price if price else 0.001)
 
 
-def random_spec(rng, weights=None):
-    """weights: 조건 이름별 가중치(실전 성적으로 학습). 없으면 균등"""
+def weighted_pick(rng, choices, wmap=None):
+    """choices 중 하나를 wmap(값→가중치, 없으면 1) 비율로 뽑음. wmap 이 비면 rng.choice 와 같음"""
+    if not wmap:
+        return rng.choice(choices)
+    w = [max(0.05, wmap.get(c, 1.0)) for c in choices]
+    x, acc = rng.random() * sum(w), 0.0
+    for c, wi in zip(choices, w):
+        acc += wi
+        if x <= acc:
+            return c
+    return choices[-1]
+
+
+def random_spec(rng, weights=None, shape=None):
+    """weights: 조건 이름별 가중치(실전 성적으로 학습). 없으면 균등
+    shape: {"tp": {익절폭: 가중치}, "hold": {보유분: 가중치}} — 실전에서 덜 손해 본 익절폭·보유시간을 더 자주 시도"""
     k = rng.choice([1, 2, 2, 3])
     pool = list(range(len(CONDITION_POOL)))
     w = [max(0.05, (weights or {}).get(CONDITION_POOL[i][0], 1.0)) for i in pool]
@@ -739,7 +755,9 @@ def random_spec(rng, weights=None):
     for i in names:
         name, variants = CONDITION_POOL[i]
         conds.append([name, rng.choice(variants)])
-    return {"conds": conds, "tp": rng.choice(TP_CHOICES), "sl": rng.choice(SL_CHOICES), "hold": rng.choice(HOLD_CHOICES)}
+    shape = shape or {}
+    return {"conds": conds, "tp": weighted_pick(rng, TP_CHOICES, shape.get("tp")), "sl": rng.choice(SL_CHOICES),
+            "hold": weighted_pick(rng, HOLD_CHOICES, shape.get("hold"))}
 
 
 def describe(spec):
@@ -1497,6 +1515,38 @@ class Bot:
         base = sum(v["sumPct"] for v in cs.values()) / tot_n
         return {name: min(3.0, max(0.3, 1 + (st["sumPct"] / st["n"] - base) / 0.3)) for name, st in cs.items()}
 
+    def shape_weights(self):
+        """규칙 장부(퇴출 포함) 실전 성적을 익절폭·보유시간별로 묶어, 전체 평균보다 나은 칸일수록 가중치↑ (0.5~2배)
+        한 규칙이 칸 성적을 끌고 가지 않도록 거래가 가장 많은 규칙 하나를 뺀 평균을 씀(남은 거래가 충분할 때)"""
+        out = {}
+        try:
+            for key, choices in (("tp", TP_CHOICES), ("hold", HOLD_CHOICES)):
+                g = {}
+                for r in self.state.get("ruleBook", {}).values():
+                    n = r.get("trades") or 0
+                    v = (r.get("spec") or {}).get(key)
+                    if n <= 0 or v not in choices:
+                        continue
+                    st = g.setdefault(v, {"n": 0, "sum": 0.0, "rules": 0, "topN": 0, "topSum": 0.0})
+                    st["n"] += n; st["sum"] += r.get("sumPct") or 0.0; st["rules"] += 1
+                    if n > st["topN"]:
+                        st["topN"], st["topSum"] = n, r.get("sumPct") or 0.0
+                avg = {}
+                for v, st in g.items():
+                    if st["n"] < SHAPE_LEARN_MIN or st["rules"] < 3:
+                        continue
+                    rest = st["n"] - st["topN"]
+                    avg[v] = ((st["sum"] - st["topSum"]) / rest) if rest >= SHAPE_LEARN_MIN else st["sum"] / st["n"]
+                if len(avg) < 2:
+                    continue
+                base = sum(avg.values()) / len(avg)
+                lo, hi = SHAPE_LEARN_RANGE
+                out[key] = {v: round(min(hi, max(lo, 1 + (a - base) / 0.3)), 2) for v, a in avg.items()}
+        except Exception as e:
+            log(f"[경고] 익절폭·보유시간 학습 집계 실패 (균등으로 생성): {e}")
+            return {}
+        return out
+
     def rule_open(self, market, spec):
         """채택한 규칙을 장부에 등록 (이미 있으면 그대로)"""
         rid = spec.get("rid") or rule_id(market, spec)
@@ -1601,6 +1651,12 @@ class Bot:
         weights = self.cond_weights()
         if weights:
             log("조건 학습 가중치: " + ", ".join(f"{k} ×{v:.1f}" for k, v in sorted(weights.items(), key=lambda x: -x[1])))
+        shape = self.shape_weights()
+        if shape:
+            log("익절폭·보유시간 학습 가중치: " + " / ".join(
+                ("익절 " if k == "tp" else "보유 ") + ", ".join(f"{('+%g%%' % v) if k == 'tp' else ('%d분' % v)} ×{w:.1f}"
+                                                              for v, w in sorted(m.items(), key=lambda x: -x[1]))
+                for k, m in shape.items()))
         for idx, mk in enumerate(markets, 1):
             if self.state["positions"]:
                 try:
@@ -1624,7 +1680,7 @@ class Bot:
                 continue
             best = None
             for _ in range(BT_TRIALS):
-                spec = random_spec(self.rng, weights)
+                spec = random_spec(self.rng, weights, shape)
                 rb = self.state["ruleBook"].get(rule_id(mk, spec))
                 if rb and rb["status"] == "retired":
                     continue                              # 실전에서 퇴출된 규칙은 다시 안 씀
@@ -2854,6 +2910,7 @@ class Bot:
                      "condStats": [{"name": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
                                     "weight": round(cw[k], 2) if k in cw else None}
                                    for k, v in self.state.get("condStats", {}).items() if v["n"]],
+                     "shapeWeights": {k: {str(v): w for v, w in m.items()} for k, m in self.shape_weights().items()},
                      "cooling": sorted(m.split("-")[1] for m, t in self.state.get("coolMarkets", {}).items() if t > time.time()),
                      "report": self.state["lastReport"],
                      "ai": self.state.get("aiReport"),
