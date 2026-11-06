@@ -124,6 +124,16 @@ details summary::after { content: "열기"; font-size: 12px; color: var(--muted)
 details[open] summary::after { content: "닫기"; }
 .code { width: 100%; min-height: 90px; font: 12px/1.4 ui-monospace, Consolas, monospace; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--chip); color: var(--fg); resize: vertical; word-break: break-all; }
 .warn-box { font-size: 13px; color: var(--warn); }
+/* 봇 설정 */
+.set-group { display: flex; flex-direction: column; gap: 10px; }
+.set-group + .set-group { border-top: 1px solid var(--line); padding-top: 12px; }
+.set-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 150px); gap: 10px; align-items: center; }
+.set-row .label { font-size: 13px; color: var(--fg); letter-spacing: 0; }
+.set-row .hint { font-size: 12px; color: var(--muted); }
+.set-row select.inp, .set-row input.inp { padding: 8px 10px; min-height: 40px; }
+.set-src { font-size: 11px; color: var(--muted); }
+.set-src.app { color: var(--brand); }
+.set-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); background: var(--fg); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 14px; max-width: calc(100% - 32px); }
 footer { font-size: 12px; color: var(--muted); text-align: center; }
 
@@ -482,6 +492,22 @@ body.compact #sumCard { display: flex !important; }
 
     <section class="card ex-empty" id="bnEmpty" data-ex="bn" hidden><div class="empty">바이낸스 엔진에서 받은 정보가 아직 없음. 회사 PC에서 start_binance.bat 이 실행 중인지 확인.</div></section>
 
+    <section class="card" id="setCard" hidden>
+      <div class="head-row"><h2>봇 설정</h2><span class="sub" id="setState"></span></div>
+      <div class="sub">여기서 바꾸면 참돔 PC 봇이 3분 안에 받아서 다시 시작하며 적용합니다. API 키·연결 코드는 보안상 PC의 bot_config.env 에만 둡니다.</div>
+      <div class="set-group" id="setUp">
+        <h2 class="sub">업비트 봇</h2>
+      </div>
+      <div class="set-group" id="setBn">
+        <h2 class="sub">바이낸스 선물 엔진</h2>
+      </div>
+      <div class="warn-box" id="setWarn" hidden></div>
+      <div class="set-btns">
+        <button type="button" id="setReset">되돌리기</button>
+        <button type="button" class="btn-primary" id="setSave" disabled>저장</button>
+      </div>
+    </section>
+
     <section class="card">
       <details id="linkBox">
         <summary>PC 봇 연결 코드</summary>
@@ -611,11 +637,13 @@ onAuthStateChanged(auth, async (user) => {
   catch (e) { toast("계정 정보 저장 실패: " + (e.code || e.message)); }
 
   unsubs.push(onSnapshot(doc(db, "users", user.uid, "status", "current"),
-    (snap) => { lastStatus = snap.exists() ? snap.data() : null; $("reqOpen").hidden = !auth.currentUser; renderStatus(); },
+    (snap) => { lastStatus = snap.exists() ? snap.data() : null; $("reqOpen").hidden = !auth.currentUser; renderStatus(); renderSettings(); },
     (e) => toast("상태 불러오기 실패: " + e.code)));
 
   unsubs.push(onSnapshot(doc(db, "users", user.uid, "status", "binance"),
-    (snap) => renderBinance(snap.exists() ? snap.data() : null), () => {}));
+    (snap) => { renderBinance(snap.exists() ? snap.data() : null); renderSettings(); }, () => {}));
+  unsubs.push(onSnapshot(doc(db, "users", user.uid, "status", "settings"),
+    (snap) => { appSettings = snap.exists() ? (snap.data().values || {}) : appSettings; renderSettings(); }, () => {}));
 
   const tq = query(collection(db, "users", user.uid, "trades"), orderBy("at", "desc"), limit(30));
   unsubs.push(onSnapshot(tq, (snap) => renderTrades(snap.docs.map((d) => d.data())),
@@ -807,6 +835,109 @@ function renderTiles() {
     box.append(b);
   }
 }
+
+// ---------- 봇 설정 (대시보드 → status/settings → PC 봇이 3분마다 읽어 bot_settings.json 에 저장 후 재시작) ----------
+const SETTINGS = [
+  { k: "TRADE_MODE", g: "up", label: "업비트 거래 방식", type: "choice", opts: [["live", "실제 주문"], ["paper", "모의매매"]] },
+  { k: "DAILY_LOSS_LIMIT", g: "up", label: "하루 손실 한도", hint: "원 · 0이면 제한 없음", type: "num", min: 0, max: 1000000, step: 1000 },
+  { k: "BINANCE_TRADE_MODE", g: "bn", label: "바이낸스 거래 방식", type: "choice", opts: [["live", "실제 주문"], ["paper", "모의만"]] },
+  { k: "BINANCE_LIVE_BASIS", g: "bn", label: "실주문 기준", hint: "방향별: 롱/숏 모의 50회·+0.30% 이상 · 규칙별: 규칙 5회·+0.15% 통과", type: "choice",
+    opts: [["side", "방향별 성적"], ["rule", "규칙별 통과"]] },
+  { k: "BINANCE_ORDER_USDT", g: "bn", label: "1회 실주문 금액", hint: "USDT · 5~200", type: "num", min: 5, max: 200, step: 1 },
+  { k: "BINANCE_DAILY_LOSS_USDT", g: "bn", label: "하루 손실 한도", hint: "USDT · 1~500", type: "num", min: 1, max: 500, step: 1 },
+  { k: "BINANCE_MAX_LIVE", g: "bn", label: "동시 실주문 최대", hint: "개 · 1~10", type: "num", min: 1, max: 10, step: 1 },
+];
+let appSettings = null, setDirty = false;
+const SRC_NAME = { app: "대시보드에서 정함", file: "설정 파일 값", default: "기본값" };
+function effSetting(k) {
+  const v = (k.startsWith("BINANCE_") ? lastBinance?.settings : lastStatus?.settings)?.[k];
+  return v || null;
+}
+function buildSettings() {
+  if ($("setUp").dataset.built) return;
+  for (const f of SETTINGS) {
+    const row = document.createElement("label"); row.className = "set-row";
+    const left = document.createElement("div");
+    left.innerHTML = `<div class="label"></div><div class="hint"></div><div class="set-src"></div>`;
+    left.querySelector(".label").textContent = f.label;
+    left.querySelector(".hint").textContent = f.hint || "";
+    let el;
+    if (f.type === "choice") {
+      el = document.createElement("select");
+      for (const [v, t] of f.opts) { const o = document.createElement("option"); o.value = v; o.textContent = t; el.append(o); }
+    } else {
+      el = document.createElement("input"); el.type = "number"; el.inputMode = "numeric";
+      el.min = f.min; el.max = f.max; el.step = f.step;
+    }
+    el.className = "inp num"; el.id = "set_" + f.k; el.dataset.k = f.k;
+    el.addEventListener("input", () => { setDirty = true; checkSettings(); });
+    row.append(left, el);
+    $(f.g === "up" ? "setUp" : "setBn").append(row);
+  }
+  $("setUp").dataset.built = "1";
+}
+function renderSettings() {
+  const has = lastStatus?.settings || lastBinance?.settings;
+  $("setCard").hidden = !auth.currentUser || !has;
+  if (!has) return;
+  buildSettings();
+  for (const f of SETTINGS) {
+    const el = $("set_" + f.k), eff = effSetting(f.k);
+    const row = el.closest(".set-row");
+    row.hidden = !eff;                                  // 해당 프로그램이 아직 새 버전이 아니면 숨김
+    if (!eff) continue;
+    const src = row.querySelector(".set-src");
+    src.textContent = "지금 적용: " + (f.opts ? (f.opts.find((o) => o[0] === eff.value)?.[1] || eff.value) : Number(eff.value).toLocaleString()) + " · " + (SRC_NAME[eff.src] || "");
+    src.className = "set-src" + (eff.src === "app" ? " app" : "");
+    if (!setDirty) el.value = appSettings?.[f.k] ?? eff.value;
+  }
+  const pending = appSettings && SETTINGS.some((f) => { const e = effSetting(f.k); return e && appSettings[f.k] !== undefined && String(appSettings[f.k]) !== String(e.value); });
+  $("setState").textContent = pending ? "PC 적용 대기 중" : "";
+  checkSettings();
+}
+function readSettingsForm() {
+  const out = {}, bad = [];
+  for (const f of SETTINGS) {
+    const el = $("set_" + f.k);
+    if (!el || el.closest(".set-row").hidden) continue;
+    const v = String(el.value).trim();
+    if (f.type === "num") {
+      const x = Number(v);
+      if (v === "" || !Number.isFinite(x) || x < f.min || x > f.max) { bad.push(f.label); continue; }
+      out[f.k] = String(x);
+    } else out[f.k] = v;
+  }
+  return { out, bad };
+}
+function checkSettings() {
+  const { out, bad } = readSettingsForm();
+  const w = [];
+  if (bad.length) w.push("범위를 벗어난 값: " + bad.join(", "));
+  const changed = SETTINGS.filter((f) => out[f.k] !== undefined && out[f.k] !== (effSetting(f.k)?.value ?? ""));
+  for (const f of changed) {
+    if (f.k.endsWith("TRADE_MODE") && out[f.k] === "live") w.push(`${f.label}을 '실제 주문'으로 바꾸면 실제 돈으로 거래합니다.`);
+  }
+  $("setWarn").hidden = !w.length; $("setWarn").textContent = w.join(" ");
+  $("setSave").disabled = !!bad.length || !changed.length;
+  $("setSave").textContent = changed.length ? `저장 (${changed.length}개 변경)` : "저장";
+}
+$("setReset").addEventListener("click", () => { setDirty = false; renderSettings(); });
+$("setSave").addEventListener("click", async () => {
+  const { out, bad } = readSettingsForm();
+  if (bad.length) return;
+  const goLive = SETTINGS.some((f) => f.k.endsWith("TRADE_MODE") && out[f.k] === "live" && effSetting(f.k)?.value !== "live");
+  if (goLive && !confirm("실제 주문으로 바꿉니다. 실제 돈으로 거래가 시작됩니다. 저장할까요?")) return;
+  const values = { ...(appSettings || {}), ...out };
+  const body = { values, updatedAt: Date.now(), by: nickOf(auth.currentUser) || "" };
+  $("setSave").disabled = true;
+  try {
+    try { await setDoc(doc(db, "users", auth.currentUser.uid, "status", "settings"), body); }
+    catch (e1) { await setDoc(doc(db, "users", auth.currentUser.uid), { botSettings: body }, { merge: true }); }
+    appSettings = values; setDirty = false;
+    toast("저장함 · 참돔 PC가 3분 안에 받아서 다시 시작하며 적용");
+    renderSettings();
+  } catch (e) { toast("설정 저장 실패: " + (e.code || e.message)); checkSettings(); }
+});
 
 // ---------- 요청함 (요청·승인 전달) ----------
 // 명령 컬렉션은 보안 규칙상 정해진 명령(일시정지 등)만 허용 → 요청·승인은 status/inbox 문서에 남기고 봇이 20초마다 읽음

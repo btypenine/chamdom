@@ -638,6 +638,7 @@ class Engine:
                                   for r in rb if r.get("status") == "testing"),
                                  key=lambda x: (-(x["n"] or 0), -(x["avgPct"] or -99)))[:3],
             "ruleEval": RULE_EVAL, "rulePromote": RULE_PROMOTE_MIN_AVG, "liveBasis": self.live_basis,
+            "settings": cb.settings_view(self.cfg, binance=True),
             "strategies": [{"symbol": k, "desc": v["desc"], "btEdge": v["btEdge"]} for k, v in self.state["strategies"].items()],
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),
@@ -673,6 +674,9 @@ class Engine:
 
     def run(self):
         uid = self.cloud.connect()
+        bn = {k: v for k, v in self.cfg.get("_appSettings", {}).items() if k.startswith("BINANCE_")}
+        if bn:
+            log("[설정] 대시보드에서 정한 값 적용: " + ", ".join(f"{k}={v}" for k, v in bn.items()))
         log(f"시작 · {'실주문 켜짐' if self.live else '모의매매 전용(실제 주문 없음)'} · "
             f"{TF}분봉 · 모의 1회 {PAPER_USDT:.0f} USDT · 계정 {uid[:6]}…")
         self.reconcile()
@@ -686,6 +690,17 @@ class Engine:
             try:
                 if any(k.replace("1000", "").replace("USDT", "") in cb.PROTECTED_COINS for k in self.state["strategies"]):
                     self.state["lastSelect"] = 0
+                if time.time() - getattr(self, "_last_settings", 0) >= cb.APP_SETTINGS_EVERY:
+                    self._last_settings = time.time()
+                    try:
+                        changed = cb.sync_app_settings(self.cloud, self.cfg, binance=True)
+                    except Exception as e:
+                        changed = False
+                        log(f"[경고] 대시보드 설정 확인 실패 (매매는 계속): {str(e)[:120]}")
+                    if changed:
+                        log("[설정] 대시보드에서 바꾼 설정을 받았습니다 → 적용하려고 다시 시작합니다")
+                        save_state(self.state)
+                        sys.exit(RESTART_CODE)
                 if time.time() - self.state["lastSelect"] > RESELECT_HOURS * 3600 or not self.state["strategies"]:
                     self.reselect()
                 self.manage()
