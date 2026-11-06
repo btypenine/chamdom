@@ -1336,11 +1336,26 @@ def exit_mid_fade(bot, pos, price):
         f"보유시간 {frac * 100:.0f}% 경과 · 익절 진행률 최고 {prog:.0f}% · 포지션 {pnl:+.2f}%"
 
 
+DEEP_CUT_SL = -3.0              # 넓은 손절 중간 차단: 규칙 손절폭이 이 % 이하(-3%·-5% 처럼 넓은 규칙)인데
+DEEP_CUT_PNL = -2.0             # 지금 순손익(수수료 포함)이 이 % 이하로 빠졌으면 조기 정리 대상
+
+
+def exit_deep_cut(bot, pos, price):
+    """손절폭이 넓은 규칙(-3%·-5%)의 한 번 큰 손실이 앞선 여러 번 익절을 지우는 문제 대응.
+    끝까지 손절선까지 가는 것보다 -2%에서 끊는 게 나은지 관찰로 시작해 실전 결과와 비교"""
+    if not pos.get("unit") or not pos.get("sl"):
+        return False, ""
+    sl_pct = (pos["sl"] / pos["unit"] - 1) * 100
+    pnl = (price * (1 - FEE_RATE) / pos["unit"] - 1) * 100
+    return (sl_pct <= DEEP_CUT_SL and pnl <= DEEP_CUT_PNL), f"규칙 손절 {sl_pct:.1f}% · 지금 포지션 {pnl:+.2f}%"
+
+
 EXIT_RULES = [
     {"id": "btc_exit", "name": "보유 중 BTC 하락 정리", "desc": f"들고 있는 동안 BTC가 {BTC_EXIT_PCT}% 이상 빠지고 손실 중이면 일찍 정리", "fn": exit_btc_drop},
     {"id": "stale_exit", "name": "힘 빠진 보유 정리", "desc": f"보유시간 {STALE_EXIT_FRAC * 100:.0f}%가 지나도 익절까지 {STALE_EXIT_PROG}%도 못 갔고 손실 중이면 일찍 정리", "fn": exit_stale},
     {"id": "giveback_exit", "name": "익절 근처 되밀림 정리", "desc": f"익절까지 {GIVEBACK_PROG}% 이상 갔다가 순손익 {GIVEBACK_PNL:+.1f}% 이하로 되밀리면 일찍 정리", "fn": exit_giveback},
     {"id": "mid_fade_exit", "name": "중간 진행 후 되밀림 정리", "desc": f"보유시간 {MID_FADE_FRAC * 100:.0f}%가 지났고 익절까지 {MID_FADE_PROG}% 이상 갔었는데 순손익 {MID_FADE_PNL:+.1f}% 이하로 되밀렸으면 일찍 정리", "fn": exit_mid_fade},
+    {"id": "deep_cut_exit", "name": "넓은 손절 중간 차단", "desc": f"손절폭 {DEEP_CUT_SL:.0f}% 이하로 넓은 규칙이 순손익 {DEEP_CUT_PNL:.0f}% 이하로 빠지면 손절선까지 기다리지 않고 일찍 정리", "fn": exit_deep_cut},
 ]
 
 
