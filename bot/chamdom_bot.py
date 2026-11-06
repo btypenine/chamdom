@@ -53,7 +53,7 @@ APP_SETTINGS = {
     "BINANCE_ORDER_USDT": ("num", (5, 200)),
     "BINANCE_DAILY_LOSS_USDT": ("num", (1, 500)),
     "BINANCE_MAX_LIVE": ("num", (1, 10)),
-    "BINANCE_LIVE_BASIS": ("choice", ("rule", "side")),
+    "BINANCE_LIVE_BASIS": ("choice", ("rule", "side", "all")),
 }
 APP_SETTINGS_EVERY = 180                                       # 대시보드 설정 확인 주기(초) — 읽기 한도 아끼려고 3분
 
