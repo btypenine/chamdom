@@ -1520,6 +1520,23 @@ function renderMore(s, stale) {
       el.style.opacity = "0.6";
     }
     if (rbk.some(r => r.status === "proven")) gapRows.push(el);
+    // 예측력: 통과 규칙의 '직전 누적 성적·횟수' 구간별 다음 거래 결과 — 좋은 구간이 더 좋아야 장부 선별이 통하는 것
+    const ppd = Array.isArray(s.passPredict) ? s.passPredict : [];
+    const ppLabel = { "avg:<0.3": "직전 평균 +0.3%↓", "avg:0.3~0.6": "직전 평균 +0.3~0.6%", "avg:0.6+": "직전 평균 +0.6%↑",
+                      "n:5~9": "직전 5~9회", "n:10~19": "직전 10~19회", "n:20+": "직전 20회 이상" };
+    const ppOrder = Object.keys(ppLabel);
+    for (const b of ppd.slice().sort((a, b) => ppOrder.indexOf(a.key) - ppOrder.indexOf(b.key))) {
+      if (!ppLabel[b.key] || !b.n) continue;
+      const r = document.createElement("div"); r.className = "li";
+      r.innerHTML = "<span></span><span class='num'></span>";
+      r.firstChild.textContent = "　· " + ppLabel[b.key];
+      r.firstChild.style.whiteSpace = "nowrap";
+      r.lastChild.textContent = `${b.n}회 · 다음 거래당 ${pct(b.avgPct)}`;
+      r.lastChild.title = `통과 규칙이 이 구간일 때 다음 거래 결과 · 승률 ${Math.round(b.wins / b.n * 100)}% (분석 전용)`;
+      r.lastChild.classList.add(b.avgPct >= 0 ? "up" : "down");
+      r.style.opacity = b.n < 20 ? "0.5" : "0.8";
+      gapRows.push(r);
+    }
   }
   // 원숭이 기준선: 우리가 살 때마다 같은 순간 무작위 종목을 같은 익절·손절·보유시간으로 샀다고 치고 비교 (분석 전용)
   const mky = s.monkeyStats && (s.monkeyStats.ours || s.monkeyStats.monkey) ? s.monkeyStats : null;
