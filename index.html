@@ -52,7 +52,7 @@ body {
   display: flex; flex-direction: column; gap: 14px;
 }
 header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-block: 4px; }
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 750; font-size: 18px; letter-spacing: -0.01em; }
+.brand { white-space: nowrap; display: flex; align-items: center; gap: 10px; font-weight: 750; font-size: 18px; letter-spacing: -0.01em; }
 .mark { width: 28px; height: 28px; border-radius: 8px; background: var(--brand); display: grid; place-items: center; }
 .mark svg { width: 18px; height: 18px; fill: var(--brand-ink); }
 .hdr-r { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -134,6 +134,15 @@ details[open] summary::after { content: "닫기"; }
 .set-src { font-size: 11px; color: var(--muted); }
 .set-src.app { color: var(--brand); }
 .set-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.set-btn { min-height: 34px; padding: 6px 10px; font-size: 13px; border-radius: 99px; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; flex: none; }
+.set-btn svg { width: 16px; height: 16px; fill: currentColor; }
+.set-tab { display: flex; flex-direction: column; gap: 12px; }
+.set-tab[hidden] { display: none; }
+.set-stack { display: flex; flex-direction: column; gap: 8px; }
+.seg.seg4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+#setSheet { width: min(560px, calc(100vw - 24px)); }
+.set-view .set-row { grid-template-columns: minmax(0, 1fr) minmax(0, 220px); }
+@media (max-width: 380px) { .set-btn span { display: none; } }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px)); background: var(--fg); color: var(--bg); padding: 10px 16px; border-radius: 10px; font-size: 14px; max-width: calc(100% - 32px); }
 footer { font-size: 12px; color: var(--muted); text-align: center; }
 
@@ -283,6 +292,7 @@ body.compact #sumCard { display: flex !important; }
       참돔 트레이드
     </div>
     <div class="hdr-r">
+      <button type="button" class="set-btn" id="setOpen" hidden aria-label="설정" title="설정"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3.5h-4l-.3 2.5a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.4 7.4 0 0 0 1.7 1l.3 2.5h4l.3-2.5a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.4zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg><span>설정</span></button>
       <button type="button" class="req-btn" id="reqOpen" hidden>요청하기</button>
       <button type="button" class="who" id="who" hidden aria-label="닉네임 바꾸기" title="눌러서 닉네임 바꾸기"></button>
     </div>
@@ -492,15 +502,25 @@ body.compact #sumCard { display: flex !important; }
 
     <section class="card ex-empty" id="bnEmpty" data-ex="bn" hidden><div class="empty">바이낸스 엔진에서 받은 정보가 아직 없음. 회사 PC에서 start_binance.bat 이 실행 중인지 확인.</div></section>
 
-    <section class="card" id="setCard" hidden>
+
+  </div>
+</div>
+<dialog class="sheet" id="setSheet" aria-labelledby="setTitle">
+  <div class="sheet-in">
+    <div class="sheet-head"><h3 id="setTitle">설정</h3><button class="btn-text" type="button" id="setClose">닫기</button></div>
+    <nav class="seg seg4" id="setTabs" role="tablist" aria-label="설정 종류">
+      <button type="button" data-tab="bot" aria-pressed="true">봇</button>
+      <button type="button" data-tab="view" aria-pressed="false">화면</button>
+      <button type="button" data-tab="pc" aria-pressed="false">PC 연결</button>
+      <button type="button" data-tab="acct" aria-pressed="false">계정</button>
+    </nav>
+
+    <section class="set-tab" data-tab="bot">
       <div class="head-row"><h2>봇 설정</h2><span class="sub" id="setState"></span></div>
-      <div class="sub">여기서 바꾸면 참돔 PC 봇이 3분 안에 받아서 다시 시작하며 적용합니다. API 키·연결 코드는 보안상 PC의 bot_config.env 에만 둡니다.</div>
-      <div class="set-group" id="setUp">
-        <h2 class="sub">업비트 봇</h2>
-      </div>
-      <div class="set-group" id="setBn">
-        <h2 class="sub">바이낸스 선물 엔진</h2>
-      </div>
+      <div class="sub">저장하면 참돔 PC 봇이 3분 안에 받아서 다시 시작하며 적용함. API 키·연결 코드는 보안상 PC의 bot_config.env 에만 둠.</div>
+      <div class="empty" id="setEmpty">PC 봇이 새 버전으로 다시 시작하면 여기에 설정이 나타남 (보통 10분 안)</div>
+      <div class="set-group" id="setUp"><h2 class="sub">업비트 봇</h2></div>
+      <div class="set-group" id="setBn"><h2 class="sub">바이낸스 선물 엔진 · 업비트와 별개 운용</h2></div>
       <div class="warn-box" id="setWarn" hidden></div>
       <div class="set-btns">
         <button type="button" id="setReset">되돌리기</button>
@@ -508,23 +528,34 @@ body.compact #sumCard { display: flex !important; }
       </div>
     </section>
 
-    <section class="card">
-      <details id="linkBox">
-        <summary>PC 봇 연결 코드</summary>
+    <section class="set-tab set-view" data-tab="view" hidden>
+      <h2>화면</h2>
+      <div class="set-row"><div><div class="label">보기 방식</div><div class="hint">요약: 핵심 카드만</div></div>
+        <div class="seg" id="viewSeg2"><button type="button" data-view="compact">요약</button><button type="button" data-view="full">전체</button></div></div>
+      <div class="set-row"><div><div class="label">거래소</div><div class="hint">보이는 카드 고르기</div></div>
+        <div class="seg seg3" id="exSeg2"><button type="button" data-ex="all">모두</button><button type="button" data-ex="up">업비트</button><button type="button" data-ex="bn">바이낸스</button></div></div>
+    </section>
+
+    <section class="set-tab" data-tab="pc" hidden>
+      <h2>PC 봇 연결</h2>
+      <div id="linkBox" class="set-stack">
         <div class="warn-box">이 코드는 비밀번호와 같습니다. 내 PC의 봇 설정 파일에만 넣고, 다른 사람이나 채팅에 보내지 마세요.</div>
         <button type="button" id="showCode">연결 코드 보기</button>
         <div id="codeArea" hidden style="display:flex;flex-direction:column;gap:8px">
           <textarea class="code" id="codeText" readonly></textarea>
           <button type="button" id="copyCode">코드 복사</button>
         </div>
-      </details>
+      </div>
+      <div class="sub">처음 설치·친구 초대는 <a href="guide.html" target="_blank" rel="noopener">설치 가이드</a> 참고.</div>
     </section>
 
-    <footer>
-      <button class="btn-text" type="button" id="logoutBtn">로그아웃</button>
-    </footer>
+    <section class="set-tab" data-tab="acct" hidden>
+      <h2>계정</h2>
+      <div class="set-row"><div><div class="label">닉네임</div><div class="hint" id="acctNick"></div></div><button type="button" id="acctNickBtn">바꾸기</button></div>
+      <div class="set-row"><div><div class="label">로그인 계정</div><div class="hint" id="acctMail"></div></div><button type="button" id="logoutBtn">로그아웃</button></div>
+    </section>
   </div>
-</div>
+</dialog>
 <dialog class="sheet" id="reqSheet" aria-labelledby="reqTitle">
   <div class="sheet-in">
     <div class="sheet-head"><h3 id="reqTitle">요청하기</h3><button class="btn-text" type="button" id="reqClose">닫기</button></div>
@@ -627,7 +658,7 @@ onAuthStateChanged(auth, async (user) => {
   unsubs.forEach((u) => u()); unsubs = [];
   $("loginView").hidden = !!user;
   $("appView").hidden = !user;
-  $("who").hidden = !user; $("reqOpen").hidden = !user; $("viewSeg").hidden = !user; $("exSeg").hidden = !user;
+  $("who").hidden = !user; $("reqOpen").hidden = !user; $("setOpen").hidden = !user; $("viewSeg").hidden = !user; $("exSeg").hidden = !user;
   $("who").textContent = user ? nickOf(user) : "";
   $("codeArea").hidden = true; $("codeText").value = "";
   if (!user) return;
@@ -762,11 +793,11 @@ let lastBinance = null;
 const VIEW_KEY = "chamdomView";
 function setView(v, save = true) {
   document.body.classList.toggle("compact", v === "compact");
-  document.querySelectorAll("#viewSeg [data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === v)));
+  document.querySelectorAll("#viewSeg [data-view], #viewSeg2 [data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === v)));
   if (save) { try { localStorage.setItem(VIEW_KEY, v); } catch (e) {} }
   if (v === "compact") renderTiles();
 }
-document.querySelectorAll("#viewSeg [data-view]").forEach((b) => b.addEventListener("click", () => { setView(b.dataset.view); window.scrollTo({ top: 0 }); }));
+document.querySelectorAll("#viewSeg [data-view], #viewSeg2 [data-view]").forEach((b) => b.addEventListener("click", () => { setView(b.dataset.view); window.scrollTo({ top: 0 }); }));
 try { if (localStorage.getItem(VIEW_KEY) === "compact") setView("compact", false); } catch (e) {}
 const EX_KEY = "chamdomEx";
 let curEx = "all";
@@ -774,11 +805,11 @@ function setEx(x, save = true) {
   curEx = ["up", "bn"].includes(x) ? x : "all";
   document.body.classList.toggle("ex-up", curEx === "up");
   document.body.classList.toggle("ex-bn", curEx === "bn");
-  document.querySelectorAll("#exSeg [data-ex]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.ex === curEx)));
+  document.querySelectorAll("#exSeg [data-ex], #exSeg2 [data-ex]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.ex === curEx)));
   if (save) { try { localStorage.setItem(EX_KEY, curEx); } catch (e) {} }
   renderTiles();
 }
-document.querySelectorAll("#exSeg [data-ex]").forEach((b) => b.addEventListener("click", () => { setEx(b.dataset.ex); window.scrollTo({ top: 0 }); }));
+document.querySelectorAll("#exSeg [data-ex], #exSeg2 [data-ex]").forEach((b) => b.addEventListener("click", () => { setEx(b.dataset.ex); window.scrollTo({ top: 0 }); }));
 try { const x = localStorage.getItem(EX_KEY); if (x) setEx(x, false); } catch (e) {}
 window.addEventListener("scroll", () => document.querySelector(".topbar").classList.toggle("scrolled", window.scrollY > 4), { passive: true });
 function goCard(id) {
@@ -836,12 +867,28 @@ function renderTiles() {
   }
 }
 
+// ---------- 설정 창 (상단 설정 버튼) ----------
+function setTab(t) {
+  document.querySelectorAll("#setTabs [data-tab]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.tab === t)));
+  document.querySelectorAll("#setSheet .set-tab").forEach((x) => { x.hidden = x.dataset.tab !== t; });
+}
+document.querySelectorAll("#setTabs [data-tab]").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
+$("setOpen").addEventListener("click", () => {
+  const u = auth.currentUser;
+  $("acctNick").textContent = u ? nickOf(u) : ""; $("acctMail").textContent = u?.email || "";
+  setView(document.body.classList.contains("compact") ? "compact" : "full", false); setEx(curEx, false);
+  renderSettings(); $("setSheet").showModal();
+});
+$("setClose").addEventListener("click", () => $("setSheet").close());
+$("setSheet").addEventListener("click", (e) => { if (e.target === $("setSheet")) $("setSheet").close(); });
+$("acctNickBtn").addEventListener("click", () => { $("setSheet").close(); $("who").click(); });
+
 // ---------- 봇 설정 (대시보드 → status/settings → PC 봇이 3분마다 읽어 bot_settings.json 에 저장 후 재시작) ----------
 const SETTINGS = [
   { k: "TRADE_MODE", g: "up", label: "업비트 거래 방식", type: "choice", opts: [["live", "실제 주문"], ["paper", "모의매매"]] },
   { k: "DAILY_LOSS_LIMIT", g: "up", label: "하루 손실 한도", hint: "원 · 0이면 제한 없음", type: "num", min: 0, max: 1000000, step: 1000 },
   { k: "BINANCE_TRADE_MODE", g: "bn", label: "바이낸스 거래 방식", type: "choice", opts: [["live", "실제 주문"], ["paper", "모의만"]] },
-  { k: "BINANCE_LIVE_BASIS", g: "bn", label: "실주문 기준", hint: "롱·숏 모두: 퇴출·마이너스 규칙만 제외 · 방향별: 모의 50회·+0.30% 이상인 쪽 · 규칙별: 규칙 5회·+0.15% 통과", type: "choice",
+  { k: "BINANCE_LIVE_BASIS", g: "bn", label: "실주문 기준", hint: "모두: 마이너스 규칙만 제외 · 방향별: 50회·+0.30%↑ 쪽 · 규칙별: 5회·+0.15%↑", type: "choice",
     opts: [["all", "롱·숏 모두"], ["side", "방향별 성적"], ["rule", "규칙별 통과"]] },
   { k: "BINANCE_ORDER_USDT", g: "bn", label: "1회 실주문 금액", hint: "USDT · 5~200", type: "num", min: 5, max: 200, step: 1 },
   { k: "BINANCE_DAILY_LOSS_USDT", g: "bn", label: "하루 손실 한도", hint: "USDT · 1~500", type: "num", min: 1, max: 500, step: 1 },
@@ -878,8 +925,11 @@ function buildSettings() {
 }
 function renderSettings() {
   const has = lastStatus?.settings || lastBinance?.settings;
-  $("setCard").hidden = !auth.currentUser || !has;
+  $("setEmpty").hidden = !!has;
+  for (const id of ["setUp", "setBn", "setWarn"]) if (!has) $(id).hidden = true;
+  document.querySelector("#setSheet .set-btns").hidden = !has;
   if (!has) return;
+  $("setUp").hidden = !lastStatus?.settings; $("setBn").hidden = !lastBinance?.settings;
   buildSettings();
   for (const f of SETTINGS) {
     const el = $("set_" + f.k), eff = effSetting(f.k);
