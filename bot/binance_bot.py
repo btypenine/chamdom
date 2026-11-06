@@ -673,7 +673,7 @@ class Engine:
 
     def run(self):
         uid = self.cloud.connect()
-        log(f"시작 · {'실주문 켜짐(통과 규칙만, 나머지 모의)' if self.live else '모의매매 전용(실제 주문 없음)'} · "
+        log(f"시작 · {'실주문 켜짐' if self.live else '모의매매 전용(실제 주문 없음)'} · "
             f"{TF}분봉 · 모의 1회 {PAPER_USDT:.0f} USDT · 계정 {uid[:6]}…")
         self.reconcile()
         last_update = time.time()
