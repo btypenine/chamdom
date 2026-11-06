@@ -8,6 +8,15 @@
 - 오늘(09시 기준) 실주문 손실이 BINANCE_DAILY_LOSS_USDT 미만, 실보유 수 < BINANCE_MAX_LIVE
 - 업비트 봇이 대시보드에서 '일시정지' 상태가 아님
 - 레버리지 1배·격리 마진 고정, 매도는 reduceOnly 로만 정리
+
+돈 지키기 (11-06 추가)
+- 실주문 진입 즉시 거래소에 보호 손절(STOP_MARKET, Algo 주문) — PC가 꺼져도 손절이 걸림. 못 걸면 바로 정리
+- 월 손실 한도(BINANCE_MONTH_LOSS_USDT), 연속 3번 손실이면 2시간 쉼 (대시보드에서 승인하면 바로 다시 거래)
+- 실주문 금액은 규칙이 이익일 확률로 0.5~2배, 누적 이익이 나면 판을 키우고 손실이면 줄임
+
+진화 (11-06 추가)
+- 잘된 규칙의 조건 조합을 유전자 풀에 모아, 새 전략 일부를 변이·교배로 만듦 (종목을 넘나들며 섞임)
+- 진화 출신과 무작위 출신의 실제 성적을 따로 재서, 진화가 이기면 진화 비율을 늘리고 지면 줄임
 (아래는 1단계 설명)
 참돔 트레이드 바이낸스 선물 엔진 — 1단계: 모의매매 전용
 
@@ -72,6 +81,29 @@ STICKY_IDLE_HOURS = 24            # 검증 중 규칙은 재선정 때 유지, �
 SIDE_GATE_MIN_N = 50              # (선택) 방향별 통과 기준: 모의 50회 이상
 SIDE_GATE_MIN_AVG = 0.30          #   거래당 +0.30% 이상
 
+# 돈 지키기 (실주문에만 적용, 모의에는 영향 없음)
+EXCHANGE_STOP_BUFFER = 0.5        # 거래소 보호 손절: 봇 손절가보다 0.5%p 더 바깥 (평소엔 봇이 먼저 정리, PC가 멈추면 거래소가 정리)
+EXCHANGE_CHECK_SEC = 60           # 실보유가 거래소에서 정리됐는지 확인하는 주기(초)
+STOP_FAIL_BLOCK_HOURS = 6         # 보호 손절을 못 걸면 바로 정리하고 이 시간 동안 실주문 쉼
+LOSS_STREAK_MAX = 3               # 실주문 연속 손실 이 횟수면
+LOSS_STREAK_REST_HOURS = 2        #   이 시간 동안 새 실주문 쉼 (대시보드에서 승인하면 바로 해제)
+RESUME_CHECK_SEC = 60             # 쉬는 동안 대시보드 '쉼 해제 승인'을 확인하는 주기(초)
+MONTH_LOSS_DEFAULT = 40.0         # 월 실주문 손실 한도 기본값(USDT) — 대시보드 BINANCE_MONTH_LOSS_USDT 로 변경
+
+# 성적 기반 실주문 금액 (확률이 높은 규칙에 더, 약한 규칙엔 덜 — 사람이 정하지 않고 결과로 정함)
+PRIOR_N = 5                       # 아직 거래가 적은 규칙은 '평균 0' 쪽으로 당겨 봄 (5회분 무게)
+PRIOR_SD = 2.0                    # 거래당 손익 흩어짐 기본 추정(%)
+SIZE_MIN_X, SIZE_MAX_X = 0.5, 2.0 # 기본 금액의 0.5~2배
+SIZE_SKIP_P = 0.40                # 이익일 확률이 40% 미만이면 실주문 대신 모의
+BANK_X = 15                       # 실주문 누적 이익 ÷ (기본 금액 × 15) 만큼 판을 키우거나 줄임 (0.5~2배)
+
+# 진화 (잘된 규칙의 '유전자'를 모아 변이·교배로 새 전략을 만들고, 무작위보다 나은지 스스로 재서 비율을 조절)
+GENE_POOL_MAX = 40                # 유전자 풀 크기
+GENE_MIN_N = 3                    # 이만큼 거래한 규칙부터 풀에 들어갈 자격
+EVO_SHARE_START = 0.30            # 새 전략 시도 중 진화 출신 비율 시작값
+EVO_SHARE_MIN, EVO_SHARE_MAX = 0.15, 0.75
+EVO_JUDGE_N = 10                  # 진화·무작위 출신 각각 이만큼 거래가 쌓이면 비율 조절 시작
+
 
 def log(msg):
     line = f"[{datetime.now(KST).strftime('%m-%d %H:%M:%S')}] [바이낸스] {msg}"
@@ -102,6 +134,10 @@ def load_state():
     s.setdefault("lastSelect", 0)
     s.setdefault("lastBar", {})
     s.setdefault("tradeLog", [])
+    s.setdefault("genePool", [])          # [{"side", "spec", "fit", "n", "rid", "gen", "symbol"}]
+    s.setdefault("evo", {"share": EVO_SHARE_START, "evo": {"n": 0, "sumPct": 0.0}, "rand": {"n": 0, "sumPct": 0.0},
+                         "maxGen": 0, "born": 0})
+    s.setdefault("guard", {"streak": 0, "restUntil": 0, "blockUntil": 0, "blockWhy": ""})
     return s
 
 
@@ -203,7 +239,34 @@ class Live:
             f = {x["filterType"]: x for x in s["filters"]}
             lot = f.get("MARKET_LOT_SIZE") or f.get("LOT_SIZE") or {}
             self.filters[s["symbol"]] = {"step": float(lot.get("stepSize", 0.001)), "minQty": float(lot.get("minQty", 0)),
-                                         "minNotional": float((f.get("MIN_NOTIONAL") or {}).get("notional", 5))}
+                                         "minNotional": float((f.get("MIN_NOTIONAL") or {}).get("notional", 5)),
+                                         "tick": float((f.get("PRICE_FILTER") or {}).get("tickSize", 0) or 0)}
+
+    def round_price(self, sym, px, up):
+        """호가 단위에 맞춤. up=True면 올림(숏 손절), False면 내림(롱 손절) — 늘 '더 바깥' 쪽으로"""
+        t = (self.filters.get(sym) or {}).get("tick") or 0
+        if t <= 0:
+            return float(f"{px:.6g}")
+        x = px / t
+        q = math.ceil(x - 1e-9) if up else math.floor(x + 1e-9)
+        dec = max(0, -int(math.floor(math.log10(t)))) if t < 1 else 0
+        return round(q * t, dec)
+
+    def stop_order(self, sym, close_side, trigger):
+        """거래소 보호 손절 (2025-12-09부터 조건 주문은 Algo 주문 창구로만 받음). 포지션 전체를 시장가로 닫음"""
+        d = self.call("POST", "/fapi/v1/algoOrder", {
+            "algoType": "CONDITIONAL", "symbol": sym, "side": close_side, "type": "STOP_MARKET",
+            "triggerPrice": f"{trigger:.10f}".rstrip("0").rstrip("."), "closePosition": "true",
+            "workingType": "MARK_PRICE"})
+        return d.get("algoId")
+
+    def cancel_stops(self, sym):
+        """그 종목에 걸어 둔 조건 주문 모두 취소 (없으면 조용히 넘어감)"""
+        try:
+            self.call("DELETE", "/fapi/v1/algoOpenOrders", {"symbol": sym})
+        except RuntimeError as e:
+            if "-2011" not in str(e) and "-2013" not in str(e):     # 취소할 주문 없음은 정상
+                log(f"[안내] {sym} 보호 손절 취소 응답: {str(e)[:120]}")
 
     def prepare(self, sym):
         if sym in self.prepared:
@@ -248,15 +311,84 @@ def series_of(cl):
     return s
 
 
-def pick_for(symbol, rng):
+# ---------------- 진화: 변이·교배 ----------------
+def _near(choices, v, rng):
+    """보기 목록에서 지금 값의 바로 옆 칸으로 (끝이면 안쪽으로)"""
+    if v not in choices:
+        return rng.choice(choices)
+    i = choices.index(v) + rng.choice((-1, 1))
+    return choices[min(len(choices) - 1, max(0, i))]
+
+
+def mutate(spec, rng):
+    """유전자 하나를 살짝 바꿈: 익절·손절·보유시간 한 칸, 조건 값 바꾸기, 조건 더하기·빼기 중 1~2개"""
+    sp = json.loads(json.dumps(spec))
+    pool = dict(cb.CONDITION_POOL)
+    for _ in range(rng.choice((1, 1, 2))):
+        ops = ["tp", "sl", "hold", "tweak"]
+        if len(sp["conds"]) < 3:
+            ops.append("add")
+        if len(sp["conds"]) > 1:
+            ops.append("drop")
+        op = rng.choice(ops)
+        if op == "tp":
+            sp["tp"] = _near(cb.TP_CHOICES, sp.get("tp", 0.5), rng)
+        elif op == "sl":
+            sp["sl"] = _near(cb.SL_CHOICES, sp["sl"], rng)
+        elif op == "hold":
+            sp["hold"] = _near(cb.HOLD_CHOICES, sp["hold"], rng)
+        elif op == "tweak":
+            c = rng.choice(sp["conds"])
+            c[1] = rng.choice(pool.get(c[0], [c[1]]))
+        elif op == "add":
+            have = {c[0] for c in sp["conds"]}
+            name = rng.choice([n for n in pool if n not in have])
+            sp["conds"].append([name, rng.choice(pool[name])])
+        else:
+            sp["conds"].pop(rng.randrange(len(sp["conds"])))
+    return sp
+
+
+def crossover(a, b, rng):
+    """두 부모의 조건을 섞고 익절·손절·보유시간은 각각 한쪽에서 받음"""
+    genes = {}
+    for c in a["conds"] + b["conds"]:
+        genes.setdefault(c[0], c[1])
+    names = list(genes)
+    rng.shuffle(names)
+    k = min(len(names), rng.choice((1, 2, 2, 3)))
+    return {"conds": [[n, json.loads(json.dumps(genes[n]))] for n in names[:k]],
+            "tp": rng.choice((a, b)).get("tp", 0.5), "sl": rng.choice((a, b))["sl"], "hold": rng.choice((a, b))["hold"]}
+
+
+def breed(genes, rng):
+    """유전자 풀에서 부모 고르기(3개 중 성적 좋은 쪽) → 자식 spec, 세대, 부모 표시"""
+    def tour():
+        return max(rng.sample(genes, min(3, len(genes))), key=lambda g: g["fit"])
+    p = tour()
+    if len(genes) >= 2 and rng.random() < 0.35:
+        q = tour()
+        child = crossover(p["spec"], q["spec"], rng)
+        if rng.random() < 0.5:
+            child = mutate(child, rng)
+        return child, max(p.get("gen", 0), q.get("gen", 0)) + 1, f"{p.get('symbol', '')}×{q.get('symbol', '')}"
+    return mutate(p["spec"], rng), p.get("gen", 0) + 1, p.get("symbol", "")
+
+
+def pick_for(symbol, rng, pool=None, share=0.0):
     cl = klines(symbol, TRAIN_BARS)
     if len(cl) < TRAIN_BARS * 0.8:
         return None
     cands = []
     for side, ser in (("long", series_of(cl)), ("short", series_of(inverted(cl)))):
         split = int(ser.n * (1 - cb.BT_HOLDOUT))
+        genes = [g for g in (pool or []) if g.get("side") == side]
         for _ in range(cb.BT_TRIALS):
-            sp = cb.random_spec(rng)
+            if genes and rng.random() < share:
+                sp, gen, parent = breed(genes, rng)
+                origin = {"origin": "evo", "gen": gen, "parent": parent}
+            else:
+                sp, origin = cb.random_spec(rng), {"origin": "rand", "gen": 0, "parent": ""}
             tr = cb.stats(cb.backtest(ser, sp, end=split))
             if tr["n"] < cb.EXPLORE_MIN_TRADES or tr["edge"] < cb.EXPLORE_MIN_EDGE:
                 continue
@@ -264,14 +396,14 @@ def pick_for(symbol, rng):
             if ho["n"] and ho["edge"] < cb.EXPLORE_HOLDOUT_FLOOR:
                 continue
             score = tr["edge"] if not ho["n"] else (tr["edge"] * tr["n"] + ho["edge"] * ho["n"]) / (tr["n"] + ho["n"])
-            cands.append((score, side, sp, tr, ho))
+            cands.append((score, side, sp, tr, ho, origin))
     if not cands:
         return None
-    score, side, sp, tr, ho = max(cands, key=lambda x: x[0])
+    score, side, sp, tr, ho, origin = max(cands, key=lambda x: x[0])
     rid = f"{symbol}-{side}-" + cb.rule_id("USDT-" + symbol, sp).split("-")[-1]
     desc = cb.describe(sp).replace(f"최대{sp['hold']}분", f"최대{sp['hold'] * TF / 60:g}시간")   # 보유시간은 봉 개수 × 15분
     return {"side": side, "spec": sp, "rid": rid, "desc": ("롱 " if side == "long" else "숏 ") + desc,
-            "btEdge": round(score, 3), "btTrades": tr["n"], "btWinrate": round(tr["winrate"], 3)}
+            "btEdge": round(score, 3), "btTrades": tr["n"], "btWinrate": round(tr["winrate"], 3), **origin}
 
 
 class Engine:
@@ -286,6 +418,9 @@ class Engine:
         self.order_usdt = num("BINANCE_ORDER_USDT", 20)
         self.daily_loss = num("BINANCE_DAILY_LOSS_USDT", 10)
         self.max_live = int(num("BINANCE_MAX_LIVE", 3))
+        c.setdefault("BINANCE_MONTH_LOSS_USDT", f"{MONTH_LOSS_DEFAULT:g}")      # 대시보드에 '기본값 40'으로 보이게
+        self.month_loss = num("BINANCE_MONTH_LOSS_USDT", MONTH_LOSS_DEFAULT)
+        self._last_exchange_check = 0
         self.live_basis = str(c.get("BINANCE_LIVE_BASIS", "rule")).strip().lower()   # rule(기본) | side | all
         key, sec = c.get("BINANCE_API_KEY", ""), c.get("BINANCE_SECRET_KEY", "")
         self.live = None
@@ -296,9 +431,17 @@ class Engine:
 
     # --- 전략 ---
     def reselect(self):
-        log(f"종목·전략 선정 시작 (15분봉, 상위 {TOP_N}종목, 롱·숏 각 {cb.BT_TRIALS}개 조합)")
-        syms = top_symbols()
         old = self.state.get("strategies") or {}
+        for cur in old.values():                                  # 예전 규칙에도 유전자(spec)를 붙여 둠 → 진화 재료
+            rb = self.state["ruleBook"].get(cur.get("rid"))
+            if rb is not None and "spec" not in rb and cur.get("spec"):
+                rb["spec"] = cur["spec"]
+                rb.setdefault("origin", cur.get("origin", "rand"))
+        self.refresh_pool()
+        evo = self.state["evo"]
+        log(f"종목·전략 선정 시작 (15분봉, 상위 {TOP_N}종목, 롱·숏 각 {cb.BT_TRIALS}개 조합 · "
+            f"진화 비율 {evo['share'] * 100:.0f}% · 유전자 풀 {len(self.state['genePool'])}개)")
+        syms = top_symbols()
         chosen, kept = {}, 0
         now = int(time.time())
         # 1) 검증이 진행 중인 규칙은 그대로 둠 — 4시간마다 새 규칙으로 바꾸면 어떤 규칙도 5회를 못 채움
@@ -320,7 +463,7 @@ class Engine:
                 continue
             self.push_phase(f"전략 선정 {i}/{len(syms)} ({sym})")
             try:
-                st = pick_for(sym, self.rng)
+                st = pick_for(sym, self.rng, self.state["genePool"], evo["share"])
             except Exception as e:
                 log(f"[경고] {sym} 선정 실패: {e}")
                 continue
@@ -332,8 +475,14 @@ class Engine:
                 chosen[sym] = st
                 self.state["ruleBook"].setdefault(st["rid"], {"id": st["rid"], "symbol": sym, "side": st["side"],
                                                               "desc": st["desc"], "btEdge": st["btEdge"], "n": 0, "wins": 0,
-                                                              "sumPct": 0.0, "status": "testing"})
-                log(f"  채택 {sym}: {st['desc']} · 백테스트 거래당 {st['btEdge']:+.2f}% ({st['btTrades']}회)")
+                                                              "sumPct": 0.0, "sumSq": 0.0, "status": "testing",
+                                                              "spec": st["spec"], "origin": st.get("origin", "rand"),
+                                                              "gen": st.get("gen", 0), "parent": st.get("parent", "")})
+                if st.get("origin") == "evo":
+                    evo["born"] += 1
+                    evo["maxGen"] = max(evo["maxGen"], st.get("gen", 0))
+                tag = f" · 🧬진화 {st['gen']}세대(부모 {st['parent']})" if st.get("origin") == "evo" else ""
+                log(f"  채택 {sym}: {st['desc']} · 백테스트 거래당 {st['btEdge']:+.2f}% ({st['btTrades']}회){tag}")
         self.prune_rules(chosen)
         self.state["strategies"] = chosen
         for sym in list(self.state["positions"]):              # 보호 코인으로 바뀐 종목의 모의 보유는 정리
@@ -350,6 +499,61 @@ class Engine:
         book = self.state["ruleBook"]
         for rid in [k for k, r in book.items() if r.get("n", 0) == 0 and r.get("status") == "testing" and k not in live_rids]:
             del book[rid]
+
+    # --- 진화·확률 ---
+    @staticmethod
+    def rule_post(rb):
+        """규칙의 '거래당 진짜 실력' 추정: (평균, 흩어짐, 이익일 확률). 거래가 적으면 0 쪽으로 당겨 봄"""
+        n, s = rb.get("n", 0), rb.get("sumPct", 0.0)
+        mean = s / (n + PRIOR_N)
+        if n >= 3 and rb.get("sumSq") is not None and rb.get("sqN", 0) >= 3:
+            m = n and s / n
+            var = max(0.25, rb["sumSq"] / rb["sqN"] - m * m)
+            sd = math.sqrt((var * n + PRIOR_SD ** 2 * PRIOR_N) / (n + PRIOR_N))
+        else:
+            sd = PRIOR_SD
+        se = sd / math.sqrt(n + PRIOR_N)
+        p = 0.5 * (1 + math.erf(mean / se / math.sqrt(2)))
+        return mean, sd, p
+
+    def refresh_pool(self):
+        """유전자 풀 다시 짜기: 거래 3회 이상·추정 실력 플러스인 규칙의 조건 조합 (퇴출 규칙 제외), 실력 순 상위 40개"""
+        genes = []
+        for rb in self.state["ruleBook"].values():
+            if not rb.get("spec") or rb.get("status") == "retired" or rb.get("n", 0) < GENE_MIN_N:
+                continue
+            mean, _, p = self.rule_post(rb)
+            if mean <= 0:
+                continue
+            genes.append({"side": rb["side"], "spec": rb["spec"], "fit": round(mean, 4), "p": round(p, 3), "n": rb["n"],
+                          "rid": rb["id"], "gen": rb.get("gen", 0), "symbol": rb.get("symbol", "").replace("USDT", "")})
+        genes.sort(key=lambda g: -g["fit"])
+        self.state["genePool"] = genes[:GENE_POOL_MAX]
+
+    def evo_record(self, rb, pct):
+        """진화 출신과 무작위 출신의 실제 성적을 따로 쌓고, 진화가 이기면 비율을 늘리고 지면 줄임"""
+        evo = self.state["evo"]
+        k = "evo" if rb.get("origin") == "evo" else "rand"
+        evo[k]["n"] += 1
+        evo[k]["sumPct"] = round(evo[k]["sumPct"] + pct, 4)
+        e, r = evo["evo"], evo["rand"]
+        if e["n"] >= EVO_JUDGE_N and r["n"] >= EVO_JUDGE_N:
+            diff = e["sumPct"] / e["n"] - r["sumPct"] / r["n"]
+            old = evo["share"]
+            evo["share"] = round(min(EVO_SHARE_MAX, max(EVO_SHARE_MIN, old + max(-0.02, min(0.02, diff * 0.05)))), 3)
+            if abs(evo["share"] - old) >= 0.01 and (e["n"] + r["n"]) % 10 == 0:
+                log(f"[진화] 진화 출신 거래당 {e['sumPct'] / e['n']:+.2f}% vs 무작위 {r['sumPct'] / r['n']:+.2f}% "
+                    f"→ 진화 비율 {old * 100:.0f}% → {evo['share'] * 100:.0f}%")
+
+    def size_for(self, rb):
+        """실주문 금액(USDT): 기본 × 확률 배수(0.5~2) × 판 크기(누적 실주문 이익 따라 0.5~2). 확률 40% 미만이면 0(모의로)"""
+        _, _, p = self.rule_post(rb)
+        if p < SIZE_SKIP_P:
+            return 0.0, p
+        conf = min(1.0, max(0.0, (p - 0.5) / 0.4))
+        x = SIZE_MIN_X + (SIZE_MAX_X - SIZE_MIN_X) * conf if p >= 0.5 else SIZE_MIN_X
+        bank = min(2.0, max(0.5, 1 + self.state["liveLedger"]["pnlUsdt"] / (self.order_usdt * BANK_X)))
+        return round(min(self.order_usdt * x * bank, self.order_usdt * SIZE_MAX_X), 2), p   # 1회 최대 기본의 2배
 
     def side_ok(self, side, rb):
         """선택 설정 BINANCE_LIVE_BASIS=side: 그 방향(롱/숏) 모의 전체 성적이 충분하면 검증 중 규칙도 실주문"""
@@ -369,11 +573,16 @@ class Engine:
         if st.get("scannedBar") == bar or time.time() % (TF * 60) < 20:   # 새 봉이 닫힌 뒤 한 번만 확인
             return
         st["scannedBar"] = bar
-        if len(st["positions"]) >= MAX_OPEN:
+        n_paper = lambda: sum(1 for p in st["positions"].values() if not p.get("live"))
+        n_live = lambda: sum(1 for p in st["positions"].values() if p.get("live"))
+        # 모의 칸(10)과 실주문 칸(BINANCE_MAX_LIVE)을 따로 셈 — 모의가 칸을 다 채워도 실주문 신호는 계속 확인
+        if n_paper() >= MAX_OPEN and (not self.live or n_live() >= self.max_live):
             return
         for sym, strat in list(st["strategies"].items()):
-            if sym in st["positions"] or len(st["positions"]) >= MAX_OPEN:
+            if sym in st["positions"]:
                 continue
+            if n_paper() >= MAX_OPEN and (not self.live or n_live() >= self.max_live):
+                break
             cl = klines(sym, 300)
             if len(cl) < 100:
                 continue
@@ -387,9 +596,10 @@ class Engine:
             px = prices([sym]).get(sym)
             if not px:
                 continue
-            if self.live_ok(strat):
-                self.open_live(sym, strat, px)
-            else:
+            usdt = self.live_ok(strat)
+            if usdt and self.open_live(sym, strat, px, usdt):
+                continue
+            if n_paper() < MAX_OPEN:
                 self.open_paper(sym, strat, px)
         save_state(st)
 
@@ -399,6 +609,10 @@ class Engine:
         d = cb.today_key()
         if ll["day"] != d:
             ll.update({"day": d, "dayPnl": 0.0, "dayTrades": 0})
+        m = datetime.now(KST).strftime("%Y-%m")
+        if ll.get("month") != m:
+            ll.update({"month": m, "monthPnl": 0.0, "monthTrades": 0})
+        ll.setdefault("peak", max(0.0, ll.get("pnlUsdt", 0.0)))
         return ll
 
     def owner_paused(self):
@@ -421,64 +635,97 @@ class Engine:
         sk["counts"][why] = sk["counts"].get(why, 0) + 1
         sk["last"] = why
         sk["lastAt"] = int(time.time() * 1000)
-        return False
+        return 0.0
 
     def live_ok(self, strat):
+        """실주문 해도 되면 금액(USDT), 아니면 0 — 돈 지키기 조건을 모두 통과해야 함"""
         if not self.live:
             return self.live_skip("실주문 꺼짐(설정 paper·키 확인 실패)")
         rb = self.state["ruleBook"].get(strat["rid"]) or {}
         if rb.get("status") != "proven" and not self.side_ok(strat["side"], rb):
             return self.live_skip("통과 전 규칙(모의 검증 중)")
+        g, now = self.state["guard"], time.time()
+        if g.get("blockUntil", 0) > now:
+            return self.live_skip("보호 손절 주문 실패 후 쉬는 중")
+        if g.get("restUntil", 0) > now:
+            return self.live_skip(f"연속 {LOSS_STREAK_MAX}번 손실 후 쉬는 중")
         ll = self.live_day()
+        if ll["monthPnl"] <= -self.month_loss:
+            return self.live_skip("월 손실 한도 도달")
         if ll["dayPnl"] <= -self.daily_loss:
             return self.live_skip("하루 손실 한도 도달")
         if sum(1 for p in self.state["positions"].values() if p.get("live")) >= self.max_live:
             return self.live_skip("동시 실보유 최대")
-        return True
+        usdt, p = self.size_for(rb)
+        if not usdt:
+            return self.live_skip("이익 확률 낮은 규칙(40% 미만)")
+        strat["_p"] = p
+        return usdt
 
-    def open_live(self, sym, strat, px):
+    def open_live(self, sym, strat, px, usdt):
+        """실주문 진입 + 거래소 보호 손절. 성공하면 True, 실주문을 못 하면 False(→ 모의로)"""
         side = strat["side"]
+        long_ = side == "long"
         try:
             if not self.live.filters:
                 self.live.sync()
                 self.live.load_filters()
-            qty, need = self.live.qty_for(sym, self.order_usdt, px)
+            qty, need = self.live.qty_for(sym, usdt, px)
+            if not qty and need and need * 1.05 <= self.order_usdt * SIZE_MAX_X:
+                usdt = need * 1.05                                  # 확률 배수로 줄인 금액이 최소 주문보다 작으면 최소 금액으로
+                qty, need = self.live.qty_for(sym, usdt, px)
             if not qty:
-                log(f"[실주문 건너뜀] {sym} 최소 주문 {need:.0f} USDT > 설정 {self.order_usdt:.0f} USDT → 모의로 처리")
+                log(f"[실주문 건너뜀] {sym} 최소 주문 {need:.0f} USDT > 허용 {self.order_usdt * SIZE_MAX_X:.0f} USDT → 모의로 처리")
                 self.live_skip("최소 주문 금액 부족")
-                return self.open_paper(sym, strat, px)
+                return False
             self.live.prepare(sym)
-            avg, filled = self.live.market(sym, "BUY" if side == "long" else "SELL", qty)
+            avg, filled = self.live.market(sym, "BUY" if long_ else "SELL", qty)
         except Exception as e:
             log(f"[실주문 실패] {sym}: {e} → 모의로 처리")
             self.live_skip("주문 오류")
-            return self.open_paper(sym, strat, px)
+            return False
         if filled <= 0 or avg <= 0:
             log(f"[실주문 확인 실패] {sym} 체결 수량 0 → 모의로 처리")
-            return self.open_paper(sym, strat, px)
+            return False
         sp = strat["spec"]
         cost = 2 * FEE * 100
         mv = sp.get("tp", 0.5) + cost
-        tp = avg * (1 + mv / 100) if side == "long" else avg * (1 - mv / 100)
-        sl = avg * (1 + sp["sl"] / 100) if side == "long" else avg * (1 - sp["sl"] / 100)
-        self.state["positions"][sym] = {"side": side, "entry": avg, "tp": tp, "sl": sl, "usdt": filled * avg, "qty": filled,
-                                        "live": True, "at": int(time.time() * 1000),
-                                        "deadline": int(time.time()) + sp["hold"] * TF * 60,
-                                        "rid": strat["rid"], "desc": strat["desc"], "maxFav": 0.0}
+        tp = avg * (1 + mv / 100) if long_ else avg * (1 - mv / 100)
+        sl = avg * (1 + sp["sl"] / 100) if long_ else avg * (1 - sp["sl"] / 100)
+        p = {"side": side, "entry": avg, "tp": tp, "sl": sl, "usdt": filled * avg, "qty": filled,
+             "live": True, "at": int(time.time() * 1000), "deadline": int(time.time()) + sp["hold"] * TF * 60,
+             "rid": strat["rid"], "desc": strat["desc"], "maxFav": 0.0, "p": round(strat.get("_p", 0.5), 3)}
+        self.state["positions"][sym] = p
         save_state(self.state)
-        log(f"★[실주문 진입] {sym} {'롱' if side == 'long' else '숏'} {filled} ({filled * avg:.1f} USDT) @ {avg:.6g} · "
-            f"익절 {tp:.6g} · 손절 {sl:.6g} · {strat['desc']}")
+        log(f"★[실주문 진입] {sym} {'롱' if long_ else '숏'} {filled} ({filled * avg:.1f} USDT · 이익 확률 {p['p'] * 100:.0f}%) "
+            f"@ {avg:.6g} · 익절 {tp:.6g} · 손절 {sl:.6g} · {strat['desc']}")
+        if not self.arm_stop(sym, p):
+            self.state["guard"].update({"blockUntil": time.time() + STOP_FAIL_BLOCK_HOURS * 3600,
+                                        "blockWhy": "보호 손절 주문 실패"})
+            log(f"[돈 지키기] {sym} 거래소 보호 손절을 못 걸어서 바로 정리 → {STOP_FAIL_BLOCK_HOURS}시간 실주문 쉼")
+            self.close_live(sym, px, "보호 손절 실패로 즉시 정리", record=False)
+        return True
 
-    def close_live(self, sym, price, reason):
-        p = self.state["positions"][sym]
+    def arm_stop(self, sym, p):
+        """거래소에 보호 손절 걸기 (봇 손절가보다 0.5%p 바깥). PC·봇이 멈춰도 거래소가 손실을 끊어 줌"""
         long_ = p["side"] == "long"
+        move = abs((p["sl"] / p["entry"] - 1) * 100) + EXCHANGE_STOP_BUFFER
+        trig = p["entry"] * (1 - move / 100) if long_ else p["entry"] * (1 + move / 100)
+        trig = self.live.round_price(sym, trig, up=not long_)
         try:
-            avg, filled = self.live.market(sym, "SELL" if long_ else "BUY", p["qty"], reduce=True)
+            p["stopId"] = self.live.stop_order(sym, "SELL" if long_ else "BUY", trig)
+            p["stopPx"] = trig
+            save_state(self.state)
+            log(f"[돈 지키기] {sym} 거래소 보호 손절 걸림 @ {trig:.6g} (-{move:.1f}%)")
+            return True
         except Exception as e:
-            log(f"[실주문 청산 실패] {sym}: {e} — 다음 확인 때 다시 시도 (바이낸스 앱에서 직접 정리 가능)")
-            return
-        avg = avg or price
-        gross = (avg / p["entry"] - 1) if long_ else (p["entry"] / avg - 1)
+            log(f"[경고] {sym} 거래소 보호 손절 실패: {str(e)[:160]}")
+            return False
+
+    def book_live(self, sym, p, exit_px, reason, record=True):
+        """실주문 1건 정리 결과를 장부에 반영 (봇이 닫았든 거래소 보호 손절이 닫았든)"""
+        long_ = p["side"] == "long"
+        gross = (exit_px / p["entry"] - 1) if long_ else (p["entry"] / exit_px - 1)
         pct = (gross - 2 * FEE) * 100
         usdt = p["usdt"] * pct / 100
         ll = self.live_day()
@@ -487,8 +734,20 @@ class Engine:
         ll["pnlUsdt"] = round(ll["pnlUsdt"] + usdt, 4)
         ll["dayPnl"] = round(ll["dayPnl"] + usdt, 4)
         ll["dayTrades"] += 1
-        self.state["positions"].pop(sym)
-        self.rule_record(p["rid"], pct)
+        ll["monthPnl"] = round(ll["monthPnl"] + usdt, 4)
+        ll["monthTrades"] += 1
+        ll["peak"] = max(ll.get("peak", 0.0), ll["pnlUsdt"])
+        self.state["positions"].pop(sym, None)
+        if record:
+            self.rule_record(p["rid"], pct)
+        g = self.state["guard"]
+        g["streak"] = g.get("streak", 0) + 1 if pct <= 0 else 0
+        rest = ""
+        if g["streak"] >= LOSS_STREAK_MAX:
+            g["restUntil"] = time.time() + LOSS_STREAK_REST_HOURS * 3600
+            g["restStart"] = int(time.time() * 1000)
+            g["streak"] = 0
+            rest = f" · 연속 {LOSS_STREAK_MAX}번 손실 → {LOSS_STREAK_REST_HOURS}시간 실주문 쉼 (대시보드에서 승인하면 바로 재개)"
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
                    "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "live": True,
@@ -496,11 +755,73 @@ class Engine:
         del tl[:-100]
         save_state(self.state)
         log(f"★[실주문 청산] {sym} {'롱' if long_ else '숏'} {pct:+.2f}% ({usdt:+.2f} USDT, {reason}) · "
-            f"오늘 실주문 {ll['dayTrades']}회 {ll['dayPnl']:+.2f} USDT"
-            + (f" · 하루 손실 한도 도달 → 9시까지 실주문 중지" if ll["dayPnl"] <= -self.daily_loss else ""))
+            f"오늘 실주문 {ll['dayTrades']}회 {ll['dayPnl']:+.2f} USDT · 이번 달 {ll['monthPnl']:+.2f} USDT"
+            + (" · 하루 손실 한도 도달 → 9시까지 실주문 중지" if ll["dayPnl"] <= -self.daily_loss else "")
+            + (" · 월 손실 한도 도달 → 다음 달까지 실주문 중지" if ll["monthPnl"] <= -self.month_loss else "") + rest)
+
+    def close_live(self, sym, price, reason, record=True):
+        p = self.state["positions"][sym]
+        long_ = p["side"] == "long"
+        try:
+            avg, filled = self.live.market(sym, "SELL" if long_ else "BUY", p["qty"], reduce=True)
+        except Exception as e:
+            log(f"[실주문 청산 실패] {sym}: {e} — 다음 확인 때 다시 시도 (거래소 보호 손절은 그대로 걸려 있음)")
+            return
+        self.live.cancel_stops(sym)
+        self.book_live(sym, p, avg or price, reason, record)
+
+    def check_resume(self):
+        """연속 손실로 쉬는 동안만 1분마다: 대시보드에서 '쉼 해제 승인'을 눌렀으면 바로 다시 실주문
+        (보호 손절 실패 쉼·하루·월 손실 한도는 승인으로 풀지 않음)"""
+        g = self.state["guard"]
+        if g.get("restUntil", 0) <= time.time() or time.time() - getattr(self, "_last_resume_check", 0) < RESUME_CHECK_SEC:
+            return
+        self._last_resume_check = time.time()
+        at = 0
+        try:
+            h = self.cloud._auth()
+            for url, key in ((f"{cb.FS_BASE}/users/{self.cloud.uid}/status/settings", None),
+                             (f"{cb.FS_BASE}/users/{self.cloud.uid}", None)):
+                r = requests.get(url, headers=h, timeout=10)
+                if r.status_code == 200:
+                    v = r.json().get("fields", {}).get("binanceResumeAt")
+                    if v:
+                        at = max(at, int(float(cb.from_fs(v) or 0)))
+        except Exception as e:
+            log(f"[경고] 쉼 해제 승인 확인 실패(다음에 다시): {str(e)[:100]}")
+            return
+        if at > g.get("restStart", 0):
+            g.update({"restUntil": 0, "streak": 0, "resumedAt": at})
+            save_state(self.state)
+            log("[돈 지키기] 대시보드에서 쉼 해제 승인 → 연속 손실 쉼을 풀고 바로 실주문 재개 (하루·월 손실 한도는 그대로)")
+            self.upload(force=True)
+
+    def check_exchange(self, force=False):
+        """실보유가 거래소에서 이미 정리됐는지(보호 손절 체결·직접 정리) 1분마다 확인. 두 번 연속 없을 때만 정리로 봄"""
+        live_pos = {s: p for s, p in self.state["positions"].items() if p.get("live")}
+        if not self.live or not live_pos or (not force and time.time() - self._last_exchange_check < EXCHANGE_CHECK_SEC):
+            return
+        self._last_exchange_check = time.time()
+        try:
+            ex = self.live.positions()
+        except Exception as e:
+            log(f"[경고] 거래소 포지션 확인 실패(다음에 다시): {str(e)[:120]}")
+            return
+        for sym, p in live_pos.items():
+            if sym in ex:
+                p.pop("missing", None)
+                continue
+            p["missing"] = p.get("missing", 0) + 1
+            if p["missing"] < 2:
+                continue
+            exit_px = p.get("stopPx") or p["sl"]
+            log(f"[돈 지키기] {sym} 실보유가 거래소에서 정리됨(보호 손절 체결 또는 직접 정리) → 손절가 기준으로 장부 반영")
+            self.live.cancel_stops(sym)
+            self.book_live(sym, p, exit_px, "거래소 보호 손절(추정가)")
+        save_state(self.state)
 
     def reconcile(self):
-        """시작할 때: 장부의 실보유와 거래소 실제 포지션 맞춰 보기 (모르는 포지션은 건드리지 않음)"""
+        """시작할 때: 장부의 실보유와 거래소 실제 포지션 맞춰 보기 (모르는 포지션은 건드리지 않음) + 보호 손절 확인"""
         if not self.live:
             return
         try:
@@ -513,8 +834,11 @@ class Engine:
             return
         for sym, p in list(self.state["positions"].items()):
             if p.get("live") and sym not in ex:
-                log(f"[경고] {sym} 실보유가 거래소에 없음(직접 정리·청산된 것으로 봄) → 장부에서 제외")
-                self.state["positions"].pop(sym)
+                log(f"[경고] {sym} 실보유가 거래소에 없음(꺼져 있는 동안 보호 손절 체결 또는 직접 정리) → 손절가 기준으로 장부 반영")
+                self.live.cancel_stops(sym)
+                self.book_live(sym, p, p.get("stopPx") or p["sl"], "꺼져 있는 동안 정리됨(추정가)")
+            elif p.get("live") and not p.get("stopId"):
+                self.arm_stop(sym, p)                           # 이번 버전 전에 들어간 실보유에도 보호 손절을 걸어 둠
         mine = {s for s, p in self.state["positions"].items() if p.get("live")}
         for sym, amt in ex.items():
             if sym not in mine:
@@ -523,8 +847,9 @@ class Engine:
         basis = {"side": f"통과 규칙 + 방향별 모의 {SIDE_GATE_MIN_N}회·거래당 +{SIDE_GATE_MIN_AVG:.2f}% 이상인 쪽",
                  "all": "롱·숏 모두 (퇴출·평균 마이너스 규칙 제외)"}.get(self.live_basis, "통과 규칙만")
         basis += " · 업비트 봇과 별개 운용"
-        log(f"바이낸스 실계좌 연결됨 · 실주문 켜짐({basis}) · 1회 {self.order_usdt:.0f} USDT · "
-            f"하루 손실 한도 {self.daily_loss:.0f} USDT · 동시 실보유 최대 {self.max_live}")
+        log(f"바이낸스 실계좌 연결됨 · 실주문 켜짐({basis}) · 기본 {self.order_usdt:.0f} USDT(확률·판 크기로 "
+            f"{SIZE_MIN_X * 0.5:g}~{SIZE_MAX_X:g}배) · 하루 손실 한도 {self.daily_loss:.0f} · 월 {self.month_loss:.0f} USDT · "
+            f"동시 실보유 최대 {self.max_live} · 거래소 보호 손절 켜짐")
 
     def open_paper(self, sym, strat, px):
         side, sp = strat["side"], strat["spec"]
@@ -598,6 +923,9 @@ class Engine:
         rb["n"] += 1
         rb["wins"] += 1 if pct > 0 else 0
         rb["sumPct"] = round(rb["sumPct"] + pct, 4)
+        rb["sumSq"] = round(rb.get("sumSq", 0.0) + pct * pct, 4)
+        rb["sqN"] = rb.get("sqN", 0) + 1
+        self.evo_record(rb, pct)
         n, avg = rb["n"], rb["sumPct"] / rb["n"]
         if n == RULE_EVAL or n in (10, 20, 40):
             rb["status"] = "proven" if avg >= RULE_PROMOTE_MIN_AVG else ("retired" if avg <= 0 else "testing")
@@ -605,6 +933,7 @@ class Engine:
                 + {"proven": "통과(2단계 실주문 후보)", "retired": "퇴출", "testing": "검증 계속"}[rb["status"]])
             if rb["status"] == "retired":
                 self.state["strategies"].pop(rb["symbol"], None)
+        self.refresh_pool()
 
     # --- 대시보드·보고서 ---
     def view(self):
@@ -623,7 +952,28 @@ class Engine:
                 g = (cur / p["entry"] - 1) if p["side"] == "long" else (p["entry"] / cur - 1)
                 pct = round((g - 2 * FEE - SLIP) * 100, 2)
             pos.append({"symbol": sym, "side": p["side"], "live": bool(p.get("live")), "entry": p["entry"], "tp": p["tp"], "sl": p["sl"], "price": cur,
-                        "pnlPct": pct, "at": p["at"], "deadline": p["deadline"] * 1000, "desc": p["desc"]})
+                        "pnlPct": pct, "at": p["at"], "deadline": p["deadline"] * 1000, "desc": p["desc"],
+                        "stopPx": p.get("stopPx"), "p": p.get("p")})
+        g, evo, now = self.state["guard"], self.state["evo"], time.time()
+        ll = self.live_day()
+        rest = max(g.get("restUntil", 0), g.get("blockUntil", 0))
+        guard = {"monthPnl": ll.get("monthPnl", 0.0), "monthLoss": self.month_loss, "dayPnl": ll["dayPnl"],
+                 "dayLoss": self.daily_loss, "streak": g.get("streak", 0), "streakMax": LOSS_STREAK_MAX,
+                 "restUntil": int(rest * 1000) if rest > now else 0,
+                 "restWhy": (g.get("blockWhy") if g.get("blockUntil", 0) > now else f"연속 {LOSS_STREAK_MAX}번 손실") if rest > now else "",
+                 "restKind": ("block" if g.get("blockUntil", 0) > now else "streak") if rest > now else "",
+                 "restStart": g.get("restStart", 0),
+                 "armed": sum(1 for q in self.state["positions"].values() if q.get("live") and q.get("stopId")),
+                 "liveOpen": sum(1 for q in self.state["positions"].values() if q.get("live")),
+                 "sizeRange": [round(self.order_usdt * SIZE_MIN_X * 0.5, 1), round(self.order_usdt * SIZE_MAX_X, 1)],
+                 "bankX": round(min(2.0, max(0.5, 1 + ll["pnlUsdt"] / (self.order_usdt * BANK_X))), 2)}
+        avg_of = lambda d: round(d["sumPct"] / d["n"], 3) if d["n"] else None
+        evo_view = {"share": evo["share"], "pool": len(self.state["genePool"]), "maxGen": evo["maxGen"], "born": evo["born"],
+                    "evoN": evo["evo"]["n"], "evoAvg": avg_of(evo["evo"]), "randN": evo["rand"]["n"], "randAvg": avg_of(evo["rand"]),
+                    "activeEvo": sum(1 for v in self.state["strategies"].values() if v.get("origin") == "evo"),
+                    "active": len(self.state["strategies"]),
+                    "top": [{"symbol": x["symbol"], "side": x["side"], "fit": x["fit"], "p": x["p"], "n": x["n"], "gen": x["gen"]}
+                            for x in self.state["genePool"][:5]]}
         return {
             "mode": "live" if self.live else "paper", "updatedAt": int(time.time() * 1000), "tf": TF,
             "liveLedger": self.state["liveLedger"], "liveOrderUsdt": self.order_usdt, "liveDailyLoss": self.daily_loss,
@@ -639,8 +989,10 @@ class Engine:
                                   for r in rb if r.get("status") == "testing"),
                                  key=lambda x: (-(x["n"] or 0), -(x["avgPct"] or -99)))[:3],
             "ruleEval": RULE_EVAL, "rulePromote": RULE_PROMOTE_MIN_AVG, "liveBasis": self.live_basis,
+            "guard": guard, "evo": evo_view,
             "settings": cb.settings_view(self.cfg, binance=True),
-            "strategies": [{"symbol": k, "desc": v["desc"], "btEdge": v["btEdge"]} for k, v in self.state["strategies"].items()],
+            "strategies": [{"symbol": k, "desc": v["desc"], "btEdge": v["btEdge"], "origin": v.get("origin", "rand"),
+                            "gen": v.get("gen", 0)} for k, v in self.state["strategies"].items()],
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),
         }
@@ -705,6 +1057,8 @@ class Engine:
                 if time.time() - self.state["lastSelect"] > RESELECT_HOURS * 3600 or not self.state["strategies"]:
                     self.reselect()
                 self.manage()
+                self.check_exchange()
+                self.check_resume()
                 self.scan()
                 self.upload()
             except Exception as e:

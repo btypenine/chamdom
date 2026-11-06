@@ -488,6 +488,9 @@ body.compact #sumCard { display: flex !important; }
       <div class="sub" id="bnState"></div>
       <div class="msg" id="bnLive" hidden></div>
       <div class="sub" id="bnWhy" hidden></div>
+      <div class="msg" id="bnGuard" hidden></div>
+      <div class="set-btns" id="bnResumeBox" hidden><span class="sub" id="bnResumeState"></span><button type="button" class="btn-primary" id="bnResume">승인: 쉼 풀고 계속 거래</button></div>
+      <div class="msg" id="bnEvo" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
         <div><div class="label">거래당 평균</div><div class="stat-val num" id="bnAvg">-</div></div>
@@ -497,7 +500,8 @@ body.compact #sumCard { display: flex !important; }
         <div><div class="label">규칙 통과/검증/퇴출</div><div class="stat-val num" id="bnRules">-</div></div>
       </div>
       <div class="list" id="bnPos"></div>
-      <details><summary class="sub">최근 모의 거래 · 기록</summary><div class="list" id="bnRecent"></div><div class="logbox" id="bnLog"></div></details>
+      <details id="bnGeneBox" hidden><summary class="sub">🧬 유전자 풀 상위 (진화 재료가 되는 잘된 규칙)</summary><div class="list" id="bnGenes"></div></details>
+      <details><summary class="sub">최근 거래 · 기록</summary><div class="list" id="bnRecent"></div><div class="logbox" id="bnLog"></div></details>
     </section>
 
     <section class="card ex-empty" id="bnEmpty" data-ex="bn" hidden><div class="empty">바이낸스 엔진에서 받은 정보가 아직 없음. 회사 PC에서 start_binance.bat 이 실행 중인지 확인.</div></section>
@@ -893,6 +897,7 @@ const SETTINGS = [
   { k: "BINANCE_ORDER_USDT", g: "bn", label: "1회 실주문 금액", hint: "USDT · 5~200", type: "num", min: 5, max: 200, step: 1 },
   { k: "BINANCE_DAILY_LOSS_USDT", g: "bn", label: "하루 손실 한도", hint: "USDT · 1~500", type: "num", min: 1, max: 500, step: 1 },
   { k: "BINANCE_MAX_LIVE", g: "bn", label: "동시 실주문 최대", hint: "개 · 1~10", type: "num", min: 1, max: 10, step: 1 },
+  { k: "BINANCE_MONTH_LOSS_USDT", g: "bn", label: "월 손실 한도", hint: "USDT · 이번 달 실주문 손실이 이만큼이면 다음 달까지 실주문 멈춤 · 5~2000", type: "num", min: 5, max: 2000, step: 5 },
 ];
 let appSettings = null, setDirty = false;
 const SRC_NAME = { app: "대시보드에서 정함", file: "설정 파일 값", default: "기본값" };
@@ -1027,6 +1032,20 @@ $("nickReset").addEventListener("click", () => {
 });
 
 // ---------- 바이낸스 선물 (모의) ----------
+let bnResumeAskedAt = 0;
+$("bnResume").addEventListener("click", async () => {
+  if (!auth.currentUser) return;
+  if (!confirm("연속 손실 쉼을 풀고 바로 실주문을 다시 시작할까요?\n(하루·월 손실 한도와 거래소 보호 손절은 그대로 유지)")) return;
+  const at = Date.now();
+  $("bnResume").disabled = true;
+  try { await setDoc(doc(db, "users", auth.currentUser.uid, "status", "settings"), { binanceResumeAt: at }, { merge: true }); }
+  catch (e1) {
+    try { await setDoc(doc(db, "users", auth.currentUser.uid), { binanceResumeAt: at }, { merge: true }); }
+    catch (e2) { $("bnResume").disabled = false; $("bnResumeState").textContent = "승인 저장 실패 · 다시 눌러 주세요"; return; }
+  }
+  bnResumeAskedAt = at;
+  renderBinance(lastBinance);
+});
 function renderBinance(b) {
   lastBinance = b || null;
   $("bnCard").hidden = !b; $("bnHead").hidden = !b; $("bnEmpty").hidden = !!b;
@@ -1041,7 +1060,8 @@ function renderBinance(b) {
   $("bnMode").className = "mode " + (isLive ? "live" : "paper");
   const ll = b.liveLedger || {};
   $("bnLive").hidden = !isLive;
-  if (isLive) $("bnLive").textContent = `실주문(통과 규칙만): 누적 ${ll.trades || 0}회 · 익절 ${ll.wins || 0}회 · ${(ll.pnlUsdt || 0) >= 0 ? "+" : ""}${(ll.pnlUsdt || 0).toFixed(2)} USDT · 오늘 ${ll.dayTrades || 0}회 ${(ll.dayPnl || 0) >= 0 ? "+" : ""}${(ll.dayPnl || 0).toFixed(2)} USDT (한도 -${b.liveDailyLoss || 0}) · 1회 ${b.liveOrderUsdt || 0} USDT`;
+  const basisName = { all: "롱·숏 모두", side: "방향별 성적", rule: "통과 규칙만" }[b.liveBasis] || "통과 규칙만";
+  if (isLive) $("bnLive").textContent = `실주문(${basisName}): 누적 ${ll.trades || 0}회 · 익절 ${ll.wins || 0}회 · ${(ll.pnlUsdt || 0) >= 0 ? "+" : ""}${(ll.pnlUsdt || 0).toFixed(2)} USDT · 오늘 ${ll.dayTrades || 0}회 ${(ll.dayPnl || 0) >= 0 ? "+" : ""}${(ll.dayPnl || 0).toFixed(2)} USDT (한도 -${b.liveDailyLoss || 0}) · 1회 ${b.liveOrderUsdt || 0} USDT`;
   // 실주문을 안 한(모의로 간) 이유: 오늘 신호가 나왔을 때 어디서 걸렸는지
   const sk = b.liveSkip || {}, cnt = sk.counts || {};
   const parts = Object.entries(cnt).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k} ${v}회`);
@@ -1065,7 +1085,7 @@ function renderBinance(b) {
     const el = document.createElement("div"); el.className = "li";
     el.innerHTML = "<span><b></b> <span class='sub d'></span></span><span class='num r'></span>";
     el.querySelector("b").textContent = `${p.live ? "★실주문 " : ""}${p.side === "long" ? "롱" : "숏"} ${p.symbol.replace("USDT", "")}`;
-    el.querySelector(".d").textContent = p.desc || "";
+    el.querySelector(".d").textContent = (p.desc || "") + (p.live && p.stopPx ? ` · 🛡거래소 손절 ${Number(p.stopPx).toPrecision(6)}` : (p.live ? " · ⚠거래소 손절 없음" : ""));
     const r = el.querySelector(".r"); r.textContent = pct(p.pnlPct);
     if (p.pnlPct > 0) r.classList.add("up"); else if (p.pnlPct < 0) r.classList.add("down");
     box.append(el);
@@ -1081,6 +1101,46 @@ function renderBinance(b) {
     rb.append(el);
   }
   $("bnLog").textContent = (b.activity || []).slice().reverse().join("\n");
+  // 돈 지키기
+  const g = b.guard;
+  $("bnGuard").hidden = !g || !isLive;
+  if (g && isLive) {
+    const usd = (x) => (x > 0 ? "+" : "") + Number(x || 0).toFixed(2);
+    let t = `🛡 돈 지키기 · 이번 달 실주문 ${usd(g.monthPnl)} / 한도 -${g.monthLoss} USDT · 오늘 ${usd(g.dayPnl)} / -${g.dayLoss}`;
+    t += ` · 거래소 보호 손절 ${g.armed}/${g.liveOpen}개 걸림 · 연속 손실 ${g.streak}/${g.streakMax}`;
+    t += ` · 1회 금액 ${g.sizeRange?.[0]}~${g.sizeRange?.[1]} USDT(이익 확률·판 크기 ${g.bankX}배로 자동)`;
+    if (g.restUntil) t += ` · ⏸ ${g.restWhy} → ${new Date(g.restUntil).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}까지 실주문 쉼`;
+    if (g.monthPnl <= -g.monthLoss) t += " · ⏸ 월 손실 한도 도달 → 다음 달까지 실주문 멈춤";
+    $("bnGuard").textContent = t;
+  }
+  // 연속 손실 쉼만 승인으로 해제 가능 (보호 손절 실패 쉼·하루·월 한도는 안 됨)
+  const canResume = !!(g && isLive && g.restUntil && g.restKind === "streak");
+  $("bnResumeBox").hidden = !canResume;
+  if (canResume) {
+    const asked = bnResumeAskedAt > (g.restStart || 0);
+    $("bnResume").disabled = asked;
+    $("bnResumeState").textContent = asked ? "승인 보냄 · PC가 1분 안에 받아서 다시 거래함" : "연속 손실로 쉬는 중 · 승인하면 바로 다시 거래 (하루·월 손실 한도는 그대로)";
+  }
+  // 진화
+  const e = b.evo;
+  $("bnEvo").hidden = !e;
+  if (e) {
+    let t = `🧬 진화 · 유전자 풀 ${e.pool}개 · 지금 전략 ${e.active}개 중 진화 출신 ${e.activeEvo}개 · 최고 ${e.maxGen}세대 · 지금까지 ${e.born}개 탄생`;
+    t += ` · 실제 성적: 진화 ${e.evoN}회 ${pct(e.evoAvg)} vs 무작위 ${e.randN}회 ${pct(e.randAvg)}`;
+    t += ` · 새 전략 중 진화 비율 ${Math.round((e.share || 0) * 100)}%`;
+    t += (e.evoN >= 10 && e.randN >= 10) ? " (성적 따라 스스로 조절 중)" : " (각 10회 쌓이면 스스로 조절 시작)";
+    $("bnEvo").textContent = t;
+  }
+  const gl = $("bnGenes"); gl.textContent = "";
+  $("bnGeneBox").hidden = !(e?.top || []).length;
+  for (const x of (e?.top || [])) {
+    const el = document.createElement("div"); el.className = "li";
+    el.innerHTML = "<span><b></b> <span class='sub d'></span></span><span class='num r'></span>";
+    el.querySelector("b").textContent = `${x.side === "long" ? "롱" : "숏"} ${x.symbol}`;
+    el.querySelector(".d").textContent = `${x.n}회 · 이익 확률 ${Math.round((x.p || 0) * 100)}% · ${x.gen ? x.gen + "세대" : "원조"}`;
+    const r = el.querySelector(".r"); r.textContent = pct(x.fit); if (x.fit > 0) r.classList.add("up");
+    gl.append(el);
+  }
 }
 
 // ---------- 요청하기 ----------
