@@ -1452,6 +1452,17 @@ class Bot:
             return
         pct = pnl / pos["cost"] * 100 if pos.get("cost") else 0.0
         if rb["status"] == "proven":
+            # 예측력 점검(분석 전용, 매매 영향 없음): 이 거래 '직전' 규칙의 누적 성적·횟수 구간별로 다음 거래 결과를 모음
+            # → 과거 성적이 좋은 규칙일수록 정말 다음 거래도 좋은지(장부 선별이 실제로 통하는지) 확인
+            if rb.get("trades"):
+                pavg = rb["sumPct"] / rb["trades"]
+                pp = self.state.setdefault("passPredict", {})
+                for key in ("avg:" + ("<0.3" if pavg < 0.3 else ("0.3~0.6" if pavg < 0.6 else "0.6+")),
+                            "n:" + ("5~9" if rb["trades"] < 10 else ("10~19" if rb["trades"] < 20 else "20+"))):
+                    b = pp.setdefault(key, {"n": 0, "wins": 0, "sumPct": 0.0})
+                    b["n"] += 1
+                    b["wins"] += 1 if pnl > 0 else 0
+                    b["sumPct"] = round(b["sumPct"] + pct, 4)
             # 통과 '이후' 성적만 따로 누적 (통과 판정이 앞으로도 맞는지 확인용, 매매 영향 없음)
             for box in (rb.setdefault("post", {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0}),
                         self.state.setdefault("passStats", {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0})):
@@ -2948,6 +2959,8 @@ class Bot:
                                  if t and t.get("n") else None)(self.state.get("tpLimit")),
                      "passStats": (lambda t: {"n": t["n"], "wins": t["wins"], "avgPct": round(t["sumPct"] / t["n"], 3),
                                               "pnl": t["pnl"]} if t and t.get("n") else None)(self.state.get("passStats")),
+                     "passPredict": [{"key": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3)}
+                                     for k, v in sorted((self.state.get("passPredict") or {}).items()) if v.get("n")],
                      "failStats": [{"code": k, "label": FAIL_LABELS.get(k, k), "count": v}
                                    for k, v in sorted(self.state.get("failStats", {}).items(), key=lambda x: -x[1])]})
         self.cloud.put_status(data)
