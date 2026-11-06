@@ -2977,12 +2977,19 @@ class Bot:
                     self._ai_dirty = False
                     save_state(self.state)
                     self.upload_status()
-                self.handle_commands()
-                try:
-                    self.handle_inbox()
-                    self.handle_suggestions()
-                except Exception as e:
-                    log(f"[경고] 요청함 확인 실패: {e}")
+                # 긴급 수정(11-06): 웹페이지(Firebase) 읽기 한도 초과(429) 등으로 명령 확인이 실패해도
+                # 보유 코인 관리·신규 진입은 계속해야 함 → 클라우드 확인 오류는 따로 잡고, 한도 초과면 10분 쉼
+                if time.time() >= getattr(self, "_cloud_backoff", 0):
+                    try:
+                        self.handle_commands()
+                        self.handle_inbox()
+                        self.handle_suggestions()
+                    except Exception as e:
+                        if "429" in str(e):
+                            self._cloud_backoff = time.time() + 600
+                            log("[경고] 웹페이지 읽기 한도 초과(429) → 명령·요청 확인만 10분 쉼 (매매·보유 관리는 계속)")
+                        else:
+                            log(f"[경고] 명령·요청함 확인 실패 (매매는 계속): {str(e)[:150]}")
                 self.manage_positions()
                 self.manage_ghosts()
                 self.manage_hold_ghosts()
