@@ -182,6 +182,9 @@ STATUS_EVERY = 30
 LOOP_IDLE = 15                   # 보유 없을 때 확인 간격(초)
 LOOP_ACTIVE = 5                  # 보유 중 확인 간격(초)
 COMMAND_MAX_AGE = 10 * 60
+CLOUD_CMD_EVERY = 15             # 대시보드 명령(일시정지·승인 등) 확인 간격(초) — 읽기 한도 절약
+CLOUD_INBOX_EVERY = 30           # 요청함·승인함 확인 간격(초)
+CLOUD_SUG_EVERY = 10 * 60        # 친구 제안함 확인 간격(초)
 
 # AI 분석가 (bot_config.env 에 ANTHROPIC_API_KEY 가 있을 때만 동작)
 AI_MODEL_DEFAULT = "claude-sonnet-5-5"
@@ -2929,7 +2932,7 @@ class Bot:
         return "done", "매도: " + ", ".join(done) + " · 봇은 일시정지됨"
 
     def handle_inbox(self):
-        if time.time() - getattr(self, "_inbox_at", 0) < 20:
+        if time.time() - getattr(self, "_inbox_at", 0) < CLOUD_INBOX_EVERY:
             return
         self._inbox_at = time.time()
         seen = self.state.setdefault("inboxSeen", [])
@@ -2956,7 +2959,7 @@ class Bot:
 
     def handle_suggestions(self):
         """운영자 봇만: 친구 제안을 요청 장부(userRequests)에 합쳐 AI 점검이 함께 처리하게 함"""
-        if self.cfg.get("ROLE", "owner") != "owner" or time.time() - getattr(self, "_sug_at", 0) < 60:
+        if self.cfg.get("ROLE", "owner") != "owner" or time.time() - getattr(self, "_sug_at", 0) < CLOUD_SUG_EVERY:
             return
         self._sug_at = time.time()
         try:
@@ -2990,6 +2993,10 @@ class Bot:
             self.upload_status()
 
     def handle_commands(self):
+        # 웹페이지(Firebase) 무료 읽기 한도(하루 5만) 아끼기: 루프(보유 중 5초)마다 묻던 것을 15초마다로
+        if time.time() - getattr(self, "_cmd_at", 0) < CLOUD_CMD_EVERY:
+            return
+        self._cmd_at = time.time()
         for c in self.cloud.pending_commands():
             ctype, created, age = c.get("type"), c.get("createdAt"), None
             if created:

@@ -677,7 +677,7 @@ class Engine:
         bn = {k: v for k, v in self.cfg.get("_appSettings", {}).items() if k.startswith("BINANCE_")}
         if bn:
             log("[설정] 대시보드에서 정한 값 적용: " + ", ".join(f"{k}={v}" for k, v in bn.items()))
-        log(f"시작 · {'실주문 켜짐(통과 규칙만, 나머지 모의)' if self.live else '모의매매 전용(실제 주문 없음)'} · "
+        log(f"시작 · {'실주문 켜짐' if self.live else '모의매매 전용(실제 주문 없음)'} · "
             f"{TF}분봉 · 모의 1회 {PAPER_USDT:.0f} USDT · 계정 {uid[:6]}…")
         self.reconcile()
         last_update = time.time()
