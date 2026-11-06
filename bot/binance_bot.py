@@ -11,7 +11,7 @@
 
 돈 지키기 (11-06 추가)
 - 실주문 진입 즉시 거래소에 보호 손절(STOP_MARKET, Algo 주문) — PC가 꺼져도 손절이 걸림. 못 걸면 바로 정리
-- 월 손실 한도(BINANCE_MONTH_LOSS_USDT), 연속 3번 손실이면 6시간 쉼
+- 월 손실 한도(BINANCE_MONTH_LOSS_USDT), 연속 3번 손실이면 2시간 쉼 (대시보드에서 승인하면 바로 다시 거래)
 - 실주문 금액은 규칙이 이익일 확률로 0.5~2배, 누적 이익이 나면 판을 키우고 손실이면 줄임
 
 진화 (11-06 추가)
@@ -86,7 +86,8 @@ EXCHANGE_STOP_BUFFER = 0.5        # 거래소 보호 손절: 봇 손절가보다
 EXCHANGE_CHECK_SEC = 60           # 실보유가 거래소에서 정리됐는지 확인하는 주기(초)
 STOP_FAIL_BLOCK_HOURS = 6         # 보호 손절을 못 걸면 바로 정리하고 이 시간 동안 실주문 쉼
 LOSS_STREAK_MAX = 3               # 실주문 연속 손실 이 횟수면
-LOSS_STREAK_REST_HOURS = 6        #   이 시간 동안 새 실주문 쉼
+LOSS_STREAK_REST_HOURS = 2        #   이 시간 동안 새 실주문 쉼 (대시보드에서 승인하면 바로 해제)
+RESUME_CHECK_SEC = 60             # 쉬는 동안 대시보드 '쉼 해제 승인'을 확인하는 주기(초)
 MONTH_LOSS_DEFAULT = 40.0         # 월 실주문 손실 한도 기본값(USDT) — 대시보드 BINANCE_MONTH_LOSS_USDT 로 변경
 
 # 성적 기반 실주문 금액 (확률이 높은 규칙에 더, 약한 규칙엔 덜 — 사람이 정하지 않고 결과로 정함)
@@ -744,8 +745,9 @@ class Engine:
         rest = ""
         if g["streak"] >= LOSS_STREAK_MAX:
             g["restUntil"] = time.time() + LOSS_STREAK_REST_HOURS * 3600
+            g["restStart"] = int(time.time() * 1000)
             g["streak"] = 0
-            rest = f" · 연속 {LOSS_STREAK_MAX}번 손실 → {LOSS_STREAK_REST_HOURS}시간 실주문 쉼"
+            rest = f" · 연속 {LOSS_STREAK_MAX}번 손실 → {LOSS_STREAK_REST_HOURS}시간 실주문 쉼 (대시보드에서 승인하면 바로 재개)"
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
                    "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "live": True,
@@ -767,6 +769,32 @@ class Engine:
             return
         self.live.cancel_stops(sym)
         self.book_live(sym, p, avg or price, reason, record)
+
+    def check_resume(self):
+        """연속 손실로 쉬는 동안만 1분마다: 대시보드에서 '쉼 해제 승인'을 눌렀으면 바로 다시 실주문
+        (보호 손절 실패 쉼·하루·월 손실 한도는 승인으로 풀지 않음)"""
+        g = self.state["guard"]
+        if g.get("restUntil", 0) <= time.time() or time.time() - getattr(self, "_last_resume_check", 0) < RESUME_CHECK_SEC:
+            return
+        self._last_resume_check = time.time()
+        at = 0
+        try:
+            h = self.cloud._auth()
+            for url, key in ((f"{cb.FS_BASE}/users/{self.cloud.uid}/status/settings", None),
+                             (f"{cb.FS_BASE}/users/{self.cloud.uid}", None)):
+                r = requests.get(url, headers=h, timeout=10)
+                if r.status_code == 200:
+                    v = r.json().get("fields", {}).get("binanceResumeAt")
+                    if v:
+                        at = max(at, int(float(cb.from_fs(v) or 0)))
+        except Exception as e:
+            log(f"[경고] 쉼 해제 승인 확인 실패(다음에 다시): {str(e)[:100]}")
+            return
+        if at > g.get("restStart", 0):
+            g.update({"restUntil": 0, "streak": 0, "resumedAt": at})
+            save_state(self.state)
+            log("[돈 지키기] 대시보드에서 쉼 해제 승인 → 연속 손실 쉼을 풀고 바로 실주문 재개 (하루·월 손실 한도는 그대로)")
+            self.upload(force=True)
 
     def check_exchange(self, force=False):
         """실보유가 거래소에서 이미 정리됐는지(보호 손절 체결·직접 정리) 1분마다 확인. 두 번 연속 없을 때만 정리로 봄"""
@@ -933,6 +961,8 @@ class Engine:
                  "dayLoss": self.daily_loss, "streak": g.get("streak", 0), "streakMax": LOSS_STREAK_MAX,
                  "restUntil": int(rest * 1000) if rest > now else 0,
                  "restWhy": (g.get("blockWhy") if g.get("blockUntil", 0) > now else f"연속 {LOSS_STREAK_MAX}번 손실") if rest > now else "",
+                 "restKind": ("block" if g.get("blockUntil", 0) > now else "streak") if rest > now else "",
+                 "restStart": g.get("restStart", 0),
                  "armed": sum(1 for q in self.state["positions"].values() if q.get("live") and q.get("stopId")),
                  "liveOpen": sum(1 for q in self.state["positions"].values() if q.get("live")),
                  "sizeRange": [round(self.order_usdt * SIZE_MIN_X * 0.5, 1), round(self.order_usdt * SIZE_MAX_X, 1)],
@@ -1028,6 +1058,7 @@ class Engine:
                     self.reselect()
                 self.manage()
                 self.check_exchange()
+                self.check_resume()
                 self.scan()
                 self.upload()
             except Exception as e:

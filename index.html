@@ -489,6 +489,7 @@ body.compact #sumCard { display: flex !important; }
       <div class="msg" id="bnLive" hidden></div>
       <div class="sub" id="bnWhy" hidden></div>
       <div class="msg" id="bnGuard" hidden></div>
+      <div class="set-btns" id="bnResumeBox" hidden><span class="sub" id="bnResumeState"></span><button type="button" class="btn-primary" id="bnResume">승인: 쉼 풀고 계속 거래</button></div>
       <div class="msg" id="bnEvo" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
@@ -1031,6 +1032,20 @@ $("nickReset").addEventListener("click", () => {
 });
 
 // ---------- 바이낸스 선물 (모의) ----------
+let bnResumeAskedAt = 0;
+$("bnResume").addEventListener("click", async () => {
+  if (!auth.currentUser) return;
+  if (!confirm("연속 손실 쉼을 풀고 바로 실주문을 다시 시작할까요?\n(하루·월 손실 한도와 거래소 보호 손절은 그대로 유지)")) return;
+  const at = Date.now();
+  $("bnResume").disabled = true;
+  try { await setDoc(doc(db, "users", auth.currentUser.uid, "status", "settings"), { binanceResumeAt: at }, { merge: true }); }
+  catch (e1) {
+    try { await setDoc(doc(db, "users", auth.currentUser.uid), { binanceResumeAt: at }, { merge: true }); }
+    catch (e2) { $("bnResume").disabled = false; $("bnResumeState").textContent = "승인 저장 실패 · 다시 눌러 주세요"; return; }
+  }
+  bnResumeAskedAt = at;
+  renderBinance(lastBinance);
+});
 function renderBinance(b) {
   lastBinance = b || null;
   $("bnCard").hidden = !b; $("bnHead").hidden = !b; $("bnEmpty").hidden = !!b;
@@ -1097,6 +1112,14 @@ function renderBinance(b) {
     if (g.restUntil) t += ` · ⏸ ${g.restWhy} → ${new Date(g.restUntil).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}까지 실주문 쉼`;
     if (g.monthPnl <= -g.monthLoss) t += " · ⏸ 월 손실 한도 도달 → 다음 달까지 실주문 멈춤";
     $("bnGuard").textContent = t;
+  }
+  // 연속 손실 쉼만 승인으로 해제 가능 (보호 손절 실패 쉼·하루·월 한도는 안 됨)
+  const canResume = !!(g && isLive && g.restUntil && g.restKind === "streak");
+  $("bnResumeBox").hidden = !canResume;
+  if (canResume) {
+    const asked = bnResumeAskedAt > (g.restStart || 0);
+    $("bnResume").disabled = asked;
+    $("bnResumeState").textContent = asked ? "승인 보냄 · PC가 1분 안에 받아서 다시 거래함" : "연속 손실로 쉬는 중 · 승인하면 바로 다시 거래 (하루·월 손실 한도는 그대로)";
   }
   // 진화
   const e = b.evo;
