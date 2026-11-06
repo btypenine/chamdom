@@ -68,6 +68,9 @@ MAX_OPEN = 10                     # 동시 모의 보유 최대
 EXCLUDE = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BTCDOMUSDT"}
 RULE_EVAL = 5                     # 규칙 판정 시작 횟수 (업비트 봇과 같음)
 RULE_PROMOTE_MIN_AVG = 0.15
+STICKY_IDLE_HOURS = 24            # 검증 중 규칙은 재선정 때 유지, 단 이 시간 동안 한 번도 신호가 없으면 교체
+SIDE_GATE_MIN_N = 50              # (선택) 방향별 통과 기준: 모의 50회 이상
+SIDE_GATE_MIN_AVG = 0.30          #   거래당 +0.30% 이상
 
 
 def log(msg):
@@ -283,6 +286,7 @@ class Engine:
         self.order_usdt = num("BINANCE_ORDER_USDT", 20)
         self.daily_loss = num("BINANCE_DAILY_LOSS_USDT", 10)
         self.max_live = int(num("BINANCE_MAX_LIVE", 3))
+        self.live_basis = str(c.get("BINANCE_LIVE_BASIS", "rule")).strip().lower()   # rule(기본) | side
         key, sec = c.get("BINANCE_API_KEY", ""), c.get("BINANCE_SECRET_KEY", "")
         self.live = None
         if (c.get("BINANCE_TRADE_MODE", "paper").lower() == "live" and key and sec
@@ -294,8 +298,26 @@ class Engine:
     def reselect(self):
         log(f"종목·전략 선정 시작 (15분봉, 상위 {TOP_N}종목, 롱·숏 각 {cb.BT_TRIALS}개 조합)")
         syms = top_symbols()
-        chosen = {}
+        old = self.state.get("strategies") or {}
+        chosen, kept = {}, 0
+        now = int(time.time())
+        # 1) 검증이 진행 중인 규칙은 그대로 둠 — 4시간마다 새 규칙으로 바꾸면 어떤 규칙도 5회를 못 채움
+        for sym, cur in old.items():
+            if sym.replace("1000", "").replace("USDT", "") in cb.PROTECTED_COINS or sym in EXCLUDE:
+                continue
+            rb = self.state["ruleBook"].get(cur.get("rid")) or {}
+            if rb.get("status") not in ("testing", "proven"):
+                continue
+            since = cur.get("since") or self.state.get("lastSelect") or now
+            if rb.get("n", 0) == 0 and now - since > STICKY_IDLE_HOURS * 3600:
+                continue                                        # 하루 넘게 신호가 없던 규칙은 교체
+            cur.setdefault("since", since)
+            chosen[sym] = cur
+            kept += 1
+            log(f"  유지 {sym}: {cur['desc']} · 모의 {rb.get('n', 0)}회 진행 중")
         for i, sym in enumerate(syms, 1):
+            if sym in chosen:
+                continue
             self.push_phase(f"전략 선정 {i}/{len(syms)} ({sym})")
             try:
                 st = pick_for(sym, self.rng)
@@ -306,19 +328,37 @@ class Engine:
                 rb = self.state["ruleBook"].get(st["rid"])
                 if rb and rb.get("status") == "retired":
                     continue
+                st["since"] = now
                 chosen[sym] = st
                 self.state["ruleBook"].setdefault(st["rid"], {"id": st["rid"], "symbol": sym, "side": st["side"],
                                                               "desc": st["desc"], "btEdge": st["btEdge"], "n": 0, "wins": 0,
                                                               "sumPct": 0.0, "status": "testing"})
                 log(f"  채택 {sym}: {st['desc']} · 백테스트 거래당 {st['btEdge']:+.2f}% ({st['btTrades']}회)")
+        self.prune_rules(chosen)
         self.state["strategies"] = chosen
         for sym in list(self.state["positions"]):              # 보호 코인으로 바뀐 종목의 모의 보유는 정리
             if sym.replace("1000", "").replace("USDT", "") in cb.PROTECTED_COINS and not self.state["positions"][sym].get("live"):
                 self.close_paper(sym, prices([sym]).get(sym, self.state["positions"][sym]["entry"]), "보호 코인 제외")
         self.state["lastSelect"] = int(time.time())
         save_state(self.state)
-        log(f"전략 선정 완료: {len(chosen)}종목")
+        log(f"전략 선정 완료: {len(chosen)}종목 (검증 중 유지 {kept})")
         self.push_phase("")
+
+    def prune_rules(self, chosen):
+        """한 번도 거래 안 한 채 버려진 규칙은 장부에서 지움 (장부가 수백 개로 불어나는 것 방지)"""
+        live_rids = {v["rid"] for v in chosen.values()} | {p.get("rid") for p in self.state["positions"].values()}
+        book = self.state["ruleBook"]
+        for rid in [k for k, r in book.items() if r.get("n", 0) == 0 and r.get("status") == "testing" and k not in live_rids]:
+            del book[rid]
+
+    def side_ok(self, side, rb):
+        """선택 설정 BINANCE_LIVE_BASIS=side: 그 방향(롱/숏) 모의 전체 성적이 충분하면 검증 중 규칙도 실주문"""
+        if self.live_basis != "side" or rb.get("status") == "retired":
+            return False
+        if rb.get("n", 0) and rb["sumPct"] / rb["n"] < 0:
+            return False
+        s = self.state["ledger"].get(side) or {}
+        return s.get("n", 0) >= SIDE_GATE_MIN_N and s["sumPct"] / s["n"] >= SIDE_GATE_MIN_AVG
 
     # --- 모의 진입·청산 ---
     def scan(self):
@@ -385,7 +425,7 @@ class Engine:
         if not self.live:
             return self.live_skip("실주문 꺼짐(설정 paper·키 확인 실패)")
         rb = self.state["ruleBook"].get(strat["rid"]) or {}
-        if rb.get("status") != "proven":
+        if rb.get("status") != "proven" and not self.side_ok(strat["side"], rb):
             return self.live_skip("통과 전 규칙(모의 검증 중)")
         ll = self.live_day()
         if ll["dayPnl"] <= -self.daily_loss:
@@ -480,7 +520,9 @@ class Engine:
             if sym not in mine:
                 log(f"[안내] 봇이 열지 않은 포지션 {sym} {amt} — 봇은 건드리지 않음")
         save_state(self.state)
-        log(f"바이낸스 실계좌 연결됨 · 실주문 켜짐(통과 규칙만) · 1회 {self.order_usdt:.0f} USDT · "
+        basis = (f"통과 규칙 + 방향별 모의 {SIDE_GATE_MIN_N}회·거래당 +{SIDE_GATE_MIN_AVG:.2f}% 이상인 쪽"
+                 if self.live_basis == "side" else "통과 규칙만")
+        log(f"바이낸스 실계좌 연결됨 · 실주문 켜짐({basis}) · 1회 {self.order_usdt:.0f} USDT · "
             f"하루 손실 한도 {self.daily_loss:.0f} USDT · 동시 실보유 최대 {self.max_live}")
 
     def open_paper(self, sym, strat, px):
@@ -595,7 +637,7 @@ class Engine:
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
                                   for r in rb if r.get("status") == "testing"),
                                  key=lambda x: (-(x["n"] or 0), -(x["avgPct"] or -99)))[:3],
-            "ruleEval": RULE_EVAL, "rulePromote": RULE_PROMOTE_MIN_AVG,
+            "ruleEval": RULE_EVAL, "rulePromote": RULE_PROMOTE_MIN_AVG, "liveBasis": self.live_basis,
             "strategies": [{"symbol": k, "desc": v["desc"], "btEdge": v["btEdge"]} for k, v in self.state["strategies"].items()],
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),
