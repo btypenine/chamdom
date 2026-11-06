@@ -555,7 +555,8 @@
       "pr": "https://github.com/btypenine/chamdom/pull/47",
       "branch": "ai/20261106-fs-reads",
       "createdAt": "2026-11-06T11:58:00+09:00",
-      "status": "pending"
+      "status": "merged",
+      "mergedAt": "2026-11-06T17:48:00+09:00"
     },
     {
       "id": "ai-20261106-bn-sticky",
