@@ -1134,6 +1134,23 @@ def gate_dawn_hours(bot):
     return h in DAWN_HOURS, f"지금 {h:02d}시 · 새벽 시간대 {DAWN_HOURS.start:02d}~{DAWN_HOURS.stop - 1:02d}시"
 
 
+BAD_HOUR_MIN_N = 10             # 나쁜 시간대(자기 학습) 관문: 그 시각(매수 시각 기준) 실전 표본이 이만큼 이상이고
+BAD_HOUR_PCT = -0.8             # 거래당 순익이 이 % 이하이면 막음 — 고정 시간표 대신 hourStats 로 스스로 고름
+                                # 근거(11-06): 00~02시 41건 거래당 -1.12%, 21~22시 35건 -1.05% vs 전체 -0.4% 안팎.
+                                # 단, 고정 '새벽 시간대'(03~08시)는 만든 뒤 -0.87% → -0.2% 안팎으로 회귀함 → 관찰로 시작해 판정에 맡김
+
+
+def gate_bad_hour(bot):
+    """지금 시각(한국시간)의 누적 실전 성적이 나쁘면 매수를 따로 잼 — 관찰로 시작"""
+    h = datetime.now(KST).hour
+    st = (bot.state.get("hourStats") or {}).get("%02d" % h) or {}
+    n = st.get("n", 0)
+    if n < BAD_HOUR_MIN_N:
+        return False, f"지금 {h:02d}시 · 표본 {n}건(최소 {BAD_HOUR_MIN_N}건 필요)"
+    avg = st.get("sumPct", 0.0) / n
+    return avg <= BAD_HOUR_PCT, f"지금 {h:02d}시 실전 {n}건 거래당 {avg:+.2f}% (기준 {BAD_HOUR_PCT:+.1f}% 이하)"
+
+
 CHASE_PCT = 0.3                 # 추격 매수 관문: 매수 직전 현재가가 신호가(신호 봉 종가)보다 이 % 이상 비싸면 막음
 
 
@@ -1239,6 +1256,7 @@ MARKET_GATES = [
     {"id": "event", "name": "경제 일정", "desc": "FOMC·미국 물가(CPI) 발표 등 정해진 일정 앞뒤로 새로 사지 않음 (일정표: bot/events.json)", "fn": gate_event},
     {"id": "volatile_hours", "name": "변동 큰 시간대", "desc": "미국장 시작(23~00시)·유럽장 시작(17시)에는 새로 사지 않음", "fn": gate_volatile_hours},
     {"id": "dawn_hours", "name": "새벽 시간대", "desc": f"새벽 {DAWN_HOURS.start:02d}~{DAWN_HOURS.stop - 1:02d}시(한국시간)에는 새로 사지 않음", "fn": gate_dawn_hours},
+    {"id": "bad_hour", "name": "나쁜 시간대(학습)", "desc": f"지금 시각의 실전 성적이 {BAD_HOUR_MIN_N}건 이상·거래당 {BAD_HOUR_PCT:+.1f}% 이하인 시간대에는 새로 사지 않음(시간표를 스스로 고름)", "fn": gate_bad_hour},
     {"id": "chase", "name": "추격 매수", "desc": f"매수 직전 현재가가 신호가보다 {CHASE_PCT}% 이상 올라 있으면 사지 않음(늦게 따라붙기 방지)", "fn": gate_chase, "entry": True},
     {"id": "weak_holdout", "name": "검증 근거 약함", "desc": f"전략의 검증구간 거래가 {WEAK_HO_MIN_TRADES}회 미만이거나 거래당 {WEAK_HO_MIN_EDGE:+.1f}% 미만이면 사지 않음", "fn": gate_weak_holdout, "entry": True},
     {"id": "breadth", "name": "시장 폭 약세", "desc": f"거래 대상 종목 중 {BREADTH_DOWN_FRAC * 100:.0f}% 이상이 최근 {BREADTH_MIN}분 하락 중이면 사지 않음(알트 동반 하락)", "fn": gate_breadth, "entry": True},
