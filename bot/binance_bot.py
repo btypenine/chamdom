@@ -286,7 +286,7 @@ class Engine:
         self.order_usdt = num("BINANCE_ORDER_USDT", 20)
         self.daily_loss = num("BINANCE_DAILY_LOSS_USDT", 10)
         self.max_live = int(num("BINANCE_MAX_LIVE", 3))
-        self.live_basis = str(c.get("BINANCE_LIVE_BASIS", "rule")).strip().lower()   # rule(기본) | side
+        self.live_basis = str(c.get("BINANCE_LIVE_BASIS", "rule")).strip().lower()   # rule(기본) | side | all
         key, sec = c.get("BINANCE_API_KEY", ""), c.get("BINANCE_SECRET_KEY", "")
         self.live = None
         if (c.get("BINANCE_TRADE_MODE", "paper").lower() == "live" and key and sec
@@ -353,10 +353,12 @@ class Engine:
 
     def side_ok(self, side, rb):
         """선택 설정 BINANCE_LIVE_BASIS=side: 그 방향(롱/숏) 모의 전체 성적이 충분하면 검증 중 규칙도 실주문"""
-        if self.live_basis != "side" or rb.get("status") == "retired":
+        if self.live_basis not in ("side", "all") or rb.get("status") == "retired":
             return False
         if rb.get("n", 0) and rb["sumPct"] / rb["n"] < 0:
             return False
+        if self.live_basis == "all":                   # 롱·숏 모두: 퇴출·마이너스 규칙만 빼고 실주문
+            return True
         s = self.state["ledger"].get(side) or {}
         return s.get("n", 0) >= SIDE_GATE_MIN_N and s["sumPct"] / s["n"] >= SIDE_GATE_MIN_AVG
 
@@ -432,8 +434,6 @@ class Engine:
             return self.live_skip("하루 손실 한도 도달")
         if sum(1 for p in self.state["positions"].values() if p.get("live")) >= self.max_live:
             return self.live_skip("동시 실보유 최대")
-        if self.owner_paused():
-            return self.live_skip("업비트 봇 일시정지")
         return True
 
     def open_live(self, sym, strat, px):
@@ -520,8 +520,9 @@ class Engine:
             if sym not in mine:
                 log(f"[안내] 봇이 열지 않은 포지션 {sym} {amt} — 봇은 건드리지 않음")
         save_state(self.state)
-        basis = (f"통과 규칙 + 방향별 모의 {SIDE_GATE_MIN_N}회·거래당 +{SIDE_GATE_MIN_AVG:.2f}% 이상인 쪽"
-                 if self.live_basis == "side" else "통과 규칙만")
+        basis = {"side": f"통과 규칙 + 방향별 모의 {SIDE_GATE_MIN_N}회·거래당 +{SIDE_GATE_MIN_AVG:.2f}% 이상인 쪽",
+                 "all": "롱·숏 모두 (퇴출·평균 마이너스 규칙 제외)"}.get(self.live_basis, "통과 규칙만")
+        basis += " · 업비트 봇과 별개 운용"
         log(f"바이낸스 실계좌 연결됨 · 실주문 켜짐({basis}) · 1회 {self.order_usdt:.0f} USDT · "
             f"하루 손실 한도 {self.daily_loss:.0f} USDT · 동시 실보유 최대 {self.max_live}")
 

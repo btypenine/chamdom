@@ -998,6 +998,8 @@ function renderBinance(b) {
   const near = (b.nearProven || []).map((r) => `${String(r.symbol).replace("USDT", "")} ${r.side === "long" ? "롱" : "숏"} ${r.n}회 ${pct(r.avgPct)}`);
   let why = "";
   if (!isLive) why = "실주문 꺼짐 · bot_config.env 를 바꿨다면 start_binance 창을 껐다 켜야 반영됨(설정은 시작할 때만 읽음)";
+  else if (b.liveBasis === "all") why = "실주문 기준: 롱·숏 모두 (퇴출·평균 마이너스 규칙 제외) · 업비트 봇과 별개 운용 · 다음 진입 신호부터 실주문";
+  else if (b.liveBasis === "side") why = "실주문 기준: 방향별 성적(모의 50회·거래당 +0.30% 이상인 쪽) · 업비트 봇과 별개 운용";
   else if (!(b.rules?.proven)) why = `실주문 대기: 통과한 규칙이 아직 0개 · 통과 문턱 모의 ${b.ruleEval || 5}회 이상·거래당 +${(b.rulePromote ?? 0.15).toFixed(2)}% 이상`;
   if (parts.length) why += (why ? " · " : "") + "오늘 신호가 모의로 간 이유: " + parts.join(", ");
   if (isLive && near.length) why += " · 통과에 가까운 규칙: " + near.join(", ");
