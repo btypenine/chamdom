@@ -44,6 +44,66 @@ except Exception:
 # ======================= 설정 =======================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "bot_config.env")
+SETTINGS_FILE = os.path.join(BASE_DIR, "bot_settings.json")   # 대시보드 '봇 설정'에서 바꾼 값 (bot_config.env 보다 우선)
+# 대시보드에서 바꿀 수 있는 항목만 (키·연결 코드는 절대 웹에 올리지 않고 bot_config.env 에만 둠)
+APP_SETTINGS = {
+    "TRADE_MODE": ("choice", ("paper", "live")),
+    "DAILY_LOSS_LIMIT": ("num", (0, 1000000)),
+    "BINANCE_TRADE_MODE": ("choice", ("paper", "live")),
+    "BINANCE_ORDER_USDT": ("num", (5, 200)),
+    "BINANCE_DAILY_LOSS_USDT": ("num", (1, 500)),
+    "BINANCE_MAX_LIVE": ("num", (1, 10)),
+    "BINANCE_LIVE_BASIS": ("choice", ("rule", "side")),
+}
+APP_SETTINGS_EVERY = 180                                       # 대시보드 설정 확인 주기(초) — 읽기 한도 아끼려고 3분
+
+
+def clean_app_settings(raw):
+    """웹에서 온 값 검사: 정해진 항목·범위만 통과, 나머지는 버림"""
+    out = {}
+    for k, v in (raw or {}).items():
+        rule = APP_SETTINGS.get(k)
+        if not rule or v is None or str(v).strip() == "":
+            continue
+        kind, arg = rule
+        v = str(v).strip().lower()
+        if kind == "choice":
+            if v in arg:
+                out[k] = v
+        else:
+            try:
+                x = float(v.replace(",", ""))
+            except ValueError:
+                continue
+            if arg[0] <= x <= arg[1]:
+                out[k] = str(int(x)) if x == int(x) else str(x)
+    return out
+
+
+def read_app_settings_file():
+    try:
+        with open(SETTINGS_FILE, encoding="utf-8") as f:
+            return clean_app_settings(json.load(f).get("values"))
+    except Exception:
+        return {}
+
+
+def write_app_settings_file(values, updated_at):
+    tmp = SETTINGS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"values": values, "updatedAt": updated_at}, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, SETTINGS_FILE)
+
+
+def app_settings_changed(cfg, new_values, prefix_binance):
+    """이 프로그램(업비트 봇 / 바이낸스 엔진)과 관련된 값이 지금 실행 중인 값과 다른지"""
+    old = cfg.get("_appSettings", {})
+    for k in APP_SETTINGS:
+        if k.startswith("BINANCE_") != prefix_binance:
+            continue
+        if old.get(k) != new_values.get(k):
+            return True
+    return False
 STATE_FILE = os.path.join(BASE_DIR, "bot_state.json")
 LOG_FILE = os.path.join(BASE_DIR, "bot.log")
 # 분석용 보고서 (키·연결 코드 없음). Claude 예약 분석이 이 폴더만 읽음
@@ -193,6 +253,10 @@ def load_config():
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
                 cfg[k.strip()] = v.strip()
+    app = read_app_settings_file()                                   # 대시보드에서 바꾼 값이 있으면 그 값을 씀
+    cfg["_fileSettings"] = {k: cfg[k] for k in APP_SETTINGS if k in cfg}
+    cfg.update(app)
+    cfg["_appSettings"] = app
     missing = [k for k in ("UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY", "FIREBASE_LINK_CODE")
                if not cfg.get(k) or cfg[k].startswith("여기에")]
     if missing:
@@ -231,6 +295,28 @@ def load_config():
         cfg["ORDER_KRW"] = EXPLORE_ORDER_KRW
         cfg["MARTINGALE_MAX_LEVEL"] = EXPLORE_MARTINGALE
     return cfg
+
+
+def sync_app_settings(cloud, cfg, binance=False):
+    """대시보드 설정을 받아 bot_settings.json 에 저장. 이 프로그램 관련 값이 바뀌었으면 True(→ 다시 시작해서 적용)"""
+    doc = cloud.app_settings()
+    if doc is None:
+        return False
+    values = clean_app_settings(doc.get("values"))
+    if values != read_app_settings_file():
+        write_app_settings_file(values, doc.get("updatedAt") or 0)
+    return app_settings_changed(cfg, values, binance)
+
+
+def settings_view(cfg, binance=False):
+    """대시보드에 보여줄 '지금 적용 중인 값'과 출처(app=대시보드, file=bot_config.env, default=기본값)"""
+    out = {}
+    for k in APP_SETTINGS:
+        if k.startswith("BINANCE_") != binance:
+            continue
+        src = "app" if k in cfg.get("_appSettings", {}) else ("file" if k in cfg.get("_fileSettings", {}) else "default")
+        out[k] = {"value": str(cfg.get(k, "")), "src": src}
+    return out
 
 
 def today_key(now=None):
@@ -471,6 +557,26 @@ class Cloud:
             except Exception:
                 continue
         return out
+
+    def app_settings(self):
+        """대시보드 '봇 설정' 값 (status/settings 문서, 안 되면 사용자 문서의 botSettings 필드). 없으면 None"""
+        h = self._auth()
+        best = None
+        for url, key in ((f"{FS_BASE}/users/{self.uid}/status/settings", None), (f"{FS_BASE}/users/{self.uid}", "botSettings")):
+            res = requests.get(url, headers=h, timeout=10)
+            if res.status_code == 429:
+                raise RuntimeError("429 읽기 한도 초과")
+            if res.status_code != 200:
+                continue
+            f = {k: from_fs(v) for k, v in res.json().get("fields", {}).items()}
+            if key:
+                f = f.get(key) or {}
+            if isinstance(f, dict) and isinstance(f.get("values"), dict):
+                if not best or (f.get("updatedAt") or 0) > (best.get("updatedAt") or 0):
+                    best = f
+            if best and not key:
+                break                                                   # status/settings 가 있으면 사용자 문서는 안 읽음
+        return best
 
     def suggestions(self, limit=50):
         """친구들이 대시보드 '요청하기'로 보낸 제안 (공용 suggestions 컬렉션, 운영자만 전부 읽을 수 있음)"""
@@ -2698,7 +2804,7 @@ class Bot:
 
     def upload_status(self):
         data = {"budget": round(self.ledger["seed"]), "device": self.cfg["DEVICE_NAME"],
-                "budgetUsed": round(self.in_use())}
+                "budgetUsed": round(self.in_use()), "settings": settings_view(self.cfg)}
         try:
             data.update(self.snapshot())
             self.error = ""
@@ -2984,6 +3090,14 @@ class Bot:
                         self.handle_commands()
                         self.handle_inbox()
                         self.handle_suggestions()
+                        if time.time() - getattr(self, "_last_settings", 0) >= APP_SETTINGS_EVERY:
+                            self._last_settings = time.time()
+                            if sync_app_settings(self.cloud, self.cfg):
+                                log("[설정] 대시보드에서 바꾼 설정을 받았습니다 → 적용하려고 다시 시작합니다 (보유 코인은 이어서 관리)")
+                                self.push_progress("설정 적용 중 · 다시 시작")
+                                raise RestartForUpdate()
+                    except RestartForUpdate:
+                        raise
                     except Exception as e:
                         if "429" in str(e):
                             self._cloud_backoff = time.time() + 600
@@ -3006,6 +3120,8 @@ class Bot:
                     self.scan_entries()
                 if time.time() - self.last_status >= STATUS_EVERY:
                     self.upload_status()
+            except RestartForUpdate:
+                raise
             except Exception as e:      # 밤새 돌아야 하므로 어떤 오류든 기록하고 계속
                 log(f"[경고] {type(e).__name__}: {e}")
                 time.sleep(15)
@@ -3027,6 +3143,9 @@ def main():
         sys.exit(RESTART_CODE)
     bot = Bot(cfg)
     log("참돔 트레이드 봇 v2 시작 (종료: Ctrl+C)")
+    up = {k: v for k, v in cfg["_appSettings"].items() if not k.startswith("BINANCE_")}
+    if up:
+        log("[설정] 대시보드에서 정한 값 적용: " + ", ".join(f"{k}={v}" for k, v in up.items()))
     restarting = False
     try:
         bot.run()
