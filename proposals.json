@@ -663,7 +663,8 @@
    "branch": "ai/20261107-martin-watch",
    "createdAt": "2026-11-07T11:58:00+09:00",
    "status": "merged",
-   "requestId": "req-w5s1ol4tabm2"
+   "requestId": "req-w5s1ol4tabm2",
+   "mergedAt": "2026-11-07T12:33:00+09:00"
   },
   {
    "id": "ai-20261107-bn-test-order",
