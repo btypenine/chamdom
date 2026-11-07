@@ -1963,14 +1963,22 @@ class Bot:
         return out
 
     def spec_view(self):
-        """분석 전용: 규칙 장부 전체(퇴출 포함)를 규칙 특성(익절폭·보유시간·조건 개수·백테스트 우위)별로 묶은 실전 성적.
+        """분석 전용: 규칙 장부 전체(퇴출 포함)를 규칙 특성(익절폭·보유시간·조건 개수·손절폭·익절/손절 비율·백테스트 우위)별로 묶은 실전 성적.
         어떤 모양의 규칙이 실전에서 덜 손해 보는지 보는 용도이며 매매에는 영향 없음"""
         try:
             def edge_b(e):
                 return None if e is None else ("우위 0.3% 미만" if e < 0.3 else "우위 0.3~0.5%" if e < 0.5 else "우위 0.5% 이상")
+            def rr_b(tp, sl):
+                # 익절폭 ÷ 손절폭: 작을수록 '조금 벌고 크게 잃는' 모양 (예: 익절 +1% / 손절 -5% → 0.2)
+                if tp is None or not sl:
+                    return None
+                rr = tp / abs(sl)
+                return "비율 0.35 미만" if rr < 0.35 else "비율 0.35~1" if rr < 1 else "비율 1 이상"
             keys = (("tp", "익절폭", lambda sp, r: "익절 +%g%%" % sp.get("tp") if sp.get("tp") is not None else None),
                     ("hold", "보유시간", lambda sp, r: "최대 %d분" % sp.get("hold") if sp.get("hold") else None),
                     ("ncond", "조건 개수", lambda sp, r: "조건 %d개" % len(sp.get("conds") or []) if sp.get("conds") else None),
+                    ("sl", "손절폭", lambda sp, r: "손절 %g%%" % sp.get("sl") if sp.get("sl") is not None else None),
+                    ("rr", "익절÷손절 비율(작을수록 조금 벌고 크게 잃음)", lambda sp, r: rr_b(sp.get("tp"), sp.get("sl"))),
                     ("edge", "백테스트 우위", lambda sp, r: edge_b(r.get("btEdge"))))
             out = []
             for k, label, fn in keys:
