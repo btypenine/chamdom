@@ -686,6 +686,7 @@ class Engine:
         if st.get("scannedBar") == bar or time.time() % (TF * 60) < 20:   # 새 봉이 닫힌 뒤 한 번만 확인
             return
         st["scannedBar"] = bar
+        self.regime()                                    # 관찰 전용: 신호가 없어도 봉마다 국면을 계산해 대시보드에 지금 국면 표시 (매매 영향 없음)
         n_paper = lambda: sum(1 for p in st["positions"].values() if not p.get("live"))
         n_live = lambda: sum(1 for p in st["positions"].values() if p.get("live"))
         # 모의 칸(10)과 실주문 칸(BINANCE_MAX_LIVE)을 따로 셈 — 모의가 칸을 다 채워도 실주문 신호는 계속 확인
