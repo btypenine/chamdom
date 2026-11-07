@@ -106,6 +106,11 @@ button:disabled { opacity: 0.45; cursor: default; }
 .right { text-align: right; }
 .sub { font-size: 12px; color: var(--muted); }
 .up { color: var(--up); } .down { color: var(--down); }
+.ex-box { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.ex-box .ex-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 14px; }
+.tag { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 99px; margin-left: 4px; vertical-align: 1px; }
+.tag.ok { background: color-mix(in srgb, var(--up) 15%, transparent); color: var(--up); }
+.tag.bad { background: color-mix(in srgb, var(--stop) 18%, transparent); color: var(--stop); }
 .empty { color: var(--muted); font-size: 13px; }
 
 /* 비상 제어 */
@@ -487,6 +492,12 @@ body.compact #sumCard { display: flex !important; }
       <div class="head-row"><h2>바이낸스 선물 <span class="sub">(15분봉 · 롱+숏)</span></h2><span class="mode paper" id="bnMode">모의</span></div>
       <div class="sub" id="bnState"></div>
       <div class="msg" id="bnLive" hidden></div>
+      <div class="ex-box" id="bnEx" hidden>
+        <div class="ex-head"><b>거래소 실제 계좌</b><span class="sub" id="bnExAt"></span></div>
+        <div class="warn-box" id="bnExWarn" hidden></div>
+        <div class="sub" id="bnExBal"></div>
+        <div class="list" id="bnExPos"></div>
+      </div>
       <div class="sub" id="bnWhy" hidden></div>
       <div class="msg" id="bnGuard" hidden></div>
       <div class="set-btns" id="bnResumeBox" hidden><span class="sub" id="bnResumeState"></span><button type="button" class="btn-primary" id="bnResume">승인: 쉼 풀고 계속 거래</button></div>
@@ -500,6 +511,7 @@ body.compact #sumCard { display: flex !important; }
         <div><div class="label">숏</div><div class="stat-val num" id="bnShort">-</div></div>
         <div><div class="label">규칙 통과/검증/퇴출</div><div class="stat-val num" id="bnRules">-</div></div>
       </div>
+      <div class="label">봇 장부 포지션 (★ = 실주문, 나머지는 모의)</div>
       <div class="list" id="bnPos"></div>
       <details id="bnGeneBox" hidden><summary class="sub">🧬 유전자 풀 상위 (진화 재료가 되는 잘된 규칙)</summary><div class="list" id="bnGenes"></div></details>
       <details><summary class="sub">최근 거래 · 기록</summary><div class="list" id="bnRecent"></div><div class="logbox" id="bnLog"></div></details>
@@ -1079,6 +1091,34 @@ function renderBinance(b) {
   $("bnLive").hidden = !isLive;
   const basisName = { all: "롱·숏 모두", side: "방향별 성적", rule: "통과 규칙만" }[b.liveBasis] || "통과 규칙만";
   if (isLive) $("bnLive").textContent = `실주문(${basisName}): 누적 ${ll.trades || 0}회 · 익절 ${ll.wins || 0}회 · ${(ll.pnlUsdt || 0) >= 0 ? "+" : ""}${(ll.pnlUsdt || 0).toFixed(2)} USDT · 오늘 ${ll.dayTrades || 0}회 ${(ll.dayPnl || 0) >= 0 ? "+" : ""}${(ll.dayPnl || 0).toFixed(2)} USDT (한도 -${b.liveDailyLoss || 0}) · 1회 ${b.liveOrderUsdt || 0} USDT`;
+  {  // 거래소 실제 계좌 (봇 장부와 별개로 바이낸스에 실제로 있는 것)
+    const ex = b.exchange || {};
+    const hasEx = isLive && (ex.at || ex.err);
+    $("bnEx").hidden = !hasEx;
+    if (hasEx) {
+      const usd = (x) => (x > 0 ? "+" : "") + Number(x || 0).toFixed(2);
+      $("bnExAt").textContent = ex.err ? "조회 실패: " + ex.err : (ex.at ? ago(ex.at) + " 확인" : "");
+      $("bnExBal").textContent = ex.balance == null ? "" :
+        `선물 지갑 ${Number(ex.balance).toFixed(2)} USDT · 주문 가능 ${Number(ex.available || 0).toFixed(2)} · 미실현 ${usd(ex.upnl)} USDT · 실제 포지션 ${(ex.positions || []).length}개`;
+      const w = [];
+      if (ex.unmanaged) w.push(`⚠ 봇이 관리하지 않는 실제 포지션 ${ex.unmanaged}개 — 봇의 손절·익절이 걸려 있지 않음. 바이낸스 앱에서 직접 정리 필요`);
+      if ((ex.missing || []).length) w.push(`⚠ 봇 장부에는 실보유인데 거래소에 없음: ${ex.missing.map((x) => x.replace("USDT", "")).join(", ")}`);
+      $("bnExWarn").hidden = !w.length; $("bnExWarn").textContent = w.join(" · ");
+      const box = $("bnExPos"); box.textContent = "";
+      for (const p of (ex.positions || [])) {
+        const el = document.createElement("div"); el.className = "li";
+        el.innerHTML = "<span><b></b><span class='tag'></span> <span class='sub d'></span></span><span class='num r'></span>";
+        el.querySelector("b").textContent = `${p.side === "long" ? "롱" : "숏"} ${p.symbol.replace("USDT", "")}`;
+        const tg = el.querySelector(".tag"); tg.textContent = p.managed ? "봇 관리" : "관리 밖"; tg.classList.add(p.managed ? "ok" : "bad");
+        el.querySelector(".d").textContent = `${Number(p.notional || 0).toFixed(2)} USDT · 진입 ${Number(p.entry).toPrecision(6)} → ${Number(p.mark).toPrecision(6)} · ${p.lev}배`;
+        const r = el.querySelector(".r"); r.textContent = usd(p.upnl) + " USDT";
+        if (p.upnl > 0) r.classList.add("up"); else if (p.upnl < 0) r.classList.add("down");
+        box.append(el);
+      }
+      if (!(ex.positions || []).length && !ex.err) box.innerHTML = "<div class='empty'>거래소에 열린 포지션 없음</div>";
+    }
+    if (isLive && ex.unmanaged) { $("bnMode").textContent = `⚠관리 밖 ${ex.unmanaged}`; }
+  }
   // 실주문을 안 한(모의로 간) 이유: 오늘 신호가 나왔을 때 어디서 걸렸는지
   const sk = b.liveSkip || {}, cnt = sk.counts || {};
   const parts = Object.entries(cnt).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${k} ${v}회`);
