@@ -186,7 +186,8 @@ LOOP_IDLE = 15                   # 보유 없을 때 확인 간격(초)
 LOOP_ACTIVE = 5                  # 보유 중 확인 간격(초)
 COMMAND_MAX_AGE = 10 * 60
 CLOUD_CMD_EVERY = 15             # 대시보드 명령(일시정지·승인 등) 확인 간격(초) — 읽기 한도 절약
-CLOUD_INBOX_EVERY = 30           # 요청함·승인함 확인 간격(초)
+CLOUD_INBOX_EVERY = 60           # 요청함·승인함 확인 간격(초) — 읽기 한도(하루 5만) 아끼려고 1분
+CLOUD_INBOX_FALLBACK_EVERY = 5   # 예비 요청함(사용자 문서 inbox 필드)은 5번에 1번만 같이 읽음(대시보드가 status/inbox 저장에 실패했을 때만 쓰는 곳)
 CLOUD_SUG_EVERY = 10 * 60        # 친구 제안함 확인 간격(초)
 
 # AI 분석가 (bot_config.env 에 ANTHROPIC_API_KEY 가 있을 때만 동작)
@@ -549,9 +550,15 @@ class Cloud:
         """대시보드가 남긴 요청·승인 (status/inbox 문서, 없으면 사용자 문서의 inbox 필드). 명령 컬렉션은 보안 규칙상 정해진 명령만 허용돼서 따로 둠"""
         h = self._auth()
         out = {}
-        for url, key in ((f"{FS_BASE}/users/{self.uid}/status/inbox", None), (f"{FS_BASE}/users/{self.uid}", "inbox")):
+        self._inbox_n = getattr(self, "_inbox_n", 0) + 1
+        urls = [(f"{FS_BASE}/users/{self.uid}/status/inbox", None)]
+        if self._inbox_n % CLOUD_INBOX_FALLBACK_EVERY == 1:
+            urls.append((f"{FS_BASE}/users/{self.uid}", "inbox"))
+        for url, key in urls:
             try:
                 res = requests.get(url, headers=h, timeout=10)
+                if res.status_code == 429:
+                    raise RuntimeError("429 읽기 한도 초과")
                 if res.status_code != 200:
                     continue
                 fields = {k: from_fs(v) for k, v in res.json().get("fields", {}).items()}
@@ -560,7 +567,9 @@ class Cloud:
                 for k, v in fields.items():
                     if isinstance(v, dict) and v.get("kind"):
                         out[k] = v
-            except Exception:
+            except Exception as e:
+                if "429" in str(e):
+                    raise                                       # 한도 초과는 위에서 10분 쉬게 알림
                 continue
         return out
 

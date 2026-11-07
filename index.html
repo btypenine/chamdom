@@ -685,7 +685,7 @@ onAuthStateChanged(auth, async (user) => {
   unsubs.push(onSnapshot(tq, (snap) => renderTrades(snap.docs.map((d) => d.data())),
     (e) => toast("거래 기록 불러오기 실패: " + e.code)));
 
-  pnlUid = user.uid; pnlCache = { since: Infinity, items: [] }; loadPnl();
+  pnlUid = user.uid; tstoreSynced = false; pnlCache = { since: Infinity, items: [] }; loadPnl();
   trendCache = null; loadTrend();
 
   const q = query(collection(db, "users", user.uid, "commands"), orderBy("createdAt", "desc"), limit(5));
@@ -996,7 +996,7 @@ $("setSave").addEventListener("click", async () => {
 });
 
 // ---------- 요청함 (요청·승인 전달) ----------
-// 명령 컬렉션은 보안 규칙상 정해진 명령(일시정지 등)만 허용 → 요청·승인은 status/inbox 문서에 남기고 봇이 20초마다 읽음
+// 명령 컬렉션은 보안 규칙상 정해진 명령(일시정지 등)만 허용 → 요청·승인은 status/inbox 문서에 남기고 봇이 1분마다 읽음
 async function sendInbox(item) {
   const uid = auth.currentUser.uid;
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -1144,8 +1144,11 @@ function renderBinance(b) {
       const to = b.testOrder || {};
       const testOpen = (b.positions || []).some((p) => p.live && String(p.desc || "").includes("테스트 실주문"));
       const waiting = bnTestAskedAt > (to.at || 0) && Date.now() - bnTestAskedAt < 10 * 60 * 1000;
-      $("bnTest").disabled = waiting || testOpen;
-      $("bnTestState").textContent = waiting ? "요청 보냄 · PC가 30초 안에 받아서 주문함"
+      $("bnTest").disabled = waiting || testOpen || (b.readLimitedUntil || 0) > Date.now();
+      const limited = (b.readLimitedUntil || 0) > Date.now();
+      $("bnTestState").textContent = waiting && limited ? "요청은 저장됐지만 웹페이지 읽기 한도(하루 5만) 초과로 PC가 못 읽는 중 · 한도가 풀리면(보통 17시쯤) 다시 눌러 주세요"
+        : limited && !testOpen ? "웹페이지 읽기 한도(하루 5만) 초과로 지금은 PC가 버튼을 못 읽음 · 한도가 풀리면(보통 17시쯤) 눌러 주세요"
+        : waiting ? "요청 보냄 · PC가 1분 안에 받아서 주문함"
         : testOpen ? "테스트 포지션 보유 중 · 익절/손절/4시간 중 먼저 오는 때 자동 정리"
         : to.msg ? `마지막 테스트: ${to.msg}` : `누르면 거래대금 1위 종목에 숏 ${b.liveOrderUsdt || 20} USDT · 익절 +1% / 손절 -1%`;
     }
@@ -1885,7 +1888,7 @@ function renderMore(s, stale) {
 }
 
 function renderTrades(items) {
-  lastTrades = items; renderTiles(); mergePnl(items); mergeTrend(items);
+  lastTrades = items; renderTiles(); storeTrades(items); mergePnl(items); mergeTrend(items);
   const box = $("trades"); box.textContent = "";
   if (!items.length) { box.innerHTML = '<div class="empty">아직 거래가 없습니다.</div>'; return; }
   for (const t of items) {
@@ -1948,6 +1951,68 @@ function mergePnl(items) {
   for (const t of items) if (isSell(t) && t.at >= pnlCache.since && !seen.has(t.at + "|" + t.market)) { pnlCache.items.push(t); add = true; }
   if (add) { pnlCache.items.sort((a, b) => a.at - b.at); renderPnl(); }
 }
+// 거래 기록 저장(이 폰·브라우저): 웹페이지(Firebase) 무료 읽기 한도(하루 5만) 아끼기.
+// 예전엔 대시보드를 열 때마다 손익 흐름·학습 추세용으로 최근 60일 거래를 전부(1,000건 넘게) 새로 읽었음 →
+// 이제 한 번 읽은 매도 기록은 이 기기에 저장해 두고, 다음부터는 마지막 기록 뒤의 새 거래만 읽음
+const TSTORE_KEY = "chamdomTrades1", TSTORE_KEEP = 200 * DAY;
+let tstore = null, tstoreSynced = false, tstoreJob = Promise.resolve();
+const slimTrade = (t) => ({ at: t.at, market: t.market, side: t.side, mode: t.mode, pnl: t.pnl, krw: t.krw });
+function tstoreLoad(uid) {
+  if (tstore && tstore.uid === uid) return tstore;
+  tstoreSynced = false;
+  tstore = { uid, since: Infinity, maxAt: 0, items: [] };
+  try {
+    const v = JSON.parse(localStorage.getItem(TSTORE_KEY) || "null");
+    if (v && v.uid === uid && Array.isArray(v.items) && v.since > 0) tstore = v;
+  } catch (e) {}
+  return tstore;
+}
+function tstoreSave() {
+  const cut = Date.now() - TSTORE_KEEP;
+  if (tstore.since < cut) { tstore.items = tstore.items.filter((t) => t.at >= cut); tstore.since = cut; }
+  try { localStorage.setItem(TSTORE_KEY, JSON.stringify(tstore)); } catch (e) {}
+}
+function tstoreAdd(list) {
+  const seen = new Set(tstore.items.map((t) => t.at + "|" + t.market + "|" + t.side));
+  let add = false;
+  for (const t of list) {
+    if (!t || t.side !== "sell" || typeof t.at !== "number") continue;      // 손익·추세는 매도 기록만 씀
+    const k = t.at + "|" + t.market + "|" + t.side;
+    if (seen.has(k)) continue;
+    seen.add(k); tstore.items.push(slimTrade(t)); add = true;
+    if (t.at > tstore.maxAt) tstore.maxAt = t.at;
+  }
+  if (add) tstore.items.sort((a, b) => a.at - b.at);
+  return add;
+}
+function storeTrades(items) {   // 실시간으로 들어온 최근 거래도 저장에 합침(다음에 다시 안 읽게)
+  if (!tstore || tstore.uid !== pnlUid || !tstoreSynced) return;
+  if (tstoreAdd(items)) tstoreSave();
+}
+function ensureTrades(since) {  // since 이후 매도 기록 — 없는 구간만 Firebase 에서 읽음
+  const job = tstoreJob.then(async () => {
+    const st = tstoreLoad(pnlUid);
+    const col = collection(db, "users", pnlUid, "trades");
+    if (since < st.since) {                         // 저장에 없는 옛 구간
+      const qy = st.since === Infinity
+        ? query(col, where("at", ">=", since), orderBy("at", "asc"), limit(5000))
+        : query(col, where("at", ">=", since), where("at", "<", st.since), orderBy("at", "asc"), limit(5000));
+      const snap = await getDocs(qy);
+      tstoreAdd(snap.docs.map((d) => d.data()));
+      if (st.since === Infinity) tstoreSynced = true; // 처음 읽은 구간은 지금까지 전부
+      st.since = since;
+    }
+    if (!tstoreSynced) {                             // 이번에 열고 처음: 마지막 기록 뒤 새 거래만
+      const snap = await getDocs(query(col, where("at", ">", st.maxAt || since), orderBy("at", "asc"), limit(5000)));
+      tstoreAdd(snap.docs.map((d) => d.data()));
+      tstoreSynced = true;
+    }
+    tstoreSave();
+    return st.items;
+  });
+  tstoreJob = job.catch(() => {});
+  return job;
+}
 async function loadPnl() {
   if (!pnlUid || pnlLoading) return;
   const P = PNL_P[pnlP];
@@ -1957,9 +2022,8 @@ async function loadPnl() {
   pnlLoading = true;
   if (!pnlCache.items.length) $("pnlChart").innerHTML = '<div class="empty">불러오는 중…</div>';
   try {
-    const qy = query(collection(db, "users", pnlUid, "trades"), where("at", ">=", since), orderBy("at", "asc"), limit(5000));
-    const snap = await getDocs(qy);
-    pnlCache = { since, items: snap.docs.map((d) => d.data()).filter(isSell) };
+    const items = await ensureTrades(since);
+    pnlCache = { since, items: items.filter((t) => isSell(t) && t.at >= since) };
   } catch (e) { toast("손익 흐름 불러오기 실패: " + (e.code || e.message)); }
   pnlLoading = false;
   renderPnl();
@@ -2070,8 +2134,8 @@ async function loadTrend() {
   trendLoading = true; $("trendCard").hidden = false;
   try {
     const since = Date.now() - TREND_DAYS * DAY;
-    const snap = await getDocs(query(collection(db, "users", pnlUid, "trades"), where("at", ">=", since), orderBy("at", "asc"), limit(5000)));
-    trendCache = snap.docs.map((d) => trendItem(d.data())).filter(Boolean);
+    const items = await ensureTrades(since);
+    trendCache = items.filter((t) => t.at >= since).map(trendItem).filter(Boolean);
   } catch (e) { toast("학습 추세 불러오기 실패: " + (e.code || e.message)); }
   trendLoading = false;
   renderTrend();

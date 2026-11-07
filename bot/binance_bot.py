@@ -91,7 +91,9 @@ RESUME_CHECK_SEC = 60             # 쉬는 동안 대시보드 '쉼 해제 승�
 MONTH_LOSS_DEFAULT = 40.0         # 월 실주문 손실 한도 기본값(USDT) — 대시보드 BINANCE_MONTH_LOSS_USDT 로 변경
 
 # 테스트 실주문 (사용자가 대시보드에서 직접 누를 때만, 한 번 누르면 한 건)
-TEST_CHECK_SEC = 30               # 대시보드 '테스트 실주문' 버튼을 확인하는 주기(초)
+TEST_CHECK_SEC = 60               # 대시보드 '테스트 실주문' 버튼을 확인하는 주기(초) — 웹페이지 읽기 한도(하루 5만) 아끼려고 1분
+DASH_READ_FALLBACK_EVERY = 5      # 대시보드 버튼 값은 status/settings 문서만 읽고, 예비(사용자 문서)는 5번에 1번만 같이 읽음
+DASH_READ_BACKOFF_SEC = 600       # 읽기 한도 초과(429)면 버튼 확인만 10분 쉼(매매·보유 관리는 계속)
 TEST_MAX_AGE_SEC = 600            # 누른 지 이보다 오래된 요청은 실행하지 않음(봇이 꺼져 있다 나중에 켜져도 뒤늦게 주문 안 나가게)
 TEST_TP, TEST_SL = 1.0, -1.0      # 익절 +1%(순익 기준) · 손절 -1%
 TEST_HOLD_BARS = 16               # 최대 보유 16봉(15분봉 → 4시간), 넘으면 정리
@@ -776,6 +778,38 @@ class Engine:
         self.live.cancel_stops(sym)
         self.book_live(sym, p, avg or price, reason, record)
 
+    def dash_fields(self):
+        """대시보드 버튼 값(binanceTestOrderAt·binanceResumeAt) 읽기. 쉼 해제·테스트 주문 확인이 같은 문서를 같이 씀(1분 안엔 다시 안 읽음).
+        예전엔 30초마다 두 문서를 읽어 하루 5,700회 넘게 읽기 한도를 씀 → status/settings 1개만, 예비 문서는 가끔만"""
+        now = time.time()
+        if now - getattr(self, "_dash_at", 0) < 50 and getattr(self, "_dash_cache", None) is not None:
+            return self._dash_cache
+        if now < getattr(self, "_dash_backoff", 0):
+            return None
+        self._dash_n = getattr(self, "_dash_n", 0) + 1
+        urls = [f"{cb.FS_BASE}/users/{self.cloud.uid}/status/settings"]
+        if self._dash_n % DASH_READ_FALLBACK_EVERY == 1:
+            urls.append(f"{cb.FS_BASE}/users/{self.cloud.uid}")
+        out = {}
+        h = self.cloud._auth()
+        for url in urls:
+            r = requests.get(url, headers=h, timeout=10)
+            if r.status_code == 429:
+                self._dash_backoff = now + DASH_READ_BACKOFF_SEC
+                self.state["readLimitedUntil"] = int((now + DASH_READ_BACKOFF_SEC) * 1000)
+                log(f"[경고] 웹페이지 읽기 한도 초과(429) → 대시보드 버튼(테스트 실주문·쉼 해제) 확인을 {DASH_READ_BACKOFF_SEC // 60}분 쉼 (매매·보유 관리는 계속)")
+                self.upload(force=True)
+                return None
+            if r.status_code != 200:
+                continue
+            for k in ("binanceTestOrderAt", "binanceResumeAt"):
+                v = r.json().get("fields", {}).get(k)
+                if v:
+                    out[k] = max(out.get(k, 0), int(float(cb.from_fs(v) or 0)))
+        self.state.pop("readLimitedUntil", None)
+        self._dash_at, self._dash_cache = now, out
+        return out
+
     def check_resume(self):
         """연속 손실로 쉬는 동안만 1분마다: 대시보드에서 '쉼 해제 승인'을 눌렀으면 바로 다시 실주문
         (보호 손절 실패 쉼·하루·월 손실 한도는 승인으로 풀지 않음)"""
@@ -783,19 +817,14 @@ class Engine:
         if g.get("restUntil", 0) <= time.time() or time.time() - getattr(self, "_last_resume_check", 0) < RESUME_CHECK_SEC:
             return
         self._last_resume_check = time.time()
-        at = 0
         try:
-            h = self.cloud._auth()
-            for url, key in ((f"{cb.FS_BASE}/users/{self.cloud.uid}/status/settings", None),
-                             (f"{cb.FS_BASE}/users/{self.cloud.uid}", None)):
-                r = requests.get(url, headers=h, timeout=10)
-                if r.status_code == 200:
-                    v = r.json().get("fields", {}).get("binanceResumeAt")
-                    if v:
-                        at = max(at, int(float(cb.from_fs(v) or 0)))
+            f = self.dash_fields()
         except Exception as e:
             log(f"[경고] 쉼 해제 승인 확인 실패(다음에 다시): {str(e)[:100]}")
             return
+        if f is None:
+            return
+        at = f.get("binanceResumeAt", 0)
         if at > g.get("restStart", 0):
             g.update({"restUntil": 0, "streak": 0, "resumedAt": at})
             save_state(self.state)
@@ -809,18 +838,14 @@ class Engine:
         if time.time() - getattr(self, "_last_test_check", 0) < TEST_CHECK_SEC:
             return
         self._last_test_check = time.time()
-        at = 0
         try:
-            h = self.cloud._auth()
-            for url in (f"{cb.FS_BASE}/users/{self.cloud.uid}/status/settings", f"{cb.FS_BASE}/users/{self.cloud.uid}"):
-                r = requests.get(url, headers=h, timeout=10)
-                if r.status_code == 200:
-                    v = r.json().get("fields", {}).get("binanceTestOrderAt")
-                    if v:
-                        at = max(at, int(float(cb.from_fs(v) or 0)))
+            f = self.dash_fields()
         except Exception as e:
             log(f"[경고] 테스트 실주문 요청 확인 실패(다음에 다시): {str(e)[:100]}")
             return
+        if f is None:
+            return
+        at = f.get("binanceTestOrderAt", 0)
         to = self.state.setdefault("testOrder", {})
         if not at or at <= to.get("at", 0):
             return
@@ -1073,6 +1098,7 @@ class Engine:
             "strategies": [{"symbol": k, "desc": v["desc"], "btEdge": v["btEdge"], "origin": v.get("origin", "rand"),
                             "gen": v.get("gen", 0)} for k, v in self.state["strategies"].items()],
             "testOrder": self.state.get("testOrder") or {},
+            "readLimitedUntil": self.state.get("readLimitedUntil") or 0,
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),
         }
@@ -1082,7 +1108,7 @@ class Engine:
         self.upload(force=True)
 
     def upload(self, force=False):
-        if not force and time.time() - self.last_status < 30:
+        if not force and time.time() - self.last_status < 60:   # 대시보드가 이 문서를 실시간으로 받음 → 60초마다(읽기 한도 절약)
             return
         self.last_status = time.time()
         data = self.view()
