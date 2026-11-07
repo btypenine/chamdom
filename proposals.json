@@ -739,7 +739,7 @@
       "id": "ai-20261107-bn-wide",
       "branch": "ai/20261107-bn-scalp",
       "createdAt": "2026-11-07T22:20:00+09:00",
-      "pr": "https://github.com/btypenine/chamdom/pull/62",
+      "pr": "https://github.com/btypenine/chamdom/pull/63",
       "status": "pending",
       "title": "바이낸스: 확장형 40종목 설정(거래 약 2배) + 대시보드 실제 계좌 강화",
       "summary": "설정에서 '대상 종목: 확장형 40종목'을 고르면 거래 기회 약 2배. 대시보드에 총자산·오늘/누적 실주문·자산 추이 그래프·최근 실주문 결과 표시",
