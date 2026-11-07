@@ -90,6 +90,12 @@ LOSS_STREAK_REST_HOURS = 2        #   이 시간 동안 새 실주문 쉼 (대�
 RESUME_CHECK_SEC = 60             # 쉬는 동안 대시보드 '쉼 해제 승인'을 확인하는 주기(초)
 MONTH_LOSS_DEFAULT = 40.0         # 월 실주문 손실 한도 기본값(USDT) — 대시보드 BINANCE_MONTH_LOSS_USDT 로 변경
 
+# 테스트 실주문 (사용자가 대시보드에서 직접 누를 때만, 한 번 누르면 한 건)
+TEST_CHECK_SEC = 30               # 대시보드 '테스트 실주문' 버튼을 확인하는 주기(초)
+TEST_MAX_AGE_SEC = 600            # 누른 지 이보다 오래된 요청은 실행하지 않음(봇이 꺼져 있다 나중에 켜져도 뒤늦게 주문 안 나가게)
+TEST_TP, TEST_SL = 1.0, -1.0      # 익절 +1%(순익 기준) · 손절 -1%
+TEST_HOLD_BARS = 16               # 최대 보유 16봉(15분봉 → 4시간), 넘으면 정리
+
 # 성적 기반 실주문 금액 (확률이 높은 규칙에 더, 약한 규칙엔 덜 — 사람이 정하지 않고 결과로 정함)
 PRIOR_N = 5                       # 아직 거래가 적은 규칙은 '평균 0' 쪽으로 당겨 봄 (5회분 무게)
 PRIOR_SD = 2.0                    # 거래당 손익 흩어짐 기본 추정(%)
@@ -796,6 +802,79 @@ class Engine:
             log("[돈 지키기] 대시보드에서 쉼 해제 승인 → 연속 손실 쉼을 풀고 바로 실주문 재개 (하루·월 손실 한도는 그대로)")
             self.upload(force=True)
 
+    def check_test_order(self):
+        """대시보드 '테스트 실주문' 버튼: 사용자가 누른 시각(binanceTestOrderAt)이 새로 생기면 한 번만,
+        거래대금 1위 종목(보호 코인 제외, 이미 보유 중이거나 최소 주문 금액이 너무 크면 다음 순위)에 숏으로 BINANCE_ORDER_USDT 만큼 실주문.
+        익절 +1% / 손절 -1% / 최대 4시간, 거래소 보호 손절도 평소처럼 걺. 하루·월 손실 한도와 쉼 상태는 그대로 지킴"""
+        if time.time() - getattr(self, "_last_test_check", 0) < TEST_CHECK_SEC:
+            return
+        self._last_test_check = time.time()
+        at = 0
+        try:
+            h = self.cloud._auth()
+            for url in (f"{cb.FS_BASE}/users/{self.cloud.uid}/status/settings", f"{cb.FS_BASE}/users/{self.cloud.uid}"):
+                r = requests.get(url, headers=h, timeout=10)
+                if r.status_code == 200:
+                    v = r.json().get("fields", {}).get("binanceTestOrderAt")
+                    if v:
+                        at = max(at, int(float(cb.from_fs(v) or 0)))
+        except Exception as e:
+            log(f"[경고] 테스트 실주문 요청 확인 실패(다음에 다시): {str(e)[:100]}")
+            return
+        to = self.state.setdefault("testOrder", {})
+        if not at or at <= to.get("at", 0):
+            return
+
+        def done(status, msg):
+            self.state["testOrder"] = {"at": at, "status": status, "msg": msg, "doneAt": int(time.time() * 1000)}
+            save_state(self.state)
+            log(f"[테스트 실주문] {msg}")
+            self.upload(force=True)
+
+        if time.time() - at / 1000 > TEST_MAX_AGE_SEC:
+            return done("expired", f"누른 지 {TEST_MAX_AGE_SEC // 60}분이 지난 요청이라 실행하지 않음 · 다시 눌러 주세요")
+        if not self.live:
+            return done("skipped", "실주문이 꺼져 있어 실행하지 않음 (bot_config.env BINANCE_TRADE_MODE=live·키 확인)")
+        g, now = self.state["guard"], time.time()
+        ll = self.live_day()
+        if g.get("blockUntil", 0) > now:
+            return done("skipped", "보호 손절 실패 후 쉬는 중이라 실행하지 않음")
+        if ll["monthPnl"] <= -self.month_loss or ll["dayPnl"] <= -self.daily_loss:
+            return done("skipped", "하루 또는 월 손실 한도에 닿아 실행하지 않음")
+        skipped = []
+        try:
+            if not self.live.filters:
+                self.live.sync()
+                self.live.load_filters()
+            cap = self.order_usdt * SIZE_MAX_X                   # 평소 실주문과 같은 최대 금액 안에서만
+            sym = None
+            for s_ in top_symbols(TOP_N):
+                if s_ in self.state["positions"]:
+                    continue
+                need = (self.live.filters.get(s_) or {}).get("minNotional", 5)
+                if need * 1.05 > cap:                            # 예: BTC 는 최소 주문이 커서 기본 금액으로는 못 삼
+                    skipped.append(f"{s_.replace('USDT', '')} 최소 {need:g} USDT")
+                    continue
+                sym = s_
+                break
+            px = prices([sym]).get(sym) if sym else None
+        except Exception as e:
+            return done("failed", f"시세 확인 실패: {str(e)[:100]}")
+        note = f" (건너뜀: {', '.join(skipped[:3])})" if skipped else ""
+        if not sym or not px:
+            return done("failed", "주문할 종목을 찾지 못함" + note)
+        strat = {"side": "short", "rid": "manual-test", "_p": 0.5,
+                 "desc": f"숏 테스트 실주문 (익절 +{TEST_TP:g}% · 손절 {TEST_SL:g}%)",
+                 "spec": {"tp": TEST_TP, "sl": TEST_SL, "hold": TEST_HOLD_BARS}}
+        log(f"[테스트 실주문] 대시보드 요청 받음 → {sym} 숏 {self.order_usdt:.0f} USDT 시도{note}")
+        self.open_live(sym, strat, px, self.order_usdt)
+        p = self.state["positions"].get(sym) or {}
+        if p.get("live") and p.get("rid") == "manual-test":
+            done("opened", f"{sym} 숏 진입 {p['qty']} @ {p['entry']:.6g} · 익절 {p['tp']:.6g} · 손절 {p['sl']:.6g}"
+                 + (f" · 거래소 보호 손절 {p['stopPx']:.6g}" if p.get("stopPx") else "") + note)
+        else:
+            done("failed", f"{sym} 주문이 체결되지 않음 · 마지막 기록: {ACT[-1][15:] if ACT else '-'}")
+
     def check_exchange(self, force=False):
         """실보유가 거래소에서 이미 정리됐는지(보호 손절 체결·직접 정리) 1분마다 확인. 두 번 연속 없을 때만 정리로 봄"""
         live_pos = {s: p for s, p in self.state["positions"].items() if p.get("live")}
@@ -993,6 +1072,7 @@ class Engine:
             "settings": cb.settings_view(self.cfg, binance=True),
             "strategies": [{"symbol": k, "desc": v["desc"], "btEdge": v["btEdge"], "origin": v.get("origin", "rand"),
                             "gen": v.get("gen", 0)} for k, v in self.state["strategies"].items()],
+            "testOrder": self.state.get("testOrder") or {},
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),
         }
@@ -1059,6 +1139,7 @@ class Engine:
                 self.manage()
                 self.check_exchange()
                 self.check_resume()
+                self.check_test_order()
                 self.scan()
                 self.upload()
             except Exception as e:

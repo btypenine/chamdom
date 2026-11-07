@@ -490,6 +490,7 @@ body.compact #sumCard { display: flex !important; }
       <div class="sub" id="bnWhy" hidden></div>
       <div class="msg" id="bnGuard" hidden></div>
       <div class="set-btns" id="bnResumeBox" hidden><span class="sub" id="bnResumeState"></span><button type="button" class="btn-primary" id="bnResume">승인: 쉼 풀고 계속 거래</button></div>
+      <div class="set-btns" id="bnTestBox" hidden><span class="sub" id="bnTestState"></span><button type="button" class="btn-primary" id="bnTest">테스트 실주문: 거래대금 1위 숏</button></div>
       <div class="msg" id="bnEvo" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
@@ -1046,6 +1047,22 @@ $("bnResume").addEventListener("click", async () => {
   bnResumeAskedAt = at;
   renderBinance(lastBinance);
 });
+// 테스트 실주문: 사용자가 누를 때만 한 건 (거래대금 1위 숏 · 익절 +1% · 손절 -1% · 최대 4시간)
+let bnTestAskedAt = 0;
+$("bnTest").addEventListener("click", async () => {
+  if (!auth.currentUser || !lastBinance) return;
+  const usdt = lastBinance.liveOrderUsdt || 20;
+  if (!confirm(`실제 돈으로 주문합니다.\n바이낸스 선물 거래대금 1위 종목에 숏 ${usdt} USDT(레버리지 1배)로 진입하고,\n(최소 주문이 이 금액보다 큰 종목은 다음 순위로 넘어감)\n익절 +1% · 손절 -1% · 최대 4시간에 자동 정리합니다.\n진행할까요?`)) return;
+  const at = Date.now();
+  $("bnTest").disabled = true;
+  try { await setDoc(doc(db, "users", auth.currentUser.uid, "status", "settings"), { binanceTestOrderAt: at }, { merge: true }); }
+  catch (e1) {
+    try { await setDoc(doc(db, "users", auth.currentUser.uid), { binanceTestOrderAt: at }, { merge: true }); }
+    catch (e2) { $("bnTest").disabled = false; $("bnTestState").textContent = "요청 저장 실패 · 다시 눌러 주세요"; return; }
+  }
+  bnTestAskedAt = at;
+  renderBinance(lastBinance);
+});
 function renderBinance(b) {
   lastBinance = b || null;
   $("bnCard").hidden = !b; $("bnHead").hidden = !b; $("bnEmpty").hidden = !!b;
@@ -1120,6 +1137,18 @@ function renderBinance(b) {
     const asked = bnResumeAskedAt > (g.restStart || 0);
     $("bnResume").disabled = asked;
     $("bnResumeState").textContent = asked ? "승인 보냄 · PC가 1분 안에 받아서 다시 거래함" : "연속 손실로 쉬는 중 · 승인하면 바로 다시 거래 (하루·월 손실 한도는 그대로)";
+  }
+  {  // 테스트 실주문 버튼 (실주문 켜져 있을 때만)
+    $("bnTestBox").hidden = !isLive;
+    if (isLive) {
+      const to = b.testOrder || {};
+      const testOpen = (b.positions || []).some((p) => p.live && String(p.desc || "").includes("테스트 실주문"));
+      const waiting = bnTestAskedAt > (to.at || 0) && Date.now() - bnTestAskedAt < 10 * 60 * 1000;
+      $("bnTest").disabled = waiting || testOpen;
+      $("bnTestState").textContent = waiting ? "요청 보냄 · PC가 30초 안에 받아서 주문함"
+        : testOpen ? "테스트 포지션 보유 중 · 익절/손절/4시간 중 먼저 오는 때 자동 정리"
+        : to.msg ? `마지막 테스트: ${to.msg}` : `누르면 거래대금 1위 종목에 숏 ${b.liveOrderUsdt || 20} USDT · 익절 +1% / 손절 -1%`;
+    }
   }
   // 진화
   const e = b.evo;
