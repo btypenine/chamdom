@@ -1807,6 +1807,22 @@ function renderMore(s, stale) {
     if (tpl.avgDiff > 0.05) el.lastChild.classList.add("up");
     ebox.append(el);
   }
+  {  // 관찰: '손실 나면 4배 물타기 + 평단 익절가 지정가 매도'였다면 (실제 주문 없음, 보유 구간 1분봉 기준)
+    const ms = s.martinSim && s.martinSim.n > 0 ? s.martinSim : null;
+    if (ms) {
+      $("execCard").hidden = false;
+      const won = (v) => `${v >= 0 ? "+" : ""}${Math.round(v).toLocaleString()}원`;
+      const deep = Array.isArray(ms.legs) ? ms.legs.slice(1).reduce((a, x) => a + (x || 0), 0) : 0;
+      const el = document.createElement("div"); el.className = "li";
+      el.innerHTML = "<span></span><span class='num'></span>";
+      el.firstChild.textContent = "4배 물타기 관찰";
+      el.firstChild.style.whiteSpace = "nowrap";
+      if (ms.n < 20) el.style.opacity = "0.6";
+      el.lastChild.textContent = `${ms.n}건 · 목표 도달 ${ms.wins} · 물탄 거래 ${deep} · 가상 ${won(ms.pnl)} (실제 ${won(ms.actualPnl)}) · 최대 투입 ${Math.round(ms.maxInvest).toLocaleString()}원 · 최악 ${won(ms.worst)}`;
+      if (ms.worst < -20000) el.lastChild.classList.add("down");
+      ebox.append(el);
+    }
+  }
 
   {  // 익절 누수: 목표 익절폭 vs 실제 순익 (최근 거래 기록, 실전·검증 모의 분리)
     const leak = (paper) => {

@@ -1275,6 +1275,10 @@ BTC_EXIT_PCT = -0.5              # 매수 후 BTC가 이만큼 빠졌고 포지�
 
 
 TP_LIMIT_MAX_MIN = 400  # 지정가 익절 관찰: 보유가 이보다 길면 1분봉 조회량이 커서 건너뜀(분석 전용)
+# 물타기 관찰(분석 전용, 실제 주문 없음): '손실 나면 4배로 물타고 평단+익절폭에 지정가 매도'였다면 결과가 어땠을지
+MARTIN_STEP_PCT = 1.5   # 매수가 대비 이만큼씩 내려갈 때마다 한 번 더 삼(-1.5%, -3%, -4.5%)
+MARTIN_MULT = 4         # 직전 금액의 몇 배로 물타나
+MARTIN_MAX_ADDS = 3     # 최대 물타기 횟수(6천 → 2.4만 → 9.6만 → 38.4만원)
 EXIT_RECENT_N = 20     # 청산 규칙 '최근 N건' 흐름 표시용(판정 기준은 누적 그대로)
 OVERLAP_RECENT = 30    # 관문 겹침 성적 '최근 N건' 흐름 표시용(분석 전용)
 
@@ -2057,6 +2061,7 @@ class Bot:
                 if start <= t <= now_ms and c["high_price"] > pos["tp"]:
                     touched = True
                     break
+            self.martin_record(market, pos, candles, start, now_ms, actual_pct)
             virt = (pos["tp"] * (1 - FEE_RATE) / pos["unit"] - 1) * 100 if touched else actual_pct
             diff = virt - actual_pct
             st = self.state.setdefault("tpLimit", {"n": 0, "touched": 0, "missed": 0, "better": 0, "worse": 0, "sumDiff": 0.0})
@@ -2068,6 +2073,56 @@ class Bot:
             st["sumDiff"] += diff
             if touched and not reason.startswith("익절"):
                 log(f"[지정가 관찰] {market.split('-')[1]} 보유 중 1분봉 고가가 목표가를 넘었음 → 지정가였다면 {virt:+.2f}% (실제 {reason} {actual_pct:+.2f}%)")
+        except Exception:
+            pass
+
+    def martin_record(self, market, pos, candles, start, now_ms, actual_pct):
+        """관찰 전용(실제 주문 없음): 같은 거래를 '손실 나면 MARTIN_MULT배로 물타기 + 평단 기준 익절가에 지정가 매도'로 했다면.
+        보유 구간 1분봉을 시간순으로 따라가며 저가가 물타기 가격에 닿으면 추가 매수, 그 다음 봉부터 고가가 새 목표가를 넘으면 익절로 봄.
+        규칙의 실제 보유가 끝날 때까지 목표에 못 가면 마지막 가격으로 정리했다고 셈(실제 물타기는 더 오래 버티므로 꼬리 위험은 이보다 큼)"""
+        try:
+            base, unit = float(pos["cost"]), float(pos["unit"])
+            tp_frac = pos["tp"] / unit - 1
+            bars = []
+            for c in candles:
+                t = datetime.strptime(c["candle_date_time_utc"], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp() * 1000
+                if start <= t <= now_ms:
+                    bars.append((t, c["low_price"], c["high_price"], c["trade_price"]))
+            if not bars:
+                return
+            bars.sort()
+            invested, vol, adds, won, pnl = base, base * (1 - FEE_RATE) / unit, 0, False, None
+            target = unit * (1 + tp_frac)
+            for _, lo, hi, _cl in bars:
+                added = False
+                while adds < MARTIN_MAX_ADDS and lo <= unit * (1 - MARTIN_STEP_PCT * (adds + 1) / 100):
+                    adds += 1
+                    lp = unit * (1 - MARTIN_STEP_PCT * adds / 100)
+                    amt = base * MARTIN_MULT ** adds
+                    vol += amt * (1 - FEE_RATE) / lp
+                    invested += amt
+                    added = True
+                target = invested / vol * (1 + tp_frac)              # 평단(수수료 포함) 기준 익절가
+                if not added and hi > target:
+                    won, pnl = True, vol * target * (1 - FEE_RATE) - invested
+                    break
+            if pnl is None:
+                pnl = vol * bars[-1][3] * (1 - FEE_RATE) - invested
+            st = self.state.setdefault("martinSim", {"n": 0, "wins": 0, "pnl": 0.0, "actualPnl": 0.0, "maxInvest": 0,
+                                                     "legs": [0] * (MARTIN_MAX_ADDS + 1), "worst": 0.0})
+            st["n"] += 1
+            st["wins"] += won
+            st["pnl"] += pnl
+            st["actualPnl"] += base * actual_pct / 100
+            st["maxInvest"] = max(st["maxInvest"], int(invested))
+            legs = st.setdefault("legs", [0] * (MARTIN_MAX_ADDS + 1))
+            if len(legs) < MARTIN_MAX_ADDS + 1:
+                legs.extend([0] * (MARTIN_MAX_ADDS + 1 - len(legs)))
+            legs[adds] += 1
+            st["worst"] = min(st["worst"], pnl)
+            if adds >= 2:
+                log(f"[물타기 관찰] {market.split('-')[1]} {adds}번 물탔다면 투입 {invested:,.0f}원 → "
+                    f"{'익절' if won else '미도달'} {pnl:+,.0f}원 (실제 {base * actual_pct / 100:+,.0f}원) · 실제 주문 없음")
         except Exception:
             pass
 
@@ -2980,6 +3035,9 @@ class Bot:
                      "tpLimit": (lambda t: {"n": t["n"], "touched": t["touched"], "missed": t["missed"], "better": t["better"],
                                             "worse": t["worse"], "avgDiff": round(t["sumDiff"] / t["n"], 3)}
                                  if t and t.get("n") else None)(self.state.get("tpLimit")),
+                     "martinSim": (lambda t: {"n": t["n"], "wins": t["wins"], "pnl": round(t["pnl"]), "actualPnl": round(t["actualPnl"]),
+                                             "maxInvest": t["maxInvest"], "legs": t.get("legs"), "worst": round(t["worst"])}
+                                  if t and t.get("n") else None)(self.state.get("martinSim")),
                      "passStats": (lambda t: {"n": t["n"], "wins": t["wins"], "avgPct": round(t["sumPct"] / t["n"], 3),
                                               "pnl": t["pnl"]} if t and t.get("n") else None)(self.state.get("passStats")),
                      "passPredict": [{"key": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3)}
