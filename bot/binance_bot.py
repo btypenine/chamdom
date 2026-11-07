@@ -818,7 +818,8 @@ class Engine:
         sl = avg * (1 + sp["sl"] / 100) if long_ else avg * (1 - sp["sl"] / 100)
         p = {"side": side, "entry": avg, "tp": tp, "sl": sl, "usdt": filled * avg, "qty": filled,
              "live": True, "at": int(time.time() * 1000), "deadline": int(time.time()) + sp["hold"] * TF * 60,
-             "rid": strat["rid"], "desc": strat["desc"], "maxFav": 0.0, "p": round(strat.get("_p", 0.5), 3)}
+             "rid": strat["rid"], "desc": strat["desc"], "maxFav": 0.0, "p": round(strat.get("_p", 0.5), 3),
+             "sigPx": px}
         self.state["positions"][sym] = p
         save_state(self.state)
         log(f"★[실주문 진입] {sym} {'롱' if long_ else '숏'} {filled} ({filled * avg:.1f} USDT · 이익 확률 {p['p'] * 100:.0f}%) "
@@ -846,9 +847,33 @@ class Engine:
             log(f"[경고] {sym} 거래소 보호 손절 실패: {str(e)[:160]}")
             return False
 
+    def slip_record(self, sym, p, exit_px):
+        """관찰 전용: 실주문 체결가가 신호 가격보다 얼마나 불리했는지(+면 불리) 누적.
+        모의는 한쪽 SLIP(0.02%)만 가정하므로, 실제 밀림이 더 크면 모의 성적이 실주문보다 좋게 보임.
+        손익·판정·주문에는 전혀 쓰지 않음. 실패해도 매매는 그대로."""
+        try:
+            long_ = p["side"] == "long"
+            st = self.state.setdefault("liveSlip", {"entryN": 0, "entrySum": 0.0, "entryWorse": 0,
+                                                    "exitN": 0, "exitSum": 0.0, "exitWorse": 0, "recent": []})
+            ent = ext = None
+            sig, avg = p.get("sigPx"), p.get("entry")
+            if sig and avg:
+                ent = ((avg / sig - 1) if long_ else (sig / avg - 1)) * 100
+                st["entryN"] += 1; st["entrySum"] += ent; st["entryWorse"] += 1 if ent > 0 else 0
+            xs = p.pop("exitSigPx", None)
+            if xs and exit_px:
+                ext = ((xs / exit_px - 1) if long_ else (exit_px / xs - 1)) * 100
+                st["exitN"] += 1; st["exitSum"] += ext; st["exitWorse"] += 1 if ext > 0 else 0
+            if ent is not None or ext is not None:
+                st["recent"] = (st.get("recent") or [])[-9:] + [{"symbol": sym, "side": p["side"],
+                                "entry": None if ent is None else round(ent, 3), "exit": None if ext is None else round(ext, 3)}]
+        except Exception as e:
+            log(f"[안내] 체결 밀림 기록 실패(매매엔 영향 없음): {str(e)[:120]}")
+
     def book_live(self, sym, p, exit_px, reason, record=True):
         """실주문 1건 정리 결과를 장부에 반영 (봇이 닫았든 거래소 보호 손절이 닫았든)"""
         long_ = p["side"] == "long"
+        self.slip_record(sym, p, exit_px)
         gross = (exit_px / p["entry"] - 1) if long_ else (p["entry"] / exit_px - 1)
         pct = (gross - 2 * FEE) * 100
         usdt = p["usdt"] * pct / 100
@@ -893,6 +918,8 @@ class Engine:
             log(f"[실주문 청산 실패] {sym}: {e} — 다음 확인 때 다시 시도 (거래소 보호 손절은 그대로 걸려 있음)")
             return
         self.live.cancel_stops(sym)
+        if avg:
+            p["exitSigPx"] = price                                  # 관찰용: 청산 판단 때 가격(체결 밀림 비교)
         self.book_live(sym, p, avg or price, reason, record)
 
     def dash_fields(self):
@@ -1210,6 +1237,7 @@ class Engine:
             "rules": {"testing": sum(1 for r in rb if r["status"] == "testing"), "proven": sum(1 for r in rb if r["status"] == "proven"),
                       "retired": sum(1 for r in rb if r["status"] == "retired")},
             "liveSkip": self.state.get("liveSkip") or {},
+            "liveSlip": self.slip_view(),
             "nearProven": sorted(({"symbol": r.get("symbol", ""), "side": r.get("side", ""), "n": r.get("n", 0),
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
                                   for r in rb if r.get("status") == "testing"),
@@ -1230,6 +1258,13 @@ class Engine:
             "exchange": self.exchange_view(),
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),
         }
+
+    def slip_view(self):
+        st = self.state.get("liveSlip") or {}
+        en, xn = st.get("entryN", 0), st.get("exitN", 0)
+        return {"entryN": en, "entryAvg": round(st["entrySum"] / en, 3) if en else None, "entryWorse": st.get("entryWorse", 0),
+                "exitN": xn, "exitAvg": round(st["exitSum"] / xn, 3) if xn else None, "exitWorse": st.get("exitWorse", 0),
+                "assumed": round(SLIP * 100, 3), "recent": (st.get("recent") or [])[-5:]}
 
     def adopt_orphans(self):
         """거래소에 실제로 있는데 봇 장부에 없는 포지션을 넘겨받아 관리(익절·손절·보유시간·거래소 보호 손절).
