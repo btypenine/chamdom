@@ -340,6 +340,31 @@ class Live:
                     pass
         return avg, filled
 
+    def snapshot(self):
+        """대시보드 표시용: 거래소 실제 선물 지갑·포지션 (봇 장부와 상관없이 있는 그대로)"""
+        bal = {}
+        try:
+            for b in self.call("GET", "/fapi/v2/balance"):
+                if b.get("asset") == "USDT":
+                    bal = {"balance": float(b.get("balance") or 0), "available": float(b.get("availableBalance") or 0),
+                           "upnl": float(b.get("crossUnPnl") or 0)}
+        except RuntimeError:
+            pass
+        pos, upnl = [], 0.0
+        for x in self.call("GET", "/fapi/v2/positionRisk"):
+            amt = float(x.get("positionAmt") or 0)
+            if not amt:
+                continue
+            u = float(x.get("unRealizedProfit") or 0)
+            upnl += u
+            mark = float(x.get("markPrice") or 0)
+            pos.append({"symbol": x["symbol"], "side": "long" if amt > 0 else "short", "amt": abs(amt),
+                        "entry": float(x.get("entryPrice") or 0), "mark": mark, "upnl": round(u, 4),
+                        "notional": round(abs(amt) * mark, 2), "lev": int(float(x.get("leverage") or 1)),
+                        "margin": (x.get("marginType") or "").lower()})
+        bal["upnl"] = round(upnl, 4)
+        return {"at": int(time.time() * 1000), **bal, "positions": pos}
+
     def positions(self):
         try:
             d = self.call("GET", "/fapi/v3/positionRisk")
@@ -1146,8 +1171,20 @@ class Engine:
             "foreign": self.state.get("foreign") or {},
             "readLimitedUntil": self.state.get("readLimitedUntil") or 0,
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],
+            "exchange": self.exchange_view(),
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),
         }
+
+    def exchange_view(self):
+        """거래소 실제 포지션 + 봇 장부 대조: 봇이 관리 중인지(managed) 표시"""
+        ex = getattr(self, "_exsnap", None)
+        if not self.live or not ex:
+            return {}
+        mine = {s for s, p in self.state["positions"].items() if p.get("live")}
+        ps = [dict(x, managed=x["symbol"] in mine) for x in ex.get("positions", [])]
+        out = dict(ex, positions=ps, unmanaged=sum(1 for x in ps if not x["managed"]),
+                   missing=sorted(mine - {x["symbol"] for x in ps}))
+        return out
 
     def push_phase(self, phase):
         self._phase = phase
@@ -1157,6 +1194,12 @@ class Engine:
         if not force and time.time() - self.last_status < 60:   # 대시보드가 이 문서를 실시간으로 받음 → 60초마다(읽기 한도 절약)
             return
         self.last_status = time.time()
+        if self.live:
+            try:
+                self._exsnap = self.live.snapshot()
+                self._exsnap.pop("err", None)
+            except Exception as e:
+                self._exsnap = dict(getattr(self, "_exsnap", None) or {}, err=str(e)[:120])
         data = self.view()
         try:
             h = self.cloud._auth()
