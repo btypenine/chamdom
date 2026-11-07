@@ -522,7 +522,7 @@ body.compact #sumCard { display: flex !important; }
 
     <section class="set-tab" data-tab="bot">
       <div class="head-row"><h2>봇 설정</h2><span class="sub" id="setState"></span></div>
-      <div class="sub">저장하면 참돔 PC 봇이 3분 안에 받아서 다시 시작하며 적용함. API 키·연결 코드는 보안상 PC의 bot_config.env 에만 둠.</div>
+      <div class="sub">저장하면 참돔 PC 봇이 10분 안에 받아서 다시 시작하며 적용함. API 키·연결 코드는 보안상 PC의 bot_config.env 에만 둠.</div>
       <div class="empty" id="setEmpty">PC 봇이 새 버전으로 다시 시작하면 여기에 설정이 나타남 (보통 10분 안)</div>
       <div class="set-group" id="setUp"><h2 class="sub">업비트 봇</h2></div>
       <div class="set-group" id="setBn"><h2 class="sub">바이낸스 선물 엔진 · 업비트와 별개 운용</h2></div>
@@ -990,7 +990,7 @@ $("setSave").addEventListener("click", async () => {
     try { await setDoc(doc(db, "users", auth.currentUser.uid, "status", "settings"), body); }
     catch (e1) { await setDoc(doc(db, "users", auth.currentUser.uid), { botSettings: body }, { merge: true }); }
     appSettings = values; setDirty = false;
-    toast("저장함 · 참돔 PC가 3분 안에 받아서 다시 시작하며 적용");
+    toast("저장함 · 참돔 PC가 10분 안에 받아서 다시 시작하며 적용");
     renderSettings();
   } catch (e) { toast("설정 저장 실패: " + (e.code || e.message)); checkSettings(); }
 });

@@ -56,7 +56,7 @@ APP_SETTINGS = {
     "BINANCE_LIVE_BASIS": ("choice", ("rule", "side", "all")),
     "BINANCE_MONTH_LOSS_USDT": ("num", (5, 2000)),
 }
-APP_SETTINGS_EVERY = 180                                       # 대시보드 설정 확인 주기(초) — 읽기 한도 아끼려고 3분
+APP_SETTINGS_EVERY = 600                                       # 대시보드 설정 확인 주기(초) — 읽기 한도(429) 아끼려고 10분
 
 
 def clean_app_settings(raw):
