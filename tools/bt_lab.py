@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""bt-lab 실험 4: 바이낸스 스윙형 vs 회전형(scalp) — 보지 않은 다음 10일 성적 (15분봉, 롱·숏)
+"""bt-lab 실험 4-2: 스윙형 종목 수·양방향 확대로 거래 횟수 늘리기 (실험4: 회전형은 검증 구간 손실)
+실험 4: 바이낸스 스윙형 vs 회전형(scalp) — 보지 않은 다음 10일 성적 (15분봉, 롱·숏)
 - 학습 20일(1920봉)로 종목별 전략 1개 선정 → 다음 960봉(10일)에 그대로 적용해 거래 수·거래당 순익 측정
 - 시세: fapi(선물) 실패 시 data-api.binance.vision(현물)로 대체
 """
@@ -46,6 +47,42 @@ def kl(sym, total):
         time.sleep(0.2)
     return out[-total:]
 
+def pick_side(sym, cl, side, rng):
+    ser = bb.series_of(cl if side == "long" else bb.inverted(cl))
+    split = int(ser.n * (1 - cb.BT_HOLDOUT))
+    best = None
+    for _ in range(cb.BT_TRIALS):
+        sp = cb.random_spec(rng)
+        tr = cb.stats(cb.backtest(ser, sp, end=split))
+        if tr["n"] < cb.EXPLORE_MIN_TRADES or tr["edge"] < cb.EXPLORE_MIN_EDGE:
+            continue
+        ho = cb.stats(cb.backtest(ser, sp, start=split))
+        if ho["n"] and ho["edge"] < cb.EXPLORE_HOLDOUT_FLOOR:
+            continue
+        score = tr["edge"] if not ho["n"] else (tr["edge"] * tr["n"] + ho["edge"] * ho["n"]) / (tr["n"] + ho["n"])
+        if not best or score > best[0]:
+            best = (score, sp)
+    return best and {"side": side, "spec": best[1]}
+
+def run_both(syms, data):
+    bb.STYLE = "swing"; cb.EXPLORE_MIN_EDGE = 0.20
+    res = {"n": 0, "sum": 0.0, "wins": 0, "picked": 0, "long": [0, 0.0], "short": [0, 0.0]}
+    for sym in syms:
+        cl = data[sym]
+        if len(cl) < TRAIN + TEST * 0.9:
+            continue
+        train, test = cl[:TRAIN], cl[TRAIN:]
+        for side in ("long", "short"):
+            st = pick_side(sym, train, side, random.Random(7))
+            if not st:
+                continue
+            res["picked"] += 1
+            ser = bb.series_of(test if side == "long" else bb.inverted(test))
+            for pct in cb.backtest(ser, st["spec"]):
+                res["n"] += 1; res["sum"] += pct; res["wins"] += 1 if pct > 0 else 0
+                res[side][0] += 1; res[side][1] += pct
+    return res
+
 def run(style, min_edge, syms, data):
     bb.STYLE = style
     cb.EXPLORE_MIN_EDGE = min_edge
@@ -76,16 +113,18 @@ def main():
         data[s] = kl(s, TRAIN + TEST)
     print("BTC 검증 구간 변화:", f"{(data[syms[0]][-1]['trade_price'] / data[syms[0]][TRAIN]['trade_price'] - 1) * 100:+.2f}%" if syms and len(data[syms[0]]) > TRAIN else "-")
     out = {}
-    for name, style, edge, n in (("스윙형(기존, 20종목)", "swing", 0.20, 20), ("회전형 최소순익0.20 (40종목)", "scalp", 0.20, 40),
-                                 ("회전형 최소순익0.10 (40종목)", "scalp", 0.10, 40), ("회전형 최소순익0.05 (40종목)", "scalp", 0.05, 40)):
+    cfgs = [("스윙형 20종목(현재)", "swing", 0.20, 20, False), ("스윙형 40종목", "swing", 0.20, 40, False),
+            ("스윙형 40종목·종목마다 롱·숏 각각", "swing", 0.20, 40, True), ("스윙형 40종목·최소순익0.30", "swing", 0.30, 40, False)]
+    for name, style, edge, n, both in cfgs:
         t0 = time.time()
-        r = run(style, edge, syms[:n], data)
+        r = run_both(syms[:n], data) if both else run(style, edge, syms[:n], data)
         avg = r["sum"] / r["n"] if r["n"] else 0
         days = TEST * 15 / 60 / 24
-        print(f"{name}: 채택 {r['picked']}종목 · 거래 {r['n']}회(하루 {r['n'] / days:.1f}회) · 승률 {r['wins'] / max(1, r['n']) * 100:.0f}% · "
+        print(f"{name}: 채택 {r['picked']}개 · 거래 {r['n']}회(하루 {r['n'] / days:.1f}회) · 승률 {r['wins'] / max(1, r['n']) * 100:.0f}% · "
               f"거래당 {avg:+.3f}% · 합계 {r['sum']:+.1f}% · 롱 {r['long'][0]}회 {r['long'][1] / max(1, r['long'][0]):+.3f}% · "
               f"숏 {r['short'][0]}회 {r['short'][1] / max(1, r['short'][0]):+.3f}% · {time.time() - t0:.0f}초", flush=True)
         out[name] = r
+    # 같은 방식을 한 구간 앞(학습 1920 → 검증 960, 10일 이른 시점)에도 적용해 국면 의존성 확인
     json.dump(out, open("bt_summary.json", "w"), ensure_ascii=False, indent=1)
 
 if __name__ == "__main__":
