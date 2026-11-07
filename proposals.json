@@ -675,7 +675,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/57",
    "branch": "ai/20261107-bn-test-order",
    "createdAt": "2026-11-07T12:40:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-11-07T12:48:00+09:00"
   }
  ]
 }
