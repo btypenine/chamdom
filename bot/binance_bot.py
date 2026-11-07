@@ -302,7 +302,34 @@ class Live:
         if reduce:
             p["reduceOnly"] = "true"
         d = self.call("POST", "/fapi/v1/order", p)
-        return float(d.get("avgPrice") or 0), float(d.get("executedQty") or 0)
+        avg, filled = float(d.get("avgPrice") or 0), float(d.get("executedQty") or 0)
+        # 선물 시장가 주문은 응답이 '접수(NEW)·체결 0'으로 먼저 오는 경우가 많음 → 주문 조회로 실제 체결을 확인
+        oid = d.get("orderId")
+        for _ in range(6):
+            if (filled > 0 and avg > 0) or not oid:
+                break
+            time.sleep(0.5)
+            try:
+                q = self.call("GET", "/fapi/v1/order", {"symbol": sym, "orderId": oid})
+            except RuntimeError:
+                continue
+            avg, filled = float(q.get("avgPrice") or 0), float(q.get("executedQty") or 0)
+            if q.get("status") in ("CANCELED", "EXPIRED", "REJECTED"):
+                break
+        if not (filled > 0 and avg > 0) and oid:
+            try:                                                  # 끝내 체결이 안 보이면 남은 주문은 취소해 둠
+                self.call("DELETE", "/fapi/v1/order", {"symbol": sym, "orderId": oid})
+            except RuntimeError:
+                pass
+            if not reduce:                                        # 그래도 포지션이 생겼으면 그 값을 씀
+                try:
+                    pr = self.call("GET", "/fapi/v2/positionRisk", {"symbol": sym})
+                    pos = [x for x in pr if x.get("symbol") == sym and float(x.get("positionAmt") or 0) != 0]
+                    if pos:
+                        filled = abs(float(pos[0]["positionAmt"])); avg = float(pos[0].get("entryPrice") or 0)
+                except RuntimeError:
+                    pass
+        return avg, filled
 
     def positions(self):
         try:
