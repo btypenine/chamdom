@@ -687,7 +687,8 @@
       "pr": "https://github.com/btypenine/chamdom/pull/58",
       "branch": "ai/20261107-bn-min-qty",
       "createdAt": "2026-11-07T14:55:00+09:00",
-      "status": "pending"
+      "status": "merged",
+ "mergedAt": "2026-11-07T17:36:00+09:00"
     },
     {
       "id": "ai-20261107-bn-fill-check",
