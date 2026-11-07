@@ -296,6 +296,15 @@ class Live:
             return 0.0, f.get("minNotional", 5)
         return q, None
 
+    def min_qty(self, sym, price):
+        """최소 주문(수량·금액)을 만족하는 가장 작은 수량(수량 단위 올림). 반환: (수량, 실제 금액)"""
+        f = self.filters.get(sym) or {}
+        step = f.get("step", 0.001) or 0.001
+        need_q = max(f.get("minQty", 0), f.get("minNotional", 5) * 1.02 / price)
+        q = math.ceil(need_q / step - 1e-9) * step
+        q = float(f"{q:.10f}")
+        return q, q * price
+
     def market(self, sym, side, qty, reduce=False):
         p = {"symbol": sym, "side": side, "type": "MARKET", "quantity": f"{qty:.10f}".rstrip("0").rstrip("."),
              "newOrderRespType": "RESULT"}
@@ -679,9 +688,13 @@ class Engine:
                 self.live.sync()
                 self.live.load_filters()
             qty, need = self.live.qty_for(sym, usdt, px)
-            if not qty and need and need * 1.05 <= self.order_usdt * SIZE_MAX_X:
-                usdt = need * 1.05                                  # 확률 배수로 줄인 금액이 최소 주문보다 작으면 최소 금액으로
-                qty, need = self.live.qty_for(sym, usdt, px)
+            if not qty and need:
+                # 확률 배수로 줄인 금액이 최소 주문보다 작으면 최소 수량(수량 단위 올림)으로 — 내림 때문에 다시 미달되던 문제 수정
+                mq, mv = self.live.min_qty(sym, px)
+                if mq > 0 and mv <= self.order_usdt * SIZE_MAX_X:
+                    qty, usdt = mq, mv
+                else:
+                    need = mv
             if not qty:
                 log(f"[실주문 건너뜀] {sym} 최소 주문 {need:.0f} USDT > 허용 {self.order_usdt * SIZE_MAX_X:.0f} USDT → 모의로 처리")
                 self.live_skip("최소 주문 금액 부족")
