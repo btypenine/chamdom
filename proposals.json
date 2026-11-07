@@ -664,6 +664,17 @@
    "createdAt": "2026-11-07T11:58:00+09:00",
    "status": "merged",
    "requestId": "req-w5s1ol4tabm2"
+  },
+  {
+   "id": "ai-20261107-bn-test-order",
+   "title": "바이낸스 '테스트 실주문' 버튼",
+   "summary": "바이낸스 카드 버튼을 누르면 거래대금 1위 종목(최소 주문이 큰 BTC 등은 다음 순위)에 숏 BINANCE_ORDER_USDT 1건 진입, 익절 +1%·손절 -1%·최대 4시간 자동 정리. 거래소 보호 손절도 걸림.",
+   "why": "사용자 요청: 바이낸스 실주문이 실제로 되는지 직접 확인하고 싶음.",
+   "risk": "실제 돈 주문(1회 약 20 USDT). 누를 때만 1건, 10분 지난 요청은 무시, 하루·월 손실 한도 유지.",
+   "pr": "https://github.com/btypenine/chamdom/pull/57",
+   "branch": "ai/20261107-bn-test-order",
+   "createdAt": "2026-11-07T12:40:00+09:00",
+   "status": "pending"
   }
  ]
 }
