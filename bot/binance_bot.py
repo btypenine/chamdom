@@ -74,6 +74,14 @@ TOP_N = 20                        # 거래대금 상위 종목 수
 RESELECT_HOURS = 4                # 전략 다시 고르는 주기
 PAPER_USDT = 100.0                # 모의 1회 진입 금액(USDT, 레버리지 1배)
 MAX_OPEN = 10                     # 동시 모의 보유 최대
+# 회전형(scalp): '작은 수익을 자주' — 대시보드 설정 BINANCE_STYLE=scalp 일 때만 (기본 swing = 기존 동작)
+STYLE = "swing"
+SCALP_TOP_N = 40                  # 대상 종목 수 (거래 기회 2배)
+SCALP_TP = [0.3, 0.5, 0.8, 1.0]   # 익절: 수수료 뺀 순수익 % (작게)
+SCALP_SL = [-0.8, -1.0, -1.5, -2.0]
+SCALP_HOLD = [8, 16, 24]          # 최대 보유(봉 수): 2·4·6시간 → 칸이 빨리 비어 다음 기회를 잡음
+SCALP_MIN_TRADES = 12             # 학습 20일 동안 최소 12번은 신호가 나야 채택(자주 거래하는 전략만)
+SCALP_MAX_OPEN = 20               # 동시 모의 보유
 EXCLUDE = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BTCDOMUSDT"}
 RULE_EVAL = 5                     # 규칙 판정 시작 횟수 (업비트 봇과 같음)
 RULE_PROMOTE_MIN_AVG = 0.15
@@ -459,13 +467,24 @@ def pick_for(symbol, rng, pool=None, share=0.0):
                 origin = {"origin": "evo", "gen": gen, "parent": parent}
             else:
                 sp, origin = cb.random_spec(rng), {"origin": "rand", "gen": 0, "parent": ""}
+            if STYLE == "scalp":                                  # 회전형: 작은 익절·짧은 보유로 다듬기
+                sp = dict(sp)
+                if sp.get("tp", 0) not in SCALP_TP:
+                    sp["tp"] = rng.choice(SCALP_TP)
+                if sp.get("sl") not in SCALP_SL:
+                    sp["sl"] = rng.choice(SCALP_SL)
+                if sp.get("hold") not in SCALP_HOLD:
+                    sp["hold"] = rng.choice(SCALP_HOLD)
             tr = cb.stats(cb.backtest(ser, sp, end=split))
-            if tr["n"] < cb.EXPLORE_MIN_TRADES or tr["edge"] < cb.EXPLORE_MIN_EDGE:
+            min_n = SCALP_MIN_TRADES if STYLE == "scalp" else cb.EXPLORE_MIN_TRADES
+            if tr["n"] < min_n or tr["edge"] < cb.EXPLORE_MIN_EDGE:
                 continue
             ho = cb.stats(cb.backtest(ser, sp, start=split))
             if ho["n"] and ho["edge"] < cb.EXPLORE_HOLDOUT_FLOOR:
                 continue
             score = tr["edge"] if not ho["n"] else (tr["edge"] * tr["n"] + ho["edge"] * ho["n"]) / (tr["n"] + ho["n"])
+            if STYLE == "scalp":                                  # 회전형: 거래당 수익 × 횟수(√) — 자주 버는 전략 우대
+                score = score * min(2.0, ((tr["n"] + ho["n"]) / 20) ** 0.5)
             cands.append((score, side, sp, tr, ho, origin))
     if not cands:
         return None
@@ -488,6 +507,9 @@ class Engine:
         self.order_usdt = num("BINANCE_ORDER_USDT", 20)
         self.daily_loss = num("BINANCE_DAILY_LOSS_USDT", 10)
         self.max_live = int(num("BINANCE_MAX_LIVE", 3))
+        global STYLE
+        STYLE = "scalp" if str(c.get("BINANCE_STYLE", "swing")).strip().lower() == "scalp" else "swing"
+        self.max_open = SCALP_MAX_OPEN if STYLE == "scalp" else MAX_OPEN
         c.setdefault("BINANCE_MONTH_LOSS_USDT", f"{MONTH_LOSS_DEFAULT:g}")      # 대시보드에 '기본값 40'으로 보이게
         self.month_loss = num("BINANCE_MONTH_LOSS_USDT", MONTH_LOSS_DEFAULT)
         self._last_exchange_check = 0
@@ -509,9 +531,14 @@ class Engine:
                 rb.setdefault("origin", cur.get("origin", "rand"))
         self.refresh_pool()
         evo = self.state["evo"]
-        log(f"종목·전략 선정 시작 (15분봉, 상위 {TOP_N}종목, 롱·숏 각 {cb.BT_TRIALS}개 조합 · "
+        log(f"종목·전략 선정 시작 (15분봉, {'회전형 · ' if STYLE == 'scalp' else ''}상위 {SCALP_TOP_N if STYLE == 'scalp' else TOP_N}종목, 롱·숏 각 {cb.BT_TRIALS}개 조합 · "
             f"진화 비율 {evo['share'] * 100:.0f}% · 유전자 풀 {len(self.state['genePool'])}개)")
-        syms = top_symbols()
+        syms = top_symbols(SCALP_TOP_N if STYLE == "scalp" else TOP_N)
+        if self.state.get("style", "swing") != STYLE:                # 방식이 바뀌면 전략을 새로 고름(보유 포지션은 그대로 관리)
+            log(f"[설정] 매매 방식 {self.state.get('style', 'swing')} → {STYLE}: 전략을 새로 고름")
+            self.state["strategies"] = {}
+            self.state["style"] = STYLE
+            old = {}
         chosen, kept = {}, 0
         now = int(time.time())
         # 1) 검증이 진행 중인 규칙은 그대로 둠 — 4시간마다 새 규칙으로 바꾸면 어떤 규칙도 5회를 못 채움
@@ -646,12 +673,12 @@ class Engine:
         n_paper = lambda: sum(1 for p in st["positions"].values() if not p.get("live"))
         n_live = lambda: sum(1 for p in st["positions"].values() if p.get("live"))
         # 모의 칸(10)과 실주문 칸(BINANCE_MAX_LIVE)을 따로 셈 — 모의가 칸을 다 채워도 실주문 신호는 계속 확인
-        if n_paper() >= MAX_OPEN and (not self.live or n_live() >= self.max_live):
+        if n_paper() >= self.max_open and (not self.live or n_live() >= self.max_live):
             return
         for sym, strat in list(st["strategies"].items()):
             if sym in st["positions"]:
                 continue
-            if n_paper() >= MAX_OPEN and (not self.live or n_live() >= self.max_live):
+            if n_paper() >= self.max_open and (not self.live or n_live() >= self.max_live):
                 break
             cl = klines(sym, 300)
             if len(cl) < 100:
@@ -669,7 +696,7 @@ class Engine:
             usdt = self.live_ok(strat)
             if usdt and self.open_live(sym, strat, px, usdt):
                 continue
-            if n_paper() < MAX_OPEN:
+            if n_paper() < self.max_open:
                 self.open_paper(sym, strat, px)
         save_state(st)
 
@@ -1163,7 +1190,7 @@ class Engine:
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
                                   for r in rb if r.get("status") == "testing"),
                                  key=lambda x: (-(x["n"] or 0), -(x["avgPct"] or -99)))[:3],
-            "ruleEval": RULE_EVAL, "rulePromote": RULE_PROMOTE_MIN_AVG, "liveBasis": self.live_basis,
+            "ruleEval": RULE_EVAL, "rulePromote": RULE_PROMOTE_MIN_AVG, "liveBasis": self.live_basis, "style": STYLE,
             "guard": guard, "evo": evo_view,
             "settings": cb.settings_view(self.cfg, binance=True),
             "strategies": [{"symbol": k, "desc": v["desc"], "btEdge": v["btEdge"], "origin": v.get("origin", "rand"),
@@ -1228,7 +1255,9 @@ class Engine:
         mine = {s for s, p in self.state["positions"].items() if p.get("live")}
         ps = [dict(x, managed=x["symbol"] in mine) for x in ex.get("positions", [])]
         out = dict(ex, positions=ps, unmanaged=sum(1 for x in ps if not x["managed"]),
-                   missing=sorted(mine - {x["symbol"] for x in ps}))
+                   missing=sorted(mine - {x["symbol"] for x in ps}),
+                   hist=(self.state.get("balHist") or [])[-336:],
+                   liveRecent=[t for t in self.state["tradeLog"] if t.get("live")][-20:])
         return out
 
     def push_phase(self, phase):
@@ -1243,6 +1272,11 @@ class Engine:
             try:
                 self._exsnap = self.live.snapshot()
                 self._exsnap.pop("err", None)
+                hist = self.state.setdefault("balHist", [])              # 총자산(지갑+미실현) 30분마다 기록, 7일치
+                eq = round((self._exsnap.get("balance") or 0) + (self._exsnap.get("upnl") or 0), 3)
+                if not hist or time.time() * 1000 - hist[-1][0] >= 30 * 60 * 1000:
+                    hist.append([int(time.time() * 1000), eq])
+                    del hist[:-336]
                 self.adopt_orphans()
             except Exception as e:
                 self._exsnap = dict(getattr(self, "_exsnap", None) or {}, err=str(e)[:120])
@@ -1295,7 +1329,8 @@ class Engine:
                         log("[설정] 대시보드에서 바꾼 설정을 받았습니다 → 적용하려고 다시 시작합니다")
                         save_state(self.state)
                         sys.exit(RESTART_CODE)
-                if time.time() - self.state["lastSelect"] > RESELECT_HOURS * 3600 or not self.state["strategies"]:
+                if (time.time() - self.state["lastSelect"] > RESELECT_HOURS * 3600 or not self.state["strategies"]
+                        or self.state.get("style", "swing") != STYLE):
                     self.reselect()
                 self.manage()
                 self.check_exchange()
