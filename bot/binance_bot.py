@@ -1214,6 +1214,10 @@ class Engine:
             log(f"★[관리 넘겨받음] {sym} {'롱' if long_ else '숏'} {qty} ({qty * entry:.1f} USDT) @ {entry:.6g} · {how} · "
                 f"익절 {p['tp']:.6g} · 손절 {p['sl']:.6g}")
             self.arm_stop(sym, p)
+        mine = {k for k, v in self.state["positions"].items() if v.get("live")}
+        self.state["foreign"] = {"at": int(time.time() * 1000),                     # 남은 관리 밖 포지션(보호 코인 등)만
+                                 "list": [{"symbol": x["symbol"], "amt": x["amt"]} for x in ex.get("positions", [])
+                                          if x["symbol"] not in mine]}
         save_state(self.state)
 
     def exchange_view(self):
