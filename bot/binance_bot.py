@@ -72,6 +72,8 @@ TF = 15                           # 봉 길이(분) — 실험에서 가장 좋�
 TRAIN_BARS = 1920                 # 학습 20일
 TOP_N = 20                        # 거래대금 상위 종목 수
 RESELECT_HOURS = 4                # 전략 다시 고르는 주기
+REGIME_BARS = 96                  # 시장 국면(관찰 전용): BTC 최근 24시간(15분봉 96개) 변화로 나눔
+REGIME_UP, REGIME_DOWN = 1.5, -1.5   # +1.5% 이상 상승장, -1.5% 이하 하락장, 그 사이 횡보
 PAPER_USDT = 100.0                # 모의 1회 진입 금액(USDT, 레버리지 1배)
 MAX_OPEN = 10                     # 동시 모의 보유 최대
 EXCLUDE = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BTCDOMUSDT"}
@@ -147,6 +149,7 @@ def load_state():
     s.setdefault("evo", {"share": EVO_SHARE_START, "evo": {"n": 0, "sumPct": 0.0}, "rand": {"n": 0, "sumPct": 0.0},
                          "maxGen": 0, "born": 0})
     s.setdefault("guard", {"streak": 0, "restUntil": 0, "blockUntil": 0, "blockWhy": ""})
+    s.setdefault("regimeStats", {})      # 관찰 전용: {"paper|하락|short": {"n","wins","sumPct"}} — 매매에는 안 씀
     return s
 
 
@@ -637,6 +640,33 @@ class Engine:
         return s.get("n", 0) >= SIDE_GATE_MIN_N and s["sumPct"] / s["n"] >= SIDE_GATE_MIN_AVG
 
     # --- 모의 진입·청산 ---
+    def regime(self):
+        """관찰 전용 시장 국면: BTC 최근 24시간 변화 → 상승/하락/횡보. 봉마다 한 번만 계산, 실패하면 None (매매에는 영향 없음)"""
+        bar = int(time.time() // (TF * 60))
+        if getattr(self, "_regime_bar", None) == bar:
+            return self._regime
+        self._regime_bar, self._regime, self._regime_chg = bar, None, None
+        try:
+            cl = klines("BTCUSDT", REGIME_BARS + 1)
+            if len(cl) > REGIME_BARS:
+                chg = (cl[-1]["trade_price"] / cl[-1 - REGIME_BARS]["trade_price"] - 1) * 100
+                self._regime_chg = round(chg, 2)
+                self._regime = "상승" if chg >= REGIME_UP else ("하락" if chg <= REGIME_DOWN else "횡보")
+        except Exception as e:
+            log(f"[안내] 시장 국면(BTC 24시간) 확인 실패 (매매는 그대로): {str(e)[:100]}")
+        return self._regime
+
+    def regime_record(self, kind, p, pct):
+        """청산 1건을 국면×방향 표에 더함 (진입 때 국면을 모르는 포지션은 건너뜀)"""
+        reg = p.get("regime")
+        if not reg:
+            return
+        k = f"{kind}|{reg}|{p['side']}"
+        d = self.state.setdefault("regimeStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0})
+        d["n"] += 1
+        d["wins"] += 1 if pct > 0 else 0
+        d["sumPct"] = round(d["sumPct"] + pct, 4)
+
     def scan(self):
         st = self.state
         bar = int(time.time() // (TF * 60))
@@ -666,11 +696,16 @@ class Engine:
             px = prices([sym]).get(sym)
             if not px:
                 continue
+            reg = self.regime()                          # 관찰 전용 기록 (진입 판단에는 안 씀)
             usdt = self.live_ok(strat)
             if usdt and self.open_live(sym, strat, px, usdt):
+                if sym in st["positions"] and reg:
+                    st["positions"][sym].setdefault("regime", reg)
                 continue
             if n_paper() < MAX_OPEN:
                 self.open_paper(sym, strat, px)
+                if sym in st["positions"] and reg:
+                    st["positions"][sym].setdefault("regime", reg)
         save_state(st)
 
     # --- 실주문 ---
@@ -815,6 +850,7 @@ class Engine:
         self.state["positions"].pop(sym, None)
         if record:
             self.rule_record(p["rid"], pct)
+        self.regime_record("live", p, pct)
         g = self.state["guard"]
         g["streak"] = g.get("streak", 0) + 1 if pct <= 0 else 0
         rest = ""
@@ -825,7 +861,7 @@ class Engine:
             rest = f" · 연속 {LOSS_STREAK_MAX}번 손실 → {LOSS_STREAK_REST_HOURS}시간 실주문 쉼 (대시보드에서 승인하면 바로 재개)"
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
-                   "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "live": True,
+                   "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "live": True, "regime": p.get("regime"),
                    "heldMin": round((time.time() * 1000 - p["at"]) / 60000), "maxFav": round(p.get("maxFav", 0), 2)})
         del tl[:-100]
         save_state(self.state)
@@ -1083,9 +1119,10 @@ class Engine:
         lg[p["side"]]["n"] += 1
         lg[p["side"]]["sumPct"] = round(lg[p["side"]]["sumPct"] + pct, 4)
         self.rule_record(p["rid"], pct)
+        self.regime_record("paper", p, pct)
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
-                   "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"],
+                   "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "regime": p.get("regime"),
                    "heldMin": round((time.time() * 1000 - p["at"]) / 60000), "maxFav": round(p.get("maxFav", 0), 2)})
         del tl[:-100]
         log(f"[모의 청산] {sym} {'롱' if long_ else '숏'} {pct:+.2f}% ({usdt:+.2f} USDT, {reason}) · "
@@ -1169,6 +1206,10 @@ class Engine:
             "strategies": [{"symbol": k, "desc": v["desc"], "btEdge": v["btEdge"], "origin": v.get("origin", "rand"),
                             "gen": v.get("gen", 0)} for k, v in self.state["strategies"].items()],
             "testOrder": self.state.get("testOrder") or {},
+            "regime": {"now": getattr(self, "_regime", None), "btc24h": getattr(self, "_regime_chg", None),
+                       "rows": [{"kind": k.split("|")[0], "regime": k.split("|")[1], "side": k.split("|")[2], "n": v["n"],
+                                 "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None}
+                                for k, v in sorted(self.state.get("regimeStats", {}).items())]},
             "foreign": self.state.get("foreign") or {},
             "readLimitedUntil": self.state.get("readLimitedUntil") or 0,
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],

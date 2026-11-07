@@ -503,6 +503,7 @@ body.compact #sumCard { display: flex !important; }
       <div class="set-btns" id="bnResumeBox" hidden><span class="sub" id="bnResumeState"></span><button type="button" class="btn-primary" id="bnResume">승인: 쉼 풀고 계속 거래</button></div>
       <div class="set-btns" id="bnTestBox" hidden><span class="sub" id="bnTestState"></span><button type="button" class="btn-primary" id="bnTest">테스트 실주문: 거래대금 1위 숏</button></div>
       <div class="msg" id="bnEvo" hidden></div>
+      <div class="msg" id="bnRegime" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
         <div><div class="label">거래당 평균</div><div class="stat-val num" id="bnAvg">-</div></div>
@@ -1205,6 +1206,19 @@ function renderBinance(b) {
     t += ` · 새 전략 중 진화 비율 ${Math.round((e.share || 0) * 100)}%`;
     t += (e.evoN >= 10 && e.randN >= 10) ? " (성적 따라 스스로 조절 중)" : " (각 10회 쌓이면 스스로 조절 시작)";
     $("bnEvo").textContent = t;
+  }
+  {  // 시장 국면별 롱·숏 성적 (관찰 전용 — 매매에는 안 씀)
+    const rg = b.regime;
+    $("bnRegime").hidden = !rg;
+    if (rg) {
+      const cell = (kind, reg, side) => { const r = (rg.rows || []).find((x) => x.kind === kind && x.regime === reg && x.side === side); return r ? `${r.n}회 ${pct(r.avgPct)}` : "0회"; };
+      let t = `🌦 시장 국면(관찰) · 지금 ${rg.now || "확인 중"}` + (rg.btc24h == null ? "" : ` (BTC 24시간 ${rg.btc24h > 0 ? "+" : ""}${rg.btc24h}%)`);
+      for (const reg of ["상승", "횡보", "하락"]) t += ` · ${reg}장 모의 롱 ${cell("paper", reg, "long")} / 숏 ${cell("paper", reg, "short")}`;
+      const lv = (rg.rows || []).filter((x) => x.kind === "live");
+      if (lv.length) t += " · 실주문 " + lv.map((x) => `${x.regime} ${x.side === "long" ? "롱" : "숏"} ${x.n}회 ${pct(x.avgPct)}`).join(", ");
+      t += " · 기준: BTC 24시간 +1.5% 이상 상승 / -1.5% 이하 하락 / 그 사이 횡보 · 오늘부터 쌓임";
+      $("bnRegime").textContent = t;
+    }
   }
   const gl = $("bnGenes"); gl.textContent = "";
   $("bnGeneBox").hidden = !(e?.top || []).length;
