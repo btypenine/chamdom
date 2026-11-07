@@ -76,6 +76,11 @@ REGIME_BARS = 96                  # 시장 국면(관찰 전용): BTC 최근 24�
 REGIME_UP, REGIME_DOWN = 1.5, -1.5   # +1.5% 이상 상승장, -1.5% 이하 하락장, 그 사이 횡보
 PAPER_USDT = 100.0                # 모의 1회 진입 금액(USDT, 레버리지 1배)
 MAX_OPEN = 10                     # 동시 모의 보유 최대
+# 확장형(wide): 대상 종목 2배 → 거래 기회 2배. 대시보드 설정 BINANCE_STYLE=wide 일 때만 (기본 swing = 기존 동작)
+# bt-lab 11-07: 보지 않은 다음 10일 — 20종목 134회 거래당 +0.206% / 40종목 284회 +0.284% (회전형 작은 익절은 -0.12~-0.20%로 탈락)
+STYLE = "swing"
+WIDE_TOP_N = 40
+WIDE_MAX_OPEN = 20                # 동시 모의 보유
 EXCLUDE = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BTCDOMUSDT"}
 RULE_EVAL = 5                     # 규칙 판정 시작 횟수 (업비트 봇과 같음)
 RULE_PROMOTE_MIN_AVG = 0.15
@@ -491,6 +496,9 @@ class Engine:
         self.order_usdt = num("BINANCE_ORDER_USDT", 20)
         self.daily_loss = num("BINANCE_DAILY_LOSS_USDT", 10)
         self.max_live = int(num("BINANCE_MAX_LIVE", 3))
+        global STYLE
+        STYLE = "wide" if str(c.get("BINANCE_STYLE", "swing")).strip().lower() == "wide" else "swing"
+        self.max_open = WIDE_MAX_OPEN if STYLE == "wide" else MAX_OPEN
         c.setdefault("BINANCE_MONTH_LOSS_USDT", f"{MONTH_LOSS_DEFAULT:g}")      # 대시보드에 '기본값 40'으로 보이게
         self.month_loss = num("BINANCE_MONTH_LOSS_USDT", MONTH_LOSS_DEFAULT)
         self._last_exchange_check = 0
@@ -512,9 +520,14 @@ class Engine:
                 rb.setdefault("origin", cur.get("origin", "rand"))
         self.refresh_pool()
         evo = self.state["evo"]
-        log(f"종목·전략 선정 시작 (15분봉, 상위 {TOP_N}종목, 롱·숏 각 {cb.BT_TRIALS}개 조합 · "
+        log(f"종목·전략 선정 시작 (15분봉, {'확장형 · ' if STYLE == 'wide' else ''}상위 {WIDE_TOP_N if STYLE == 'wide' else TOP_N}종목, 롱·숏 각 {cb.BT_TRIALS}개 조합 · "
             f"진화 비율 {evo['share'] * 100:.0f}% · 유전자 풀 {len(self.state['genePool'])}개)")
-        syms = top_symbols()
+        syms = top_symbols(WIDE_TOP_N if STYLE == "wide" else TOP_N)
+        if self.state.get("style", "swing") != STYLE:                # 방식이 바뀌면 전략을 새로 고름(보유 포지션은 그대로 관리)
+            log(f"[설정] 매매 방식 {self.state.get('style', 'swing')} → {STYLE}: 전략을 새로 고름")
+            self.state["strategies"] = {}
+            self.state["style"] = STYLE
+            old = {}
         chosen, kept = {}, 0
         now = int(time.time())
         # 1) 검증이 진행 중인 규칙은 그대로 둠 — 4시간마다 새 규칙으로 바꾸면 어떤 규칙도 5회를 못 채움
@@ -676,12 +689,12 @@ class Engine:
         n_paper = lambda: sum(1 for p in st["positions"].values() if not p.get("live"))
         n_live = lambda: sum(1 for p in st["positions"].values() if p.get("live"))
         # 모의 칸(10)과 실주문 칸(BINANCE_MAX_LIVE)을 따로 셈 — 모의가 칸을 다 채워도 실주문 신호는 계속 확인
-        if n_paper() >= MAX_OPEN and (not self.live or n_live() >= self.max_live):
+        if n_paper() >= self.max_open and (not self.live or n_live() >= self.max_live):
             return
         for sym, strat in list(st["strategies"].items()):
             if sym in st["positions"]:
                 continue
-            if n_paper() >= MAX_OPEN and (not self.live or n_live() >= self.max_live):
+            if n_paper() >= self.max_open and (not self.live or n_live() >= self.max_live):
                 break
             cl = klines(sym, 300)
             if len(cl) < 100:
@@ -702,7 +715,7 @@ class Engine:
                 if sym in st["positions"] and reg:
                     st["positions"][sym].setdefault("regime", reg)
                 continue
-            if n_paper() < MAX_OPEN:
+            if n_paper() < self.max_open:
                 self.open_paper(sym, strat, px)
                 if sym in st["positions"] and reg:
                     st["positions"][sym].setdefault("regime", reg)
@@ -1200,7 +1213,7 @@ class Engine:
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
                                   for r in rb if r.get("status") == "testing"),
                                  key=lambda x: (-(x["n"] or 0), -(x["avgPct"] or -99)))[:3],
-            "ruleEval": RULE_EVAL, "rulePromote": RULE_PROMOTE_MIN_AVG, "liveBasis": self.live_basis,
+            "ruleEval": RULE_EVAL, "rulePromote": RULE_PROMOTE_MIN_AVG, "liveBasis": self.live_basis, "style": STYLE,
             "guard": guard, "evo": evo_view,
             "settings": cb.settings_view(self.cfg, binance=True),
             "strategies": [{"symbol": k, "desc": v["desc"], "btEdge": v["btEdge"], "origin": v.get("origin", "rand"),
@@ -1269,7 +1282,9 @@ class Engine:
         mine = {s for s, p in self.state["positions"].items() if p.get("live")}
         ps = [dict(x, managed=x["symbol"] in mine) for x in ex.get("positions", [])]
         out = dict(ex, positions=ps, unmanaged=sum(1 for x in ps if not x["managed"]),
-                   missing=sorted(mine - {x["symbol"] for x in ps}))
+                   missing=sorted(mine - {x["symbol"] for x in ps}),
+                   hist=(self.state.get("balHist") or [])[-336:],
+                   liveRecent=[t for t in self.state["tradeLog"] if t.get("live")][-20:])
         return out
 
     def push_phase(self, phase):
@@ -1284,6 +1299,11 @@ class Engine:
             try:
                 self._exsnap = self.live.snapshot()
                 self._exsnap.pop("err", None)
+                hist = self.state.setdefault("balHist", [])              # 총자산(지갑+미실현) 30분마다 기록, 7일치
+                eq = round((self._exsnap.get("balance") or 0) + (self._exsnap.get("upnl") or 0), 3)
+                if not hist or time.time() * 1000 - hist[-1][0] >= 30 * 60 * 1000:
+                    hist.append([int(time.time() * 1000), eq])
+                    del hist[:-336]
                 self.adopt_orphans()
             except Exception as e:
                 self._exsnap = dict(getattr(self, "_exsnap", None) or {}, err=str(e)[:120])
@@ -1336,7 +1356,8 @@ class Engine:
                         log("[설정] 대시보드에서 바꾼 설정을 받았습니다 → 적용하려고 다시 시작합니다")
                         save_state(self.state)
                         sys.exit(RESTART_CODE)
-                if time.time() - self.state["lastSelect"] > RESELECT_HOURS * 3600 or not self.state["strategies"]:
+                if (time.time() - self.state["lastSelect"] > RESELECT_HOURS * 3600 or not self.state["strategies"]
+                        or self.state.get("style", "swing") != STYLE):
                     self.reselect()
                 self.manage()
                 self.check_exchange()
