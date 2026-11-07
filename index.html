@@ -547,6 +547,7 @@ body.compact #overCard { display: flex !important; }
       <div class="set-btns" id="bnTestBox" hidden><span class="sub" id="bnTestState"></span><button type="button" class="btn-primary" id="bnTest">테스트 실주문: 거래대금 1위 숏</button></div>
       <div class="msg" id="bnEvo" hidden></div>
       <div class="msg" id="bnRegime" hidden></div>
+      <div class="msg" id="bnFunding" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
         <div><div class="label">거래당 평균</div><div class="stat-val num" id="bnAvg">-</div></div>
@@ -1366,6 +1367,19 @@ function renderBinance(b) {
       if (lv.length) t += " · 실주문 " + lv.map((x) => `${x.regime} ${x.side === "long" ? "롱" : "숏"} ${x.n}회 ${pct(x.avgPct)}`).join(", ");
       t += " · 기준: BTC 24시간 +1.5% 이상 상승 / -1.5% 이하 하락 / 그 사이 횡보 · 오늘부터 쌓임";
       $("bnRegime").textContent = t;
+    }
+  }
+  {  // 펀딩비 관찰 (손익·판정에는 안 넣음)
+    const fd = b.funding;
+    const rows = (fd?.rows || []).filter((x) => x.n);
+    $("bnFunding").hidden = !fd;
+    if (fd) {
+      const sgn = (v) => v == null ? "-" : `${v > 0 ? "+" : ""}${v.toFixed(3)}%`;
+      let t = "💸 펀딩비(관찰) · 보유 중 누적 " + sgn(fd.openFund || 0);
+      if (rows.length) for (const r of rows) t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${r.side === "long" ? "롱" : "숏"} ${r.n}회: 지금 ${pct(r.avgPct)} → 펀딩 반영 ${pct(r.avgWithFund)} (거래당 ${sgn(r.avgFund)}, 정산 ${r.paidN}번)`;
+      else t += " · 아직 청산된 거래 없음(오늘부터 쌓임)";
+      t += " · 롱은 내고 숏은 받음(음수 펀딩이면 반대)";
+      $("bnFunding").textContent = t;
     }
   }
   const gl = $("bnGenes"); gl.textContent = "";
