@@ -267,6 +267,22 @@ body.ex-up #appView > [data-ex="bn"], body.ex-bn #appView > [data-ex="up"] { dis
 body.ex-up .ex-head, body.ex-bn .ex-head, body.compact .ex-head { display: none !important; }
 body:not(.ex-bn) #bnEmpty { display: none !important; }
 body.compact #sumCard { display: flex !important; }
+
+/* ---------- 최상단 종합 현황 (업비트 | 바이낸스 나란히) ---------- */
+#overCard { padding: 12px; }
+body.compact #overCard { display: flex !important; }
+.ov-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.ov { text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); font-weight: 500; min-width: 0; }
+.ov[aria-pressed="true"] { border-color: var(--brand); }
+.ov-h { display: flex; align-items: center; gap: 6px; font-size: 14px; min-width: 0; }
+.ov-h .sub { margin-left: auto; white-space: nowrap; }
+.ov .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.ov .dot.on { background: #1f9d55; } .ov .dot.off { background: var(--stop); }
+.ov-big { font-size: 20px; font-weight: 750; margin-top: 4px; overflow-wrap: anywhere; }
+.ov-rows { display: grid; grid-template-columns: auto 1fr; gap: 2px 6px; margin-top: 6px; font-size: 12px; }
+.ov-rows .k { color: var(--muted); white-space: nowrap; }
+.ov-rows .v { text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+@media (min-width: 900px) { #appView > #overCard { column-span: all; } .ov-big { font-size: 24px; } .ov-rows { font-size: 13.5px; } }
 @media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
 
 /* ---------- PC 화면(넓은 창): 카드를 여러 단으로 배치 ---------- */
@@ -325,6 +341,20 @@ body.compact #sumCard { display: flex !important; }
 
   <!-- 로그인 후 -->
   <div id="appView" hidden style="display:contents">
+    <section class="card" id="overCard" hidden>
+      <div class="ov-grid">
+        <button type="button" class="ov" id="ovUp" data-go="up">
+          <span class="ov-h"><span class="dot" id="ovUpDot"></span><b>업비트</b><span class="sub" id="ovUpMode"></span></span>
+          <span class="ov-big num" id="ovUpBig">-</span><span class="sub" id="ovUpBigS">총자산</span>
+          <span class="ov-rows" id="ovUpRows"></span>
+        </button>
+        <button type="button" class="ov" id="ovBn" data-go="bn">
+          <span class="ov-h"><span class="dot" id="ovBnDot"></span><b>바이낸스</b><span class="sub" id="ovBnMode"></span></span>
+          <span class="ov-big num" id="ovBnBig">-</span><span class="sub" id="ovBnBigS">총자산</span>
+          <span class="ov-rows" id="ovBnRows"></span>
+        </button>
+      </div>
+    </section>
     <section class="card" id="sumCard" hidden>
       <div class="tiles" id="tiles"></div>
       <div class="sub">칸을 누르면 그 항목의 전체 내용으로 이동함</div>
@@ -854,6 +884,7 @@ function goCard(id) {
   });
 }
 function renderTiles() {
+  try { renderOverview(); } catch (e) {}
   if (!document.body.classList.contains("compact") || !lastStatus) return;
   const s = lastStatus || {}, lg = s.ledger || {}, box = $("tiles");
   const stale = !s.updatedAt || Date.now() - s.updatedAt > OFFLINE_MS;
@@ -896,6 +927,80 @@ function renderTiles() {
     b.addEventListener("click", () => t.go === "apprCard" ? $("apprCard").scrollIntoView({ behavior: "smooth" }) : goCard(t.go));
     box.append(b);
   }
+}
+
+// ---------- 최상단 종합 현황 ----------
+function renderOverview() {
+  const s = lastStatus, b = lastBinance;
+  $("overCard").hidden = !auth.currentUser || (!s && !b);
+  const row = (box, items) => {
+    box.textContent = "";
+    for (const [k, v, cls] of items) {
+      const a = document.createElement("span"); a.className = "k"; a.textContent = k;
+      const c = document.createElement("span"); c.className = "v" + (cls ? " " + cls : ""); c.textContent = v;
+      box.append(a, c);
+    }
+  };
+  const tone = (v) => v > 0 ? "up" : v < 0 ? "down" : "";
+  const setBig = (id, txt, cls) => { const e = $(id); e.textContent = txt; e.classList.remove("up", "down"); if (cls) e.classList.add(cls); };
+  // 업비트
+  if (s) {
+    const lg = s.ledger || {};
+    const stale = !s.updatedAt || Date.now() - s.updatedAt > OFFLINE_MS;
+    $("ovUpDot").className = "dot " + (stale || s.botState === "error" ? "off" : s.botState === "running" ? "on" : "");
+    $("ovUpMode").textContent = stale ? "연결 끊김" : ({ running: "실행 중", paused: "일시정지", error: "오류" }[s.botState] || "");
+    setBig("ovUpBig", won(s.totalValue));
+    $("ovUpBigS").textContent = "총자산 (원화+코인)";
+    const ps = Array.isArray(s.positions) ? s.positions : [];
+    const wr = lg.tradesTotal ? Math.round((lg.winsTotal || 0) / lg.tradesTotal * 100) + "%" : "-";
+    row($("ovUpRows"), [
+      ["오늘", `${signed(lg.dayPnl)} · ${lg.dayTrades || 0}회`, tone(lg.dayPnl)],
+      ["누적", `${signed(lg.realizedTotal)} · ${lg.tradesTotal || 0}회`, tone(lg.realizedTotal)],
+      ["승률", wr],
+      ["보유", `${ps.length}종목`],
+      ["시드", won(lg.seed)],
+    ]);
+  } else { setBig("ovUpBig", "-"); row($("ovUpRows"), [["상태", "봇 정보 없음"]]); }
+  // 바이낸스
+  if (b) {
+    const stale = !b.updatedAt || Date.now() - b.updatedAt > 3 * 60 * 1000;
+    const live = b.mode === "live", ll = b.liveLedger || {}, ex = b.exchange || {};
+    $("ovBnDot").className = "dot " + (stale ? "off" : "on");
+    $("ovBnMode").textContent = stale ? "응답 없음" : (live ? "실주문" : "모의");
+    const usd = (x) => (x > 0 ? "+" : "") + Number(x || 0).toFixed(2);
+    if (live && ex.balance != null) {
+      setBig("ovBnBig", ((ex.balance || 0) + (ex.upnl || 0)).toFixed(2) + " USDT");
+      $("ovBnBigS").textContent = "총자산 (지갑+미실현)";
+      const h = ex.hist || [];
+      const d24 = h.length >= 2 ? (() => { const cut = Date.now() - 864e5; const base = (h.find((x) => x[0] >= cut) || h[0])[1]; return h[h.length - 1][1] - base; })() : null;
+      const wr = ll.trades ? Math.round((ll.wins || 0) / ll.trades * 100) + "%" : "-";
+      row($("ovBnRows"), [
+        ["오늘", `${usd(ll.dayPnl)} · ${ll.dayTrades || 0}회`, tone(ll.dayPnl)],
+        ["누적", `${usd(ll.pnlUsdt)} · ${ll.trades || 0}회`, tone(ll.pnlUsdt)],
+        ["승률", wr],
+        ["보유", `${(ex.positions || []).length}개 · 미실현 ${usd(ex.upnl)}`, tone(ex.upnl)],
+        ...(d24 == null ? [] : [["자산 24h", usd(d24) + " USDT", tone(d24)]]),
+      ]);
+    } else {
+      setBig("ovBnBig", usd(b.pnlUsdt) + " USDT", tone(b.pnlUsdt));
+      $("ovBnBigS").textContent = "모의 누적 손익";
+      row($("ovBnRows"), [
+        ["거래", `${b.trades || 0}회 · 익절 ${b.wins || 0}`],
+        ["거래당", (b.avgPct > 0 ? "+" : "") + Number(b.avgPct || 0).toFixed(2) + "%", tone(b.avgPct)],
+        ["보유", `${(b.positions || []).length}개 (모의)`],
+      ]);
+    }
+  } else { setBig("ovBnBig", "-"); $("ovBnMode").textContent = ""; row($("ovBnRows"), [["상태", "엔진 정보 없음"]]); }
+  $("ovUp").setAttribute("aria-pressed", String(curEx === "up"));
+  $("ovBn").setAttribute("aria-pressed", String(curEx === "bn"));
+}
+for (const id of ["ovUp", "ovBn"]) {
+  $(id).addEventListener("click", () => {
+    const x = $(id).dataset.go;
+    setEx(curEx === x ? "all" : x);
+    if (document.body.classList.contains("compact")) setView("full");
+    renderOverview();
+  });
 }
 
 // ---------- 설정 창 (상단 설정 버튼) ----------
