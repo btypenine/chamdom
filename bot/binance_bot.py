@@ -77,6 +77,7 @@ MAX_OPEN = 10                     # 동시 모의 보유 최대
 EXCLUDE = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BTCDOMUSDT"}
 RULE_EVAL = 5                     # 규칙 판정 시작 횟수 (업비트 봇과 같음)
 RULE_PROMOTE_MIN_AVG = 0.15
+ADOPT_TP, ADOPT_SL, ADOPT_HOURS = 2.0, -3.0, 24   # 봇이 놓친 실제 포지션을 넘겨받을 때(짝 모의 포지션이 없으면) 익절·손절·최대 보유
 STICKY_IDLE_HOURS = 24            # 검증 중 규칙은 재선정 때 유지, 단 이 시간 동안 한 번도 신호가 없으면 교체
 SIDE_GATE_MIN_N = 50              # (선택) 방향별 통과 기준: 모의 50회 이상
 SIDE_GATE_MIN_AVG = 0.30          #   거래당 +0.30% 이상
@@ -339,6 +340,31 @@ class Live:
                 except RuntimeError:
                     pass
         return avg, filled
+
+    def snapshot(self):
+        """대시보드 표시용: 거래소 실제 선물 지갑·포지션 (봇 장부와 상관없이 있는 그대로)"""
+        bal = {}
+        try:
+            for b in self.call("GET", "/fapi/v2/balance"):
+                if b.get("asset") == "USDT":
+                    bal = {"balance": float(b.get("balance") or 0), "available": float(b.get("availableBalance") or 0),
+                           "upnl": float(b.get("crossUnPnl") or 0)}
+        except RuntimeError:
+            pass
+        pos, upnl = [], 0.0
+        for x in self.call("GET", "/fapi/v2/positionRisk"):
+            amt = float(x.get("positionAmt") or 0)
+            if not amt:
+                continue
+            u = float(x.get("unRealizedProfit") or 0)
+            upnl += u
+            mark = float(x.get("markPrice") or 0)
+            pos.append({"symbol": x["symbol"], "side": "long" if amt > 0 else "short", "amt": abs(amt),
+                        "entry": float(x.get("entryPrice") or 0), "mark": mark, "upnl": round(u, 4),
+                        "notional": round(abs(amt) * mark, 2), "lev": int(float(x.get("leverage") or 1)),
+                        "margin": (x.get("marginType") or "").lower()})
+        bal["upnl"] = round(upnl, 4)
+        return {"at": int(time.time() * 1000), **bal, "positions": pos}
 
     def positions(self):
         try:
@@ -1146,8 +1172,64 @@ class Engine:
             "foreign": self.state.get("foreign") or {},
             "readLimitedUntil": self.state.get("readLimitedUntil") or 0,
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],
+            "exchange": self.exchange_view(),
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),
         }
+
+    def adopt_orphans(self):
+        """거래소에 실제로 있는데 봇 장부에 없는 포지션을 넘겨받아 관리(익절·손절·보유시간·거래소 보호 손절).
+        예전 버그(체결 0 → 모의 처리)로 생긴 포지션: 같은 종목·같은 방향 모의 포지션이 있으면 그 규칙의 익절·손절을 이어 씀"""
+        ex = getattr(self, "_exsnap", None) or {}
+        if not self.live or ex.get("err"):
+            return
+        for x in ex.get("positions", []):
+            sym, side = x["symbol"], x["side"]
+            cur = self.state["positions"].get(sym)
+            if cur and cur.get("live"):
+                continue
+            if sym.replace("1000", "").replace("USDT", "") in cb.PROTECTED_COINS:
+                continue
+            long_ = side == "long"
+            entry, qty = x["entry"] or x["mark"], x["amt"]
+            if not entry or not qty:
+                continue
+            if cur and cur.get("side") == side:                  # 짝 모의 포지션 → 그 규칙 그대로 실주문으로 전환
+                tp_m = cur["tp"] / cur["entry"] - 1
+                sl_m = cur["sl"] / cur["entry"] - 1
+                p = dict(cur, entry=entry, tp=entry * (1 + tp_m), sl=entry * (1 + sl_m), qty=qty, usdt=qty * entry,
+                         live=True, adopted=True)
+                how = "짝 모의 규칙 이어 씀"
+            else:
+                if cur:                                           # 같은 종목 반대 방향 모의 포지션은 모의로 정리
+                    self.state["positions"].pop(sym, None)
+                tp_m, sl_m = ADOPT_TP / 100 + 2 * FEE, ADOPT_SL / 100
+                p = {"side": side, "entry": entry, "qty": qty, "usdt": qty * entry, "live": True, "adopted": True,
+                     "tp": entry * (1 + tp_m) if long_ else entry * (1 - tp_m),
+                     "sl": entry * (1 + sl_m) if long_ else entry * (1 - sl_m),
+                     "at": int(time.time() * 1000), "deadline": int(time.time()) + ADOPT_HOURS * 3600,
+                     "rid": None, "desc": f"넘겨받은 포지션 (익절 +{ADOPT_TP:g}% · 손절 {ADOPT_SL:g}% · 최대 {ADOPT_HOURS}시간)",
+                     "maxFav": 0.0}
+                how = "기본 익절·손절"
+            self.state["positions"][sym] = p
+            log(f"★[관리 넘겨받음] {sym} {'롱' if long_ else '숏'} {qty} ({qty * entry:.1f} USDT) @ {entry:.6g} · {how} · "
+                f"익절 {p['tp']:.6g} · 손절 {p['sl']:.6g}")
+            self.arm_stop(sym, p)
+        mine = {k for k, v in self.state["positions"].items() if v.get("live")}
+        self.state["foreign"] = {"at": int(time.time() * 1000),                     # 남은 관리 밖 포지션(보호 코인 등)만
+                                 "list": [{"symbol": x["symbol"], "amt": x["amt"]} for x in ex.get("positions", [])
+                                          if x["symbol"] not in mine]}
+        save_state(self.state)
+
+    def exchange_view(self):
+        """거래소 실제 포지션 + 봇 장부 대조: 봇이 관리 중인지(managed) 표시"""
+        ex = getattr(self, "_exsnap", None)
+        if not self.live or not ex:
+            return {}
+        mine = {s for s, p in self.state["positions"].items() if p.get("live")}
+        ps = [dict(x, managed=x["symbol"] in mine) for x in ex.get("positions", [])]
+        out = dict(ex, positions=ps, unmanaged=sum(1 for x in ps if not x["managed"]),
+                   missing=sorted(mine - {x["symbol"] for x in ps}))
+        return out
 
     def push_phase(self, phase):
         self._phase = phase
@@ -1157,6 +1239,13 @@ class Engine:
         if not force and time.time() - self.last_status < 60:   # 대시보드가 이 문서를 실시간으로 받음 → 60초마다(읽기 한도 절약)
             return
         self.last_status = time.time()
+        if self.live:
+            try:
+                self._exsnap = self.live.snapshot()
+                self._exsnap.pop("err", None)
+                self.adopt_orphans()
+            except Exception as e:
+                self._exsnap = dict(getattr(self, "_exsnap", None) or {}, err=str(e)[:120])
         data = self.view()
         try:
             h = self.cloud._auth()
