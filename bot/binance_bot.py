@@ -734,6 +734,7 @@ class Engine:
             return False
         if filled <= 0 or avg <= 0:
             log(f"[실주문 확인 실패] {sym} 체결 수량 0 → 모의로 처리")
+            self.live_skip("체결 확인 실패")
             return False
         sp = strat["spec"]
         cost = 2 * FEE * 100
@@ -984,9 +985,13 @@ class Engine:
             elif p.get("live") and not p.get("stopId"):
                 self.arm_stop(sym, p)                           # 이번 버전 전에 들어간 실보유에도 보호 손절을 걸어 둠
         mine = {s for s, p in self.state["positions"].items() if p.get("live")}
+        foreign = []
         for sym, amt in ex.items():
             if sym not in mine:
                 log(f"[안내] 봇이 열지 않은 포지션 {sym} {amt} — 봇은 건드리지 않음")
+                foreign.append({"symbol": sym, "amt": amt})
+        # 대시보드 경고용(표시만): 봇이 관리하지 않는 실포지션 — 손절·하루 손실 한도 밖에 있음
+        self.state["foreign"] = {"at": int(time.time() * 1000), "list": foreign}
         save_state(self.state)
         basis = {"side": f"통과 규칙 + 방향별 모의 {SIDE_GATE_MIN_N}회·거래당 +{SIDE_GATE_MIN_AVG:.2f}% 이상인 쪽",
                  "all": "롱·숏 모두 (퇴출·평균 마이너스 규칙 제외)"}.get(self.live_basis, "통과 규칙만")
@@ -1138,6 +1143,7 @@ class Engine:
             "strategies": [{"symbol": k, "desc": v["desc"], "btEdge": v["btEdge"], "origin": v.get("origin", "rand"),
                             "gen": v.get("gen", 0)} for k, v in self.state["strategies"].items()],
             "testOrder": self.state.get("testOrder") or {},
+            "foreign": self.state.get("foreign") or {},
             "readLimitedUntil": self.state.get("readLimitedUntil") or 0,
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),

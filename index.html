@@ -1090,6 +1090,9 @@ function renderBinance(b) {
   else if (!(b.rules?.proven)) why = `실주문 대기: 통과한 규칙이 아직 0개 · 통과 문턱 모의 ${b.ruleEval || 5}회 이상·거래당 +${(b.rulePromote ?? 0.15).toFixed(2)}% 이상`;
   if (parts.length) why += (why ? " · " : "") + "오늘 신호가 모의로 간 이유: " + parts.join(", ");
   if (isLive && near.length) why += " · 통과에 가까운 규칙: " + near.join(", ");
+  // 봇이 관리하지 않는 실포지션(직접 연 것 또는 체결 확인 실패로 남은 것) — 손절·손실 한도 밖이라 경고
+  const fl = (b.foreign && b.foreign.list) || [];
+  if (fl.length) why = `⚠ 봇이 관리하지 않는 실포지션 ${fl.length}개: ` + fl.map((x) => `${String(x.symbol).replace("USDT", "")} ${x.amt > 0 ? "롱" : "숏"}`).join(", ") + " · 봇 손절·손실 한도 밖이라 바이낸스 앱에서 직접 확인·정리 필요" + (why ? " · " + why : "");
   $("bnWhy").hidden = !why; $("bnWhy").textContent = why;
   $("bnTrades").textContent = `${b.trades || 0}회 / ${b.wins || 0}회`;
   $("bnAvg").textContent = pct(b.avgPct);
