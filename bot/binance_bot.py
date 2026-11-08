@@ -76,6 +76,8 @@ FUNDING_CHECK_SEC = 300           # 펀딩비(관찰 전용): 5분마다 예상 
 REGIME_BARS = 96                  # 시장 국면(관찰 전용): BTC 최근 24시간(15분봉 96개) 변화로 나눔
 REGIME_UP, REGIME_DOWN = 1.5, -1.5   # +1.5% 이상 상승장, -1.5% 이하 하락장, 그 사이 횡보
 PAPER_USDT = 100.0                # 모의 1회 진입 금액(USDT, 레버리지 1배)
+GB_ARM = 0.5                      # 관찰 전용: 익절까지 가격 움직임의 50% 이상 갔다가
+GB_FLOOR = 0.0                    #   진입가(움직임 0%)까지 되밀리면 "여기서 본전 정리했다면" 손익을 기록 (실제 청산은 그대로)
 MAX_OPEN = 10                     # 동시 모의 보유 최대
 # 확장형(wide): 대상 종목 2배 → 거래 기회 2배. 대시보드 설정 BINANCE_STYLE=wide 일 때만 (기본 swing = 기존 동작)
 # bt-lab 11-07: 보지 않은 다음 10일 — 20종목 134회 거래당 +0.206% / 40종목 284회 +0.284% (회전형 작은 익절은 -0.12~-0.20%로 탈락)
@@ -714,6 +716,53 @@ class Engine:
         if paid:
             log("[펀딩비 관찰] 정산 반영(손익 계산엔 안 넣음): " + ", ".join(paid[:12]) + (" 외" if len(paid) > 12 else ""))
 
+    def giveback_watch(self, sym, p, price, fav):
+        """관찰 전용: 익절 쪽으로 GB_ARM 이상 갔다가 진입가까지 되밀린 첫 순간의 손익(수수료·밀림 포함)을 표시만 해 둠.
+        청산·손익·판정·주문에는 전혀 쓰지 않음. 실패해도 매매는 그대로."""
+        try:
+            if p.get("gbPct") is not None:
+                return
+            tpm = abs(p["tp"] / p["entry"] - 1) * 100
+            if tpm <= 0 or p.get("maxFav", 0.0) < GB_ARM * tpm or fav > GB_FLOOR:
+                return
+            long_ = p["side"] == "long"
+            ex = price * (1 - SLIP) if long_ else price * (1 + SLIP)
+            gross = (ex / p["entry"] - 1) if long_ else (p["entry"] / ex - 1)
+            p["gbPct"] = round((gross - 2 * FEE) * 100, 4)
+            log(f"[청산 관찰] {sym} {'롱' if long_ else '숏'}{' 실주문' if p.get('live') else ''} 익절까지 "
+                f"{p['maxFav'] / tpm * 100:.0f}% 갔다가 진입가로 되밀림 → 여기서 본전 정리했다면 {p['gbPct']:+.2f}% "
+                f"(관찰만, 실제 청산은 그대로)")
+        except Exception as e:
+            log(f"[안내] 되밀림 관찰 기록 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def giveback_record(self, kind, sym, p, pct):
+        """관찰 전용: 되밀림 표시가 붙은 거래가 끝나면 '본전 정리했다면' vs 실제 손익 차이를 누적"""
+        try:
+            gb = p.get("gbPct")
+            if gb is None:
+                return
+            d = self.state.setdefault("gbStats", {}).setdefault(kind, {"n": 0, "sumDiff": 0.0, "better": 0,
+                                                                        "sumActual": 0.0, "sumGb": 0.0})
+            diff = gb - pct
+            d["n"] += 1
+            d["sumDiff"] = round(d["sumDiff"] + diff, 4)
+            d["better"] += 1 if diff > 0 else 0
+            d["sumActual"] = round(d["sumActual"] + pct, 4)
+            d["sumGb"] = round(d["sumGb"] + gb, 4)
+            self.state["gbRecent"] = (self.state.get("gbRecent") or [])[-9:] + [
+                {"symbol": sym, "side": p["side"], "kind": kind, "gb": round(gb, 3), "actual": round(pct, 3)}]
+        except Exception as e:
+            log(f"[안내] 되밀림 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def giveback_view(self):
+        rows = [{"kind": k, "n": v["n"], "better": v["better"],
+                 "avgDiff": round(v["sumDiff"] / v["n"], 3) if v["n"] else None,
+                 "avgActual": round(v["sumActual"] / v["n"], 3) if v["n"] else None,
+                 "avgGb": round(v["sumGb"] / v["n"], 3) if v["n"] else None}
+                for k, v in sorted((self.state.get("gbStats") or {}).items())]
+        return {"arm": GB_ARM, "rows": rows, "recent": (self.state.get("gbRecent") or [])[-5:],
+                "open": sum(1 for q in self.state["positions"].values() if q.get("gbPct") is not None)}
+
     def funding_record(self, kind, p, pct):
         """청산 1건의 누적 펀딩비를 방향별 표에 더함 (관찰 전용)"""
         k = f"{kind}|{p['side']}"
@@ -934,6 +983,7 @@ class Engine:
             self.rule_record(p["rid"], pct)
         self.regime_record("live", p, pct)
         self.funding_record("live", p, pct)
+        self.giveback_record("live", sym, p, pct)
         g = self.state["guard"]
         g["streak"] = g.get("streak", 0) + 1 if pct <= 0 else 0
         rest = ""
@@ -1177,6 +1227,7 @@ class Engine:
             long_ = p["side"] == "long"
             fav = (price / p["entry"] - 1) * 100 * (1 if long_ else -1)
             p["maxFav"] = max(p.get("maxFav", 0.0), fav)
+            self.giveback_watch(sym, p, price, fav)
             hit_tp = price >= p["tp"] if long_ else price <= p["tp"]
             hit_sl = price <= p["sl"] if long_ else price >= p["sl"]
             reason = "익절" if hit_tp else ("손절" if hit_sl else ("보유시간 초과" if time.time() >= p["deadline"] else None))
@@ -1207,6 +1258,7 @@ class Engine:
         self.rule_record(p["rid"], pct)
         self.regime_record("paper", p, pct)
         self.funding_record("paper", p, pct)
+        self.giveback_record("paper", sym, p, pct)
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
                    "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "regime": p.get("regime"),
@@ -1285,6 +1337,7 @@ class Engine:
                       "retired": sum(1 for r in rb if r["status"] == "retired")},
             "liveSkip": self.state.get("liveSkip") or {},
             "liveSlip": self.slip_view(),
+            "giveback": self.giveback_view(),
             "nearProven": sorted(({"symbol": r.get("symbol", ""), "side": r.get("side", ""), "n": r.get("n", 0),
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
                                   for r in rb if r.get("status") == "testing"),

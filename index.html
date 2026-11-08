@@ -548,6 +548,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnEvo" hidden></div>
       <div class="msg" id="bnRegime" hidden></div>
       <div class="msg" id="bnFunding" hidden></div>
+      <div class="msg" id="bnGiveback" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
         <div><div class="label">거래당 평균</div><div class="stat-val num" id="bnAvg">-</div></div>
@@ -1386,6 +1387,19 @@ function renderBinance(b) {
       else t += " · 아직 청산된 거래 없음(오늘부터 쌓임)";
       t += " · 롱은 내고 숏은 받음(음수 펀딩이면 반대)";
       $("bnFunding").textContent = t;
+    }
+  }
+  {  // 되밀림 본전 정리 관찰 (청산·손익·판정에는 안 씀)
+    const gb = b.giveback;
+    $("bnGiveback").hidden = !gb;
+    if (gb) {
+      const rows = (gb.rows || []).filter((x) => x.n);
+      let t = `↩️ 되밀림 본전 정리(관찰) · 익절까지 ${Math.round((gb.arm ?? 0.5) * 100)}% 이상 갔다가 진입가로 돌아온 거래를 그때 정리했다면`;
+      if (gb.open) t += ` · 지금 보유 중 해당 ${gb.open}개`;
+      if (rows.length) for (const r of rows) t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${r.n}회: 실제 ${pct(r.avgActual)} → 본전 정리 ${pct(r.avgGb)} (차이 ${pct(r.avgDiff)}, 나았던 경우 ${r.better}회)`;
+      else t += " · 아직 끝난 해당 거래 없음(오늘부터 쌓임)";
+      t += " · 차이가 +면 본전 정리가 나았음";
+      $("bnGiveback").textContent = t;
     }
   }
   const gl = $("bnGenes"); gl.textContent = "";
