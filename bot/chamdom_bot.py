@@ -3294,7 +3294,13 @@ class Bot:
                     log(f"전략 선정 기준 v{STRATEGY_VERSION} 적용 → 종목과 전략을 다시 고르고, 부진 판단은 새 전략 거래부터 다시 셉니다")
                     continue
                 if time.time() - self.state["lastOptimize"] >= REOPTIMIZE_MIN * 60:
-                    self.optimize()
+                    try:
+                        self.optimize()
+                    except requests.RequestException as e:
+                        # 11-09: 업비트 접속 시간초과가 이어지면 재선정이 매 바퀴 다시 시작돼 보유 관리·상태 표시가 막혔음
+                        # → 접속 실패면 기존 전략을 그대로 두고 5분 뒤 다시 시도, 그 사이 보유 관리·상태 표시는 계속
+                        self.state["lastOptimize"] = int(time.time() - (REOPTIMIZE_MIN - 5) * 60)
+                        log(f"[경고] 전략 재선정 중 업비트 접속 실패 → 기존 전략 유지, 5분 뒤 다시 시도 (보유 관리는 계속): {str(e)[:120]}")
                     self.upload_status()
                 if self.ai_should_run():
                     self.ai_start()
