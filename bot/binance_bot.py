@@ -78,6 +78,7 @@ REGIME_UP, REGIME_DOWN = 1.5, -1.5   # +1.5% 이상 상승장, -1.5% 이하 하�
 PAPER_USDT = 100.0                # 모의 1회 진입 금액(USDT, 레버리지 1배)
 GB_ARM = 0.5                      # 관찰 전용: 익절까지 가격 움직임의 50% 이상 갔다가
 GB_FLOOR = 0.0                    #   진입가(움직임 0%)까지 되밀리면 "여기서 본전 정리했다면" 손익을 기록 (실제 청산은 그대로)
+SW_LOOK, SW_MIN = 20, 10          # 관찰 전용 '약한 방향': 같은 방향 최근 모의 20회(최소 10회) 평균이 0 미만이면 진입에 표시만 함
 MAX_OPEN = 10                     # 동시 모의 보유 최대
 # 확장형(wide): 대상 종목 2배 → 거래 기회 2배. 대시보드 설정 BINANCE_STYLE=wide 일 때만 (기본 swing = 기존 동작)
 # bt-lab 11-07: 보지 않은 다음 10일 — 20종목 134회 거래당 +0.206% / 40종목 284회 +0.284% (회전형 작은 익절은 -0.12~-0.20%로 탈락)
@@ -694,6 +695,51 @@ class Engine:
         d["wins"] += 1 if pct > 0 else 0
         d["sumPct"] = round(d["sumPct"] + pct, 4)
 
+    def side_weak(self, side):
+        """관찰 전용: 같은 방향의 최근 모의 청산 SW_LOOK회 평균. SW_MIN회 미만이면 None.
+        진입·청산·손익·규칙 판정·실주문 판단에는 전혀 쓰지 않음"""
+        try:
+            xs = [t["pct"] for t in self.state.get("tradeLog") or []
+                  if not t.get("live") and t.get("side") == side and t.get("pct") is not None][-SW_LOOK:]
+            if len(xs) < SW_MIN:
+                return None
+            return round(sum(xs) / len(xs), 3)
+        except Exception:
+            return None
+
+    def side_weak_mark(self, sym, avg):
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or avg is None or "sideAvg" in p:
+                return
+            p["sideAvg"] = avg
+            p["sideWeak"] = avg < 0
+            if p["sideWeak"]:
+                log(f"[방향 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} 진입 · "
+                    f"같은 방향 최근 모의 평균 {avg:+.2f}% → '약한 방향' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 방향 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def side_weak_record(self, kind, p, pct):
+        """관찰 전용: 약한 방향 표시 거래 vs 보통 거래의 결과를 따로 누적"""
+        try:
+            if "sideWeak" not in p:
+                return
+            k = f"{kind}|{'weak' if p['sideWeak'] else 'ok'}|{p['side']}"
+            d = self.state.setdefault("sideWeakStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+        except Exception as e:
+            log(f"[안내] 방향 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def side_weak_view(self):
+        rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                 "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None}
+                for k, v in sorted((self.state.get("sideWeakStats") or {}).items())]
+        return {"look": SW_LOOK, "now": {"long": self.side_weak("long"), "short": self.side_weak("short")},
+                "rows": rows, "open": sum(1 for q in self.state["positions"].values() if q.get("sideWeak"))}
+
     def funding_track(self):
         """관찰 전용 펀딩비: 보유 포지션마다 정산 시각(nextFundingTime)이 지나면 직전에 읽은 예상 펀딩비를 누적.
         롱은 비율만큼 내고(-), 숏은 받음(+). 진입가 기준 금액에 대한 % — 손익·규칙 판정·실주문 판단에는 전혀 안 씀"""
@@ -814,15 +860,18 @@ class Engine:
             if not px:
                 continue
             reg = self.regime()                          # 관찰 전용 기록 (진입 판단에는 안 씀)
+            sw = self.side_weak(strat["side"])           # 관찰 전용: 약한 방향 표시 (진입 판단에는 안 씀)
             usdt = self.live_ok(strat)
             if usdt and self.open_live(sym, strat, px, usdt):
                 if sym in st["positions"] and reg:
                     st["positions"][sym].setdefault("regime", reg)
+                self.side_weak_mark(sym, sw)
                 continue
             if n_paper() < self.max_open:
                 self.open_paper(sym, strat, px)
                 if sym in st["positions"] and reg:
                     st["positions"][sym].setdefault("regime", reg)
+                self.side_weak_mark(sym, sw)
         save_state(st)
 
     # --- 실주문 ---
@@ -995,6 +1044,7 @@ class Engine:
         self.regime_record("live", p, pct)
         self.funding_record("live", p, pct)
         self.giveback_record("live", sym, p, pct)
+        self.side_weak_record("live", p, pct)
         g = self.state["guard"]
         g["streak"] = g.get("streak", 0) + 1 if pct <= 0 else 0
         rest = ""
@@ -1270,6 +1320,7 @@ class Engine:
         self.regime_record("paper", p, pct)
         self.funding_record("paper", p, pct)
         self.giveback_record("paper", sym, p, pct)
+        self.side_weak_record("paper", p, pct)
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
                    "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "regime": p.get("regime"),
@@ -1349,6 +1400,7 @@ class Engine:
             "liveSkip": self.state.get("liveSkip") or {},
             "liveSlip": self.slip_view(),
             "giveback": self.giveback_view(),
+            "sideWeak": self.side_weak_view(),
             "nearProven": sorted(({"symbol": r.get("symbol", ""), "side": r.get("side", ""), "n": r.get("n", 0),
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
                                   for r in rb if r.get("status") == "testing"),
