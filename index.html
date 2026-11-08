@@ -1286,6 +1286,13 @@ function renderBinance(b) {
   if (isLive && (sl.entryN || sl.exitN)) {
     const sp = (v) => v == null ? "-" : (v > 0 ? "+" : "") + v.toFixed(2) + "%";
     why += ` · 실주문 체결 밀림(관찰): 진입 ${sp(sl.entryAvg)}(${sl.entryN || 0}회, 불리 ${sl.entryWorse || 0}) · 청산 ${sp(sl.exitAvg)}(${sl.exitN || 0}회, 불리 ${sl.exitWorse || 0}) · 모의 가정 ${(sl.assumed ?? 0.02).toFixed(2)}%`;
+    // 실측 밀림을 모의 성적에 다시 적용해 본 값(표시만, 매매·판정 영향 없음): 모의는 진입·청산 각 0.02%만 가정하므로
+    // 실측(진입+청산) − 가정(2×0.02%)만큼 더 빼면 '실주문이었다면' 거래당 성적에 가까워짐
+    if ((sl.entryN || 0) >= 3 && (sl.exitN || 0) >= 3 && sl.entryAvg != null && sl.exitAvg != null) {
+      const extra = sl.entryAvg + sl.exitAvg - 2 * (sl.assumed ?? 0.02);
+      const adj = (s) => (s && s.n) ? `${pct(s.avgPct - extra)}(${s.n}회)` : "-";
+      why += ` · 실측 밀림 반영 시 모의 거래당: 롱 ${adj(b.long)} · 숏 ${adj(b.short)} (추가 비용 ${sp(extra)}/회 · 실주문 표본 ${Math.min(sl.entryN, sl.exitN)}회라 참고용)`;
+    }
   }
   // 봇이 관리하지 않는 실포지션(직접 연 것 또는 체결 확인 실패로 남은 것) — 손절·손실 한도 밖이라 경고
   const fl = (b.foreign && b.foreign.list) || [];
