@@ -1601,6 +1601,7 @@ def check_update():
 
 
 if __name__ == "__main__":
+    cb.disable_quick_edit()
     if check_update():
         sys.exit(RESTART_CODE)
     try:
