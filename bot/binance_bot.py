@@ -655,6 +655,17 @@ class Engine:
         s = self.state["ledger"].get(side) or {}
         return s.get("n", 0) >= SIDE_GATE_MIN_N and s["sumPct"] / s["n"] >= SIDE_GATE_MIN_AVG
 
+    def skip_why(self, rb):
+        """실주문 대신 모의로 간 이유를 실제 걸린 조건대로 나눠 적음(표시용, 판단은 side_ok 그대로)"""
+        if self.live_basis in ("side", "all"):
+            if rb.get("status") == "retired":
+                return "퇴출 규칙"
+            if rb.get("n", 0) and rb["sumPct"] / rb["n"] < 0:
+                return "모의 평균 마이너스 규칙"
+            if self.live_basis == "side":
+                return "방향별 모의 성적 기준 미달"
+        return "통과 전 규칙(모의 검증 중)"
+
     # --- 모의 진입·청산 ---
     def regime(self):
         """관찰 전용 시장 국면: BTC 최근 24시간 변화 → 상승/하락/횡보. 봉마다 한 번만 계산, 실패하면 None (매매에는 영향 없음)"""
@@ -854,7 +865,7 @@ class Engine:
             return self.live_skip("실주문 꺼짐(설정 paper·키 확인 실패)")
         rb = self.state["ruleBook"].get(strat["rid"]) or {}
         if rb.get("status") != "proven" and not self.side_ok(strat["side"], rb):
-            return self.live_skip("통과 전 규칙(모의 검증 중)")
+            return self.live_skip(self.skip_why(rb))
         g, now = self.state["guard"], time.time()
         if g.get("blockUntil", 0) > now:
             return self.live_skip("보호 손절 주문 실패 후 쉬는 중")
