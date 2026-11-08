@@ -72,6 +72,7 @@ TF = 15                           # 봉 길이(분) — 실험에서 가장 좋�
 TRAIN_BARS = 1920                 # 학습 20일
 TOP_N = 20                        # 거래대금 상위 종목 수
 RESELECT_HOURS = 4                # 전략 다시 고르는 주기
+FUNDING_CHECK_SEC = 300           # 펀딩비(관찰 전용): 5분마다 예상 펀딩비를 읽어 보유 포지션에 정산 시점마다 누적 (손익·판정에는 안 씀)
 REGIME_BARS = 96                  # 시장 국면(관찰 전용): BTC 최근 24시간(15분봉 96개) 변화로 나눔
 REGIME_UP, REGIME_DOWN = 1.5, -1.5   # +1.5% 이상 상승장, -1.5% 이하 하락장, 그 사이 횡보
 PAPER_USDT = 100.0                # 모의 1회 진입 금액(USDT, 레버리지 1배)
@@ -680,6 +681,48 @@ class Engine:
         d["wins"] += 1 if pct > 0 else 0
         d["sumPct"] = round(d["sumPct"] + pct, 4)
 
+    def funding_track(self):
+        """관찰 전용 펀딩비: 보유 포지션마다 정산 시각(nextFundingTime)이 지나면 직전에 읽은 예상 펀딩비를 누적.
+        롱은 비율만큼 내고(-), 숏은 받음(+). 진입가 기준 금액에 대한 % — 손익·규칙 판정·실주문 판단에는 전혀 안 씀"""
+        pos = self.state["positions"]
+        if not pos or time.time() - getattr(self, "_fund_at", 0) < FUNDING_CHECK_SEC:
+            return
+        self._fund_at = time.time()
+        try:
+            data = get("/fapi/v1/premiumIndex")
+        except Exception as e:
+            log(f"[안내] 펀딩비 확인 실패 (매매는 그대로): {str(e)[:100]}")
+            return
+        now_ms = int(time.time() * 1000)
+        info = {d["symbol"]: d for d in data if isinstance(d, dict) and "symbol" in d}
+        paid = []
+        for sym, p in pos.items():
+            d = info.get(sym)
+            if not d:
+                continue
+            nft, rate = p.get("fundNext"), p.get("fundRate")
+            if nft and rate is not None and now_ms >= nft:          # 정산이 지나감 → 직전 예상치로 정산된 것으로 봄
+                f = rate * 100 * (-1 if p["side"] == "long" else 1)
+                p["fundPct"] = round(p.get("fundPct", 0.0) + f, 4)
+                p["fundN"] = p.get("fundN", 0) + 1
+                paid.append(f"{sym.replace('USDT', '')} {'롱' if p['side'] == 'long' else '숏'} {f:+.3f}%")
+            try:
+                p["fundRate"] = float(d.get("lastFundingRate") or 0)
+                p["fundNext"] = int(d.get("nextFundingTime") or 0) or None
+            except (TypeError, ValueError):
+                pass
+        if paid:
+            log("[펀딩비 관찰] 정산 반영(손익 계산엔 안 넣음): " + ", ".join(paid[:12]) + (" 외" if len(paid) > 12 else ""))
+
+    def funding_record(self, kind, p, pct):
+        """청산 1건의 누적 펀딩비를 방향별 표에 더함 (관찰 전용)"""
+        k = f"{kind}|{p['side']}"
+        d = self.state.setdefault("fundStats", {}).setdefault(k, {"n": 0, "sumPct": 0.0, "sumFund": 0.0, "paidN": 0})
+        d["n"] += 1
+        d["sumPct"] = round(d["sumPct"] + pct, 4)
+        d["sumFund"] = round(d["sumFund"] + p.get("fundPct", 0.0), 4)
+        d["paidN"] += p.get("fundN", 0)
+
     def scan(self):
         st = self.state
         bar = int(time.time() // (TF * 60))
@@ -865,6 +908,7 @@ class Engine:
         if record:
             self.rule_record(p["rid"], pct)
         self.regime_record("live", p, pct)
+        self.funding_record("live", p, pct)
         g = self.state["guard"]
         g["streak"] = g.get("streak", 0) + 1 if pct <= 0 else 0
         rest = ""
@@ -876,7 +920,8 @@ class Engine:
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
                    "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "live": True, "regime": p.get("regime"),
-                   "heldMin": round((time.time() * 1000 - p["at"]) / 60000), "maxFav": round(p.get("maxFav", 0), 2)})
+                   "heldMin": round((time.time() * 1000 - p["at"]) / 60000), "maxFav": round(p.get("maxFav", 0), 2),
+                   "fund": round(p.get("fundPct", 0.0), 4)})
         del tl[:-100]
         save_state(self.state)
         log(f"★[실주문 청산] {sym} {'롱' if long_ else '숏'} {pct:+.2f}% ({usdt:+.2f} USDT, {reason}) · "
@@ -1134,10 +1179,12 @@ class Engine:
         lg[p["side"]]["sumPct"] = round(lg[p["side"]]["sumPct"] + pct, 4)
         self.rule_record(p["rid"], pct)
         self.regime_record("paper", p, pct)
+        self.funding_record("paper", p, pct)
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
                    "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "regime": p.get("regime"),
-                   "heldMin": round((time.time() * 1000 - p["at"]) / 60000), "maxFav": round(p.get("maxFav", 0), 2)})
+                   "heldMin": round((time.time() * 1000 - p["at"]) / 60000), "maxFav": round(p.get("maxFav", 0), 2),
+                   "fund": round(p.get("fundPct", 0.0), 4)})
         del tl[:-100]
         log(f"[모의 청산] {sym} {'롱' if long_ else '숏'} {pct:+.2f}% ({usdt:+.2f} USDT, {reason}) · "
             f"누적 {lg['trades']}회 거래당 {lg['sumPct'] / lg['trades']:+.3f}%")
@@ -1179,7 +1226,7 @@ class Engine:
                 pct = round((g - 2 * FEE - SLIP) * 100, 2)
             pos.append({"symbol": sym, "side": p["side"], "live": bool(p.get("live")), "entry": p["entry"], "tp": p["tp"], "sl": p["sl"], "price": cur,
                         "pnlPct": pct, "at": p["at"], "deadline": p["deadline"] * 1000, "desc": p["desc"],
-                        "stopPx": p.get("stopPx"), "p": p.get("p")})
+                        "stopPx": p.get("stopPx"), "p": p.get("p"), "fundPct": p.get("fundPct")})
         g, evo, now = self.state["guard"], self.state["evo"], time.time()
         ll = self.live_day()
         rest = max(g.get("restUntil", 0), g.get("blockUntil", 0))
@@ -1224,6 +1271,12 @@ class Engine:
                        "rows": [{"kind": k.split("|")[0], "regime": k.split("|")[1], "side": k.split("|")[2], "n": v["n"],
                                  "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None}
                                 for k, v in sorted(self.state.get("regimeStats", {}).items())]},
+            "funding": {"rows": [{"kind": k.split("|")[0], "side": k.split("|")[1], "n": v["n"], "paidN": v.get("paidN", 0),
+                                  "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None,
+                                  "avgFund": round(v["sumFund"] / v["n"], 4) if v["n"] else None,
+                                  "avgWithFund": round((v["sumPct"] + v["sumFund"]) / v["n"], 3) if v["n"] else None}
+                                 for k, v in sorted(self.state.get("fundStats", {}).items())],
+                        "openFund": round(sum(q.get("fundPct", 0.0) for q in self.state["positions"].values()), 4)},
             "foreign": self.state.get("foreign") or {},
             "readLimitedUntil": self.state.get("readLimitedUntil") or 0,
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],
@@ -1361,6 +1414,10 @@ class Engine:
                         or self.state.get("style", "swing") != STYLE):
                     self.reselect()
                 self.manage()
+                try:
+                    self.funding_track()                 # 관찰 전용 (실패해도 매매 영향 없음)
+                except Exception as e:
+                    log(f"[안내] 펀딩비 기록 건너뜀: {type(e).__name__}: {str(e)[:80]}")
                 self.check_exchange()
                 self.check_resume()
                 self.check_test_order()
