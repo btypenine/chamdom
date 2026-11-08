@@ -174,6 +174,7 @@ LIVE_DAY_MIN_WINRATE = 0.50      # 승률이 이보다 낮으면 다음 날 9시
 # 규칙 장부: 종목+규칙마다 실전 성적을 날짜와 상관없이 계속 기록
 RULE_EVAL_TRADES = 5             # 이 횟수를 채울 때까지 규칙을 바꾸지 않음, 이후 판정
 RULE_RECHECK = (10, 20, 40)      # 이 횟수마다 다시 판정 (5회는 표본이 작아 운 영향 큼)
+POST_SOUR_MIN_N = 5               # 관찰 전용: 통과 이후 이만큼 쌓였는데 평균 마이너스면 '통과 후 부진'으로 따로 집계
 RULE_PROMOTE_MIN_AVG = 0.15      # 실주문 자격(통과): 거래당 +0.15% 이상 — 0% 근처는 체결 비용·운 차이로 실전에서 뒤집히기 쉬움
 RULE_POST_CHECK = 5              # (참고용) 통과 '이후' 성적 집계 단위
 RULE_OUT_WINDOW = 5              # 3아웃제: 규칙마다 5회 묶음으로 성적을 봄 → 그 5회 거래당 0% 이하면 '1아웃'
@@ -1523,6 +1524,16 @@ class Bot:
                     b["n"] += 1
                     b["wins"] += 1 if pnl > 0 else 0
                     b["sumPct"] = round(b["sumPct"] + pct, 4)
+            # 관찰 전용(매매 영향 없음): '통과 이후' 성적이 5회 이상 쌓였는데 평균 마이너스인 규칙(통과 후 부진)의
+            # 다음 거래가 정말 더 나쁜지 비교 → 누적(통과 전 포함) 평균이 플러스라 자격을 유지 중인 규칙을 걸러낼지 판단 근거
+            post0 = rb.get("post") or {}
+            if post0.get("n", 0) >= POST_SOUR_MIN_N:
+                sour = post0["sumPct"] / post0["n"] < 0
+                b = self.state.setdefault("passPredict", {}).setdefault("post:" + ("sour" if sour else "ok"),
+                                                                        {"n": 0, "wins": 0, "sumPct": 0.0})
+                b["n"] += 1
+                b["wins"] += 1 if pnl > 0 else 0
+                b["sumPct"] = round(b["sumPct"] + pct, 4)
             # 통과 '이후' 성적만 따로 누적 (통과 판정이 앞으로도 맞는지 확인용, 매매 영향 없음)
             for box in (rb.setdefault("post", {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0}),
                         self.state.setdefault("passStats", {"n": 0, "wins": 0, "sumPct": 0.0, "pnl": 0})):
@@ -1530,6 +1541,11 @@ class Bot:
                 box["wins"] += 1 if pnl > 0 else 0
                 box["sumPct"] = round(box["sumPct"] + pct, 4)
                 box["pnl"] = round(box["pnl"] + pnl)
+            pn = rb["post"]
+            if pn["n"] == POST_SOUR_MIN_N and pn["sumPct"] / pn["n"] < 0:
+                log(f"[통과 후 부진] {rb['market'].split('-')[1]} {rb['id']} 통과 이후 {pn['n']}회 거래당 "
+                    f"{pn['sumPct'] / pn['n']:+.2f}% (누적 {(rb['sumPct'] + pct) / (rb['trades'] + 1):+.2f}%) "
+                    "· 관찰만: 이후 거래를 따로 모아 다른 통과 규칙과 비교 (자격·매매는 그대로)")
         rb["trades"] += 1
         rb["wins"] += 1 if pnl > 0 else 0
         rb["sumPct"] = round(rb["sumPct"] + pct, 4)

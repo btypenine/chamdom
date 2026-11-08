@@ -1816,7 +1816,8 @@ function renderMore(s, stale) {
     // 예측력: 통과 규칙의 '직전 누적 성적·횟수' 구간별 다음 거래 결과 — 좋은 구간이 더 좋아야 장부 선별이 통하는 것
     const ppd = Array.isArray(s.passPredict) ? s.passPredict : [];
     const ppLabel = { "avg:<0.3": "직전 평균 +0.3%↓", "avg:0.3~0.6": "직전 평균 +0.3~0.6%", "avg:0.6+": "직전 평균 +0.6%↑",
-                      "n:5~9": "직전 5~9회", "n:10~19": "직전 10~19회", "n:20+": "직전 20회 이상" };
+                      "n:5~9": "직전 5~9회", "n:10~19": "직전 10~19회", "n:20+": "직전 20회 이상",
+                      "post:ok": "통과 후 양호 규칙", "post:sour": "통과 후 부진 규칙" };
     const ppOrder = Object.keys(ppLabel);
     for (const b of ppd.slice().sort((a, b) => ppOrder.indexOf(a.key) - ppOrder.indexOf(b.key))) {
       if (!ppLabel[b.key] || !b.n) continue;
