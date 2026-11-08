@@ -3355,7 +3355,23 @@ class Bot:
             pass
 
 
+def disable_quick_edit():
+    """윈도우 명령창 '빠른 편집' 끄기 — 창을 마우스로 누르면 글자 선택 상태가 되어 봇이 통째로 멈추는 것 방지"""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-10)                       # 입력 핸들
+        mode = ctypes.c_uint32()
+        if k.GetConsoleMode(h, ctypes.byref(mode)):
+            k.SetConsoleMode(h, (mode.value & ~0x0040) | 0x0080)   # QUICK_EDIT 끔, EXTENDED_FLAGS 켬
+    except Exception:
+        pass
+
+
 def main():
+    disable_quick_edit()
     cfg = load_config()                 # 업데이트 채널(main/stable)을 알기 위해 설정부터 읽음
     if check_update():
         print("새 버전을 받았습니다. 다시 시작합니다.", flush=True)
