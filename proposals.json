@@ -852,7 +852,7 @@
       "branch": "ai/20261109-quickedit",
       "createdAt": "2026-11-09T02:15:00+09:00",
       "pr": "https://github.com/btypenine/chamdom/pull/73",
-      "status": "pending",
+      "status": "merged",
       "title": "봇: 명령창 '빠른 편집' 끄기 — 창을 누르면 봇이 멈추는 문제 방지",
       "summary": "업비트 봇·바이낸스 엔진이 시작할 때 자기 명령창의 빠른 편집을 꺼서, 창을 실수로 눌러도 멈추지 않게 함",
       "why": "11/09 01:59 업비트 봇이 오류 없이 멈춤(바이낸스는 정상) — 명령창 선택 모드로 멈춘 것으로 추정",
@@ -867,7 +867,7 @@
       "pr": "https://github.com/btypenine/chamdom/pull/74",
       "branch": "ai/20261109-upbit-down",
       "createdAt": "2026-11-09T02:58:00+09:00",
-      "status": "pending"
+      "status": "merged"
     }
   ]
 }
