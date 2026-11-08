@@ -771,9 +771,12 @@ def random_spec(rng, weights=None, shape=None):
             "hold": weighted_pick(rng, HOLD_CHOICES, shape.get("hold"))}
 
 
+COND_KO = {"rsi_below": "RSI과매도", "bb_below": "볼린저하단", "ema_up": "상승추세", "ema_cross": "골든크로스",
+           "drop": "단기급락", "breakout": "고점돌파", "vol_spike": "거래량급증", "green": "양봉"}
+
+
 def describe(spec):
-    names = {"rsi_below": "RSI과매도", "bb_below": "볼린저하단", "ema_up": "상승추세", "ema_cross": "골든크로스",
-             "drop": "단기급락", "breakout": "고점돌파", "vol_spike": "거래량급증", "green": "양봉"}
+    names = COND_KO
     return "+".join(names[c[0]] for c in spec["conds"]) + f" / 익절+{spec.get('tp', TARGET_NET_PCT)}% / 손절{spec['sl']}% / 최대{spec['hold']}분"
 
 
@@ -1256,6 +1259,33 @@ def gate_vol_spike(bot, mk, price, ctx):
     return ev > bv * VOL_X, f"{mk.split('-')[1]} 1분 변동폭 {ev:.2f}% · 백테스트 때 {bv:.2f}% ({ev / bv:.1f}배, 기준 {VOL_X:.1f}배 초과)"
 
 
+MONKEY_COND_MIN_N = 20           # 원숭이보다 못한 조건 관문: 조건별 짝 비교 표본이 이만큼 이상이고
+MONKEY_COND_Z = -2.0             # '우리 − 원숭이' 차이의 z값이 이 이하인 조건이 들어간 매수를 막음 (11-08: 볼린저하단 26건 거래당 -1.06%p, z -2.17)
+
+
+def gate_monkey_cond(bot, mk, price, ctx):
+    """조건 학습(condStats)은 우리 거래끼리의 상대 비교라 시장 전체가 나쁠 때 모두 같이 깎임 → 같은 순간 산 원숭이와의
+    짝 비교로 '무작위 매수보다 확실히 못한' 진입 조건을 스스로 골라 그 조건이 든 매수를 따로 잼. 표본이 쌓일수록 목록이 바뀜. 관찰로 시작"""
+    conds = (ctx or {}).get("conds") or []
+    if not conds:
+        return False, "조건 기록 없음"
+    st = bot.state.get("monkeyCondStats") or {}
+    bad = []
+    for c in conds:
+        v = st.get(c) or {}
+        n = v.get("n", 0)
+        if n < max(MONKEY_COND_MIN_N, 2):
+            continue
+        avg = v["sumD"] / n
+        sd = math.sqrt(max(v["sumD2"] / n - avg * avg, 0.0) * n / (n - 1))
+        z = avg / (sd / math.sqrt(n)) if sd else 0.0
+        if z <= MONKEY_COND_Z:
+            bad.append(f"{COND_KO.get(c, c)} {n}건 {avg:+.2f}%p(z {z:.1f})")
+    if bad:
+        return True, f"{mk.split('-')[1]} 원숭이보다 못한 조건 포함: " + ", ".join(bad)
+    return False, f"{mk.split('-')[1]} 원숭이보다 확실히 못한 조건 없음(기준 {MONKEY_COND_MIN_N}건·z {MONKEY_COND_Z:.1f} 이하)"
+
+
 # entry=True 관문은 1분마다가 아니라 매수 신호가 날 때마다 그 종목 기준으로 확인: fn(bot, 종목, 현재가, ctx)
 MARKET_GATES = [
     {"id": "btc_drop", "name": "BTC 급락", "desc": f"BTC가 최근 {BTC_DROP_MIN}분 {BTC_DROP_PCT}% 이하로 빠지면 새로 사지 않음", "fn": gate_btc_drop},
@@ -1274,6 +1304,7 @@ MARKET_GATES = [
     {"id": "reach", "name": "힘 부족", "desc": f"그 종목 최근 {REACH_MIN}분 움직임으로 본 보유시간 기대 움직임보다 익절폭이 {REACH_X:.1f}배 넘게 크면 사지 않음(목표 미도달 방지)", "fn": gate_reach, "entry": True},
     {"id": "big_tp", "name": "큰 익절폭", "desc": f"전략의 익절폭이 +{BIG_TP_PCT:g}% 이상이면 사지 않음(작은 목표가 실전에서 덜 짐)", "fn": gate_big_tp, "entry": True},
     {"id": "vol_spike", "name": "변동성 급증", "desc": f"그 종목 최근 60분 1분봉 변동폭이 백테스트 때의 {VOL_X:.1f}배를 넘으면 사지 않음(손절폭 대비 출렁임에 털리기 방지)", "fn": gate_vol_spike, "entry": True},
+    {"id": "monkey_cond", "name": "원숭이보다 못한 조건", "desc": f"원숭이(무작위 매수)와 같은 순간 비교에서 {MONKEY_COND_MIN_N}건 이상·z {MONKEY_COND_Z:.1f} 이하로 확실히 못한 진입 조건이 든 전략은 사지 않음(조건 목록은 스스로 갱신)", "fn": gate_monkey_cond, "entry": True},
 ]
 
 # ---- 청산 판단 (보유 중) — 관문과 같은 '관찰 → 승인 → 적용' 구조 ----
@@ -2223,7 +2254,8 @@ class Bot:
                 price = self.upbit.prices([mk]).get(mk)
                 if price:
                     ctx = {"signalPrice": series.c[-1], "entryVol": round(avg_range_pct(series), 4),
-                           "tpPct": spec.get("tp", TARGET_NET_PCT), "btVol": spec.get("btVol")}
+                           "tpPct": spec.get("tp", TARGET_NET_PCT), "btVol": spec.get("btVol"),
+                           "conds": [c[0] for c in spec.get("conds", [])]}
                     if len(series.c) > REACH_MIN:         # 힘 부족 관문용: 평균|1분 변화| × √보유분
                         mv = sum(abs(series.c[k] / series.c[k - 1] - 1) for k in range(len(series.c) - REACH_MIN, len(series.c))) / REACH_MIN * 100
                         ctx["reachPct"] = round(mv * spec["hold"] ** 0.5, 3)
