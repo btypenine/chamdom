@@ -758,6 +758,33 @@ class Engine:
         except Exception as e:
             log(f"[안내] 방향 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
 
+    def p_calib_record(self, p, pct, usdt):
+        """관찰 전용: 실주문 진입 때 '이익 확률(p)' 구간별 실제 결과와, 확률로 키운 금액이 고정 금액보다 나았는지 누적.
+        p 가 실제 결과를 잘 맞히는지(확률이 높을수록 성적이 좋은지) 보는 용도. 금액·주문·판정에는 전혀 안 씀"""
+        try:
+            pv = p.get("p")
+            if pv is None:
+                return
+            b = "lo" if pv < 0.6 else ("mid" if pv < 0.8 else "hi")
+            d = self.state.setdefault("pCalib", {}).setdefault(b, {"n": 0, "wins": 0, "sumPct": 0.0, "sumUsdt": 0.0,
+                                                                   "sumFlat": 0.0, "sumSize": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["sumUsdt"] = round(d["sumUsdt"] + usdt, 4)
+            d["sumFlat"] = round(d["sumFlat"] + self.order_usdt * pct / 100, 4)   # 같은 거래를 기본 금액 고정으로 했다면
+            d["sumSize"] = round(d["sumSize"] + float(p.get("usdt") or 0), 2)
+        except Exception as e:
+            log(f"[안내] 확률 구간 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def p_calib_view(self):
+        st = self.state.get("pCalib") or {}
+        rows = [{"band": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
+                 "usdt": round(v["sumUsdt"], 2), "flat": round(v["sumFlat"], 2), "avgSize": round(v["sumSize"] / v["n"], 1)}
+                for k, v in ((k, st.get(k)) for k in ("lo", "mid", "hi")) if v and v.get("n")]
+        return {"rows": rows, "base": self.order_usdt,
+                "open": sum(1 for q in self.state["positions"].values() if q.get("live") and q.get("p") is not None)}
+
     def side_weak_view(self):
         rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
                  "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None}
@@ -1074,6 +1101,7 @@ class Engine:
         self.funding_record("live", p, pct)
         self.giveback_record("live", sym, p, pct)
         self.side_weak_record("live", p, pct)
+        self.p_calib_record(p, pct, usdt)
         g = self.state["guard"]
         g["streak"] = g.get("streak", 0) + 1 if pct <= 0 else 0
         rest = ""
@@ -1086,7 +1114,7 @@ class Engine:
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
                    "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "live": True, "regime": p.get("regime"),
                    "heldMin": round((time.time() * 1000 - p["at"]) / 60000), "maxFav": round(p.get("maxFav", 0), 2),
-                   "fund": round(p.get("fundPct", 0.0), 4)})
+                   "fund": round(p.get("fundPct", 0.0), 4), "p": p.get("p"), "size": round(p.get("usdt", 0.0), 2)})
         del tl[:-100]
         save_state(self.state)
         log(f"★[실주문 청산] {sym} {'롱' if long_ else '숏'} {pct:+.2f}% ({usdt:+.2f} USDT, {reason}) · "
@@ -1448,6 +1476,7 @@ class Engine:
             "liveSlip": self.slip_view(),
             "giveback": self.giveback_view(),
             "sideWeak": self.side_weak_view(),
+            "pCalib": self.p_calib_view(),
             "nearProven": sorted(({"symbol": r.get("symbol", ""), "side": r.get("side", ""), "n": r.get("n", 0),
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
                                   for r in rb if r.get("status") == "testing"),
