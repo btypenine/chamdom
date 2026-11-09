@@ -1580,27 +1580,57 @@ class Engine:
             time.sleep(20)
 
 
-def check_update():
-    me = os.path.abspath(__file__)
+CB_UPDATE_URL = UPDATE_URL.replace("binance_bot.py", "chamdom_bot.py")
+HERE = os.path.dirname(os.path.abspath(__file__))
+CB_NEEDS = ("load_config", "Cloud", "settings_view", "sync_app_settings", "disable_quick_edit", "random_spec", "CONDITION_POOL")
+
+
+def standalone():
+    """바이낸스 전용 폴더(업비트 봇 start_bot.bat 이 없는 폴더, 예: 지인 PC C:\\chamdom_binance)인지.
+    전용 폴더에서는 아무도 chamdom_bot.py 를 실행하지 않으므로 바이낸스 엔진이 그 공용 파일도 최신(main)으로 맞춤.
+    업비트 봇과 같은 폴더(성민님 PC)에서는 업비트 봇이 직접 갱신하므로 건드리지 않음"""
+    return not os.path.exists(os.path.join(HERE, "start_bot.bat"))
+
+
+def _update_file(url, path, marker, name):
     try:
-        r = requests.get(UPDATE_URL, params={"t": int(time.time())}, timeout=15)
+        r = requests.get(url, params={"t": int(time.time())}, timeout=15)
         if r.status_code != 200:
             return False
         new = r.content.decode("utf-8").replace("\r\n", "\n")
-        with open(me, encoding="utf-8") as f:
-            cur = f.read().replace("\r\n", "\n")
-        if new == cur or "바이낸스 선물 엔진" not in new:
+        cur = ""
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                cur = f.read().replace("\r\n", "\n")
+        if new == cur or marker not in new:
             return False
-        compile(new, "binance_bot.py", "exec")
-        with open(me + ".new", "w", encoding="utf-8", newline="\n") as f:
+        compile(new, name, "exec")
+        with open(path + ".new", "w", encoding="utf-8", newline="\n") as f:
             f.write(new)
-        os.replace(me + ".new", me)
+        os.replace(path + ".new", path)
         return True
     except Exception:
         return False
 
 
+def check_update():
+    changed = _update_file(UPDATE_URL, os.path.abspath(__file__), "바이낸스 선물 엔진", "binance_bot.py")
+    if standalone():
+        changed = _update_file(CB_UPDATE_URL, os.path.join(HERE, "chamdom_bot.py"), "def load_config", "chamdom_bot.py") or changed
+    return changed
+
+
 if __name__ == "__main__":
+    missing = [n for n in CB_NEEDS if not hasattr(cb, n)]
+    if missing:                                         # 공용 파일(chamdom_bot.py)이 옛 버전 — 예: 지인용 업비트 봇(stable) 폴더에 넣은 경우
+        if standalone() and check_update():
+            print("공용 파일(chamdom_bot.py)을 최신으로 받았습니다. 다시 시작합니다.")
+            sys.exit(RESTART_CODE)
+        print("[설치 위치 확인 필요] 이 폴더의 chamdom_bot.py 가 옛 버전이라 바이낸스 엔진을 시작할 수 없습니다.\n"
+              "  → 업비트 봇 폴더가 아니라 별도 폴더(예: C:\\chamdom_binance)에 바이낸스 설치 파일을 풀어서 실행하세요.\n"
+              "  → 없는 항목: " + ", ".join(missing) + "\n10분 뒤 다시 확인합니다. (이 창은 닫아도 됩니다)", flush=True)
+        time.sleep(600)
+        sys.exit(RESTART_CODE)
     cb.disable_quick_edit()
     if check_update():
         sys.exit(RESTART_CODE)
