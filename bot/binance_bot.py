@@ -777,6 +777,35 @@ class Engine:
         except Exception as e:
             log(f"[안내] 확률 구간 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
 
+    def stop_gap_record(self, sym, p, pct, reason):
+        """관찰 전용: 실주문이 손절로 끝났을 때 '규칙 손절가대로 나갔다면' 대비 얼마나 더 잃었는지(손절 넘침) 누적.
+        누가 닫았는지(봇 손절 / 거래소 보호 손절)로 나눔. 급하게 튄 가격을 봇이 못 따라간 비용을 보는 용도. 매매엔 전혀 안 씀"""
+        try:
+            rs = str(reason or "")
+            if "손절" not in rs or "실패" in rs:
+                return
+            who = "exchange" if "거래소" in rs else "bot"
+            sl_pct = abs(p["sl"] / p["entry"] - 1) * 100
+            expect = -sl_pct - 2 * FEE * 100          # 규칙 손절가에 딱 나갔을 때의 결과(수수료 포함)
+            over = pct - expect                        # 마이너스일수록 손절가보다 더 밀려 나감
+            d = self.state.setdefault("stopGap", {}).setdefault(who, {"n": 0, "sumOver": 0.0, "worst": 0.0, "sumUsdt": 0.0})
+            d["n"] += 1
+            d["sumOver"] = round(d["sumOver"] + over, 4)
+            d["worst"] = round(min(d["worst"], over), 3)
+            d["sumUsdt"] = round(d["sumUsdt"] + float(p.get("usdt") or 0) * over / 100, 4)   # 넘친 만큼의 USDT
+            rec = self.state.setdefault("stopGapRecent", [])
+            rec.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"],
+                        "who": who, "sl": round(-sl_pct, 2), "pct": round(pct, 3), "over": round(over, 3)})
+            del rec[:-10]
+        except Exception as e:
+            log(f"[안내] 손절 넘침 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def stop_gap_view(self):
+        st = self.state.get("stopGap") or {}
+        rows = [{"who": k, "n": v["n"], "avgOver": round(v["sumOver"] / v["n"], 3), "worst": v["worst"],
+                 "usdt": round(v["sumUsdt"], 2)} for k, v in ((k, st.get(k)) for k in ("bot", "exchange")) if v and v.get("n")]
+        return {"rows": rows, "buffer": EXCHANGE_STOP_BUFFER, "recent": (self.state.get("stopGapRecent") or [])[-5:]}
+
     def p_calib_view(self):
         st = self.state.get("pCalib") or {}
         rows = [{"band": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
@@ -1102,6 +1131,7 @@ class Engine:
         self.giveback_record("live", sym, p, pct)
         self.side_weak_record("live", p, pct)
         self.p_calib_record(p, pct, usdt)
+        self.stop_gap_record(sym, p, pct, reason)
         g = self.state["guard"]
         g["streak"] = g.get("streak", 0) + 1 if pct <= 0 else 0
         rest = ""
@@ -1477,6 +1507,7 @@ class Engine:
             "giveback": self.giveback_view(),
             "sideWeak": self.side_weak_view(),
             "pCalib": self.p_calib_view(),
+            "stopGap": self.stop_gap_view(),
             "nearProven": sorted(({"symbol": r.get("symbol", ""), "side": r.get("side", ""), "n": r.get("n", 0),
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
                                   for r in rb if r.get("status") == "testing"),

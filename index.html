@@ -551,6 +551,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnGiveback" hidden></div>
       <div class="msg" id="bnSideWeak" hidden></div>
       <div class="msg" id="bnPCalib" hidden></div>
+      <div class="msg" id="bnStopGap" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
         <div><div class="label">거래당 평균</div><div class="stat-val num" id="bnAvg">-</div></div>
@@ -1441,6 +1442,21 @@ function renderBinance(b) {
       } else t += " · 아직 끝난 거래 없음(오늘부터 쌓임)";
       t += " · 확률이 높을수록 성적이 좋아야 금액 조절이 맞는 것";
       $("bnPCalib").textContent = t;
+    }
+  }
+  {  // 손절 넘침: 실주문 손절이 규칙 손절가보다 얼마나 더 밀려 나갔는지 (매매엔 안 씀)
+    const sg = b.stopGap;
+    $("bnStopGap").hidden = !sg;
+    if (sg) {
+      const nm = { bot: "봇 손절", exchange: "거래소 보호 손절" };
+      let t = `🧯 손절 넘침(관찰) · 실주문 손절이 규칙 손절가보다 얼마나 더 밀려 나갔는지 · 거래소 보호 손절은 규칙보다 ${sg.buffer ?? 0.5}%p 바깥`;
+      const rows = sg.rows || [];
+      if (rows.length) for (const r of rows) t += ` · ${nm[r.who] || r.who} ${r.n}회 평균 ${pct(r.avgOver)} (최악 ${pct(r.worst)}, ${(r.usdt ?? 0).toFixed(2)} USDT)`;
+      else t += " · 아직 손절로 끝난 실주문 없음(오늘부터 쌓임)";
+      const last = (sg.recent || []).slice(-1)[0];
+      if (last) t += ` · 최근 ${last.symbol.replace("USDT", "")} ${last.side === "long" ? "롱" : "숏"} 규칙 ${last.sl}% → 실제 ${pct(last.pct)}`;
+      t += " · 거래소 손절이 자주·크게 넘치면 손절 감시를 촘촘히 하는 제안 근거가 됨";
+      $("bnStopGap").textContent = t;
     }
   }
   const gl = $("bnGenes"); gl.textContent = "";
