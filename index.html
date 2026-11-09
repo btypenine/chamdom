@@ -552,6 +552,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnSideWeak" hidden></div>
       <div class="msg" id="bnPCalib" hidden></div>
       <div class="msg" id="bnStopGap" hidden></div>
+      <div class="msg" id="bnPayoff" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
         <div><div class="label">거래당 평균</div><div class="stat-val num" id="bnAvg">-</div></div>
@@ -1457,6 +1458,24 @@ function renderBinance(b) {
       if (last) t += ` · 최근 ${last.symbol.replace("USDT", "")} ${last.side === "long" ? "롱" : "숏"} 규칙 ${last.sl}% → 실제 ${pct(last.pct)}`;
       t += " · 거래소 손절이 자주·크게 넘치면 손절 감시를 촘촘히 하는 제안 근거가 됨";
       $("bnStopGap").textContent = t;
+    }
+  }
+  {  // 손익비·손익분기 승률 (관찰, 매매엔 안 씀)
+    const po = b.payoff;
+    const rows = (po && po.rows || []).filter((x) => x.n);
+    $("bnPayoff").hidden = !rows.length;
+    if (rows.length) {
+      const sn = { all: "전체", long: "롱", short: "숏" };
+      const pc0 = (v) => v == null ? "-" : Math.round(v * 100) + "%";
+      let t = `⚖️ 손익비(관찰) · 최근 청산 ${po.look ?? 100}건 기준 · 이긴 거래 평균 vs 진 거래 평균, 그리고 본전이 되려면 필요한 승률`;
+      for (const r of rows) {
+        t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${sn[r.side] || r.side} ${r.n}회: 이익 +${r.avgWin.toFixed(2)}% / 손실 -${r.avgLoss.toFixed(2)}%`;
+        t += ` → 필요 승률 ${pc0(r.beWin)} · 실제 ${pc0(r.winRate)}`;
+        if (r.beWin != null) t += r.winRate >= r.beWin ? " ✅" : " ⚠️";
+        if (r.worst != null && r.worst < -5) t += ` (최악 ${r.worst.toFixed(1)}%가 평균을 끌어내림)`;
+      }
+      t += " · 실제 승률이 필요 승률에 가까워지면 손절이 너무 넓다는 신호";
+      $("bnPayoff").textContent = t;
     }
   }
   const gl = $("bnGenes"); gl.textContent = "";
