@@ -1473,7 +1473,9 @@ function renderBinance(b) {
         t += ` → 필요 승률 ${pc0(r.beWin)} · 실제 ${pc0(r.winRate)}`;
         if (r.beWin != null) t += r.winRate >= r.beWin ? " ✅" : " ⚠️";
         if (r.worst != null && r.worst < -5) t += ` (최악 ${r.worst.toFixed(1)}%가 평균을 끌어내림)`;
+        if (r.ratioU != null) t += ` · 금액 기준 +${r.avgWinU.toFixed(2)} / -${r.avgLossU.toFixed(2)} USDT → 필요 승률 ${pc0(r.beWinU)}${r.winRate >= r.beWinU ? " ✅" : " ⚠️"} (합계 ${r.sumU >= 0 ? "+" : ""}${r.sumU.toFixed(2)} USDT)`;
       }
+      if (po.excluded) t += ` · 넘겨받은 포지션 ${po.excluded}건은 진입가 기준이 달라 제외`;
       t += " · 실제 승률이 필요 승률에 가까워지면 손절이 너무 넓다는 신호";
       $("bnPayoff").textContent = t;
     }

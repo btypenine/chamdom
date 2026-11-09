@@ -810,9 +810,13 @@ class Engine:
         """관찰 전용: 최근 청산(tradeLog 최대 100건)의 손익비와 손익분기 승률. 읽기만 함 — 매매·판정·주문에는 전혀 안 씀"""
         try:
             rows = []
+            log_all = self.state.get("tradeLog") or []
+            # 넘겨받은 포지션(봇이 직접 연 게 아닌 것)은 진입가 기준이 달라 %가 크게 튈 수 있어 손익비 집계에서 뺌
+            inh = lambda t: str(t.get("desc") or "").startswith("넘겨받은")
+            excluded = sum(1 for t in log_all if t.get("pct") is not None and inh(t))
             for kind in ("live", "paper"):
                 for side in ("all", "long", "short"):
-                    xs = [t for t in self.state.get("tradeLog") or [] if t.get("pct") is not None
+                    xs = [t for t in log_all if t.get("pct") is not None and not inh(t)
                           and bool(t.get("live")) == (kind == "live") and (side == "all" or t.get("side") == side)]
                     if not xs:
                         continue
@@ -820,15 +824,27 @@ class Engine:
                     l = [-t["pct"] for t in xs if t["pct"] <= 0]
                     aw = sum(w) / len(w) if w else 0.0
                     al = sum(l) / len(l) if l else 0.0
-                    rows.append({"kind": kind, "side": side, "n": len(xs), "wins": len(w),
-                                 "avgWin": round(aw, 3), "avgLoss": round(al, 3),
-                                 "ratio": round(aw / al, 2) if al > 0 else None,
-                                 "beWin": round(al / (aw + al), 3) if (aw + al) > 0 else None,
-                                 "winRate": round(len(w) / len(xs), 3),
-                                 "worst": round(min(t["pct"] for t in xs), 2)})
-            return {"rows": rows, "look": 100}
+                    row = {"kind": kind, "side": side, "n": len(xs), "wins": len(w),
+                           "avgWin": round(aw, 3), "avgLoss": round(al, 3),
+                           "ratio": round(aw / al, 2) if al > 0 else None,
+                           "beWin": round(al / (aw + al), 3) if (aw + al) > 0 else None,
+                           "winRate": round(len(w) / len(xs), 3),
+                           "worst": round(min(t["pct"] for t in xs), 2)}
+                    # 실주문은 진입 금액이 확률·판 크기로 달라지므로 실제 USDT 기준 손익비도 함께 (읽기 전용)
+                    us = [float(t["usdt"]) for t in xs if t.get("usdt") is not None]
+                    if kind == "live" and us:
+                        wu = [u for u in us if u > 0]
+                        lu = [-u for u in us if u <= 0]
+                        awu = sum(wu) / len(wu) if wu else 0.0
+                        alu = sum(lu) / len(lu) if lu else 0.0
+                        row.update({"avgWinU": round(awu, 3), "avgLossU": round(alu, 3),
+                                    "ratioU": round(awu / alu, 2) if alu > 0 else None,
+                                    "beWinU": round(alu / (awu + alu), 3) if (awu + alu) > 0 else None,
+                                    "sumU": round(sum(us), 2)})
+                    rows.append(row)
+            return {"rows": rows, "look": 100, "excluded": excluded}
         except Exception:
-            return {"rows": [], "look": 100}
+            return {"rows": [], "look": 100, "excluded": 0}
 
     def p_calib_view(self):
         st = self.state.get("pCalib") or {}
