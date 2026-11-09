@@ -353,6 +353,28 @@ class Live:
                     pass
         return avg, filled
 
+    def close_fill(self, sym, long_, since_ms, qty):
+        """거래소가 대신 닫은 포지션(보호 손절 체결·직접 정리)의 실제 체결 평균가 조회 (읽기 전용).
+        진입 이후 닫는 방향 체결을 최근 것부터 qty 만큼 모아 평균. 못 찾으면 None → 예전처럼 손절가로 추정"""
+        start = max(int(since_ms or 0), int(time.time() * 1000) - 6 * 86400 * 1000)   # 조회 창은 최대 7일
+        rows = self.call("GET", "/fapi/v1/userTrades", {"symbol": sym, "startTime": start, "limit": 100})
+        want = "SELL" if long_ else "BUY"
+        got, cost = 0.0, 0.0
+        for t in sorted(rows, key=lambda x: x.get("time", 0), reverse=True):
+            if t.get("side") != want:
+                continue
+            q = float(t.get("qty") or 0)
+            if q <= 0:
+                continue
+            take = min(q, qty - got)
+            got += take
+            cost += take * float(t.get("price") or 0)
+            if got >= qty * 0.999:
+                break
+        if got < qty * 0.999 or cost <= 0:
+            return None
+        return cost / got
+
     def snapshot(self):
         """대시보드 표시용: 거래소 실제 선물 지갑·포지션 (봇 장부와 상관없이 있는 그대로)"""
         bal = {}
@@ -1225,11 +1247,24 @@ class Engine:
             p["missing"] = p.get("missing", 0) + 1
             if p["missing"] < 2:
                 continue
-            exit_px = p.get("stopPx") or p["sl"]
-            log(f"[돈 지키기] {sym} 실보유가 거래소에서 정리됨(보호 손절 체결 또는 직접 정리) → 손절가 기준으로 장부 반영")
+            exit_px, why = self.exchange_exit_px(sym, p)
+            log(f"[돈 지키기] {sym} 실보유가 거래소에서 정리됨(보호 손절 체결 또는 직접 정리) → "
+                + ("실제 체결가" if why == "실제 체결가" else "손절가") + f" 기준으로 장부 반영 ({exit_px:.6g})")
             self.live.cancel_stops(sym)
-            self.book_live(sym, p, exit_px, "거래소 보호 손절(추정가)")
+            self.book_live(sym, p, exit_px, f"거래소 보호 손절({why})")
         save_state(self.state)
+
+    def exchange_exit_px(self, sym, p):
+        """거래소에서 이미 닫힌 실보유의 청산가: 실제 체결 내역을 먼저 보고, 못 찾으면 예전처럼 거래소 보호 손절가로 추정.
+        조회 실패해도 장부 반영은 그대로 진행(손절가 추정)"""
+        est = p.get("stopPx") or p["sl"]
+        try:
+            real = self.live.close_fill(sym, p["side"] == "long", p.get("at"), float(p.get("qty") or 0))
+            if real and real > 0:
+                return real, "실제 체결가"
+        except Exception as e:
+            log(f"[안내] {sym} 실제 청산 체결가 조회 실패 → 손절가로 추정 반영: {str(e)[:120]}")
+        return est, "추정가"
 
     def reconcile(self):
         """시작할 때: 장부의 실보유와 거래소 실제 포지션 맞춰 보기 (모르는 포지션은 건드리지 않음) + 보호 손절 확인"""
@@ -1247,7 +1282,8 @@ class Engine:
             if p.get("live") and sym not in ex:
                 log(f"[경고] {sym} 실보유가 거래소에 없음(꺼져 있는 동안 보호 손절 체결 또는 직접 정리) → 손절가 기준으로 장부 반영")
                 self.live.cancel_stops(sym)
-                self.book_live(sym, p, p.get("stopPx") or p["sl"], "꺼져 있는 동안 정리됨(추정가)")
+                exit_px, why = self.exchange_exit_px(sym, p)
+                self.book_live(sym, p, exit_px, f"꺼져 있는 동안 정리됨({why})")
             elif p.get("live") and not p.get("stopId"):
                 self.arm_stop(sym, p)                           # 이번 버전 전에 들어간 실보유에도 보호 손절을 걸어 둠
         mine = {s for s, p in self.state["positions"].items() if p.get("live")}
