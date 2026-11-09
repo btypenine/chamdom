@@ -509,8 +509,11 @@ class Engine:
         self.live_basis = str(c.get("BINANCE_LIVE_BASIS", "rule")).strip().lower()   # rule(기본) | side | all
         key, sec = c.get("BINANCE_API_KEY", ""), c.get("BINANCE_SECRET_KEY", "")
         self.live = None
-        if (c.get("BINANCE_TRADE_MODE", "paper").lower() == "live" and key and sec
-                and not key.startswith("여기에") and not sec.startswith("여기에")):
+        has_key = key and sec and not key.startswith("여기에") and not sec.startswith("여기에")
+        self.live_new = bool(has_key and c.get("BINANCE_TRADE_MODE", "paper").lower() == "live")   # 새 실주문 허용 여부
+        holding = any(p.get("live") for p in self.state.get("positions", {}).values())
+        if has_key and (self.live_new or holding):
+            # 모의로 바꿔도 이미 들고 있는 실보유는 계좌 연결을 유지해 평소대로 익절·손절·보유시간 정리 (새 실주문만 멈춤)
             self.live = Live(key, sec)
         self.state.setdefault("liveLedger", {"trades": 0, "wins": 0, "pnlUsdt": 0.0, "day": "", "dayPnl": 0.0, "dayTrades": 0})
 
@@ -839,12 +842,12 @@ class Engine:
         n_paper = lambda: sum(1 for p in st["positions"].values() if not p.get("live"))
         n_live = lambda: sum(1 for p in st["positions"].values() if p.get("live"))
         # 모의 칸(10)과 실주문 칸(BINANCE_MAX_LIVE)을 따로 셈 — 모의가 칸을 다 채워도 실주문 신호는 계속 확인
-        if n_paper() >= self.max_open and (not self.live or n_live() >= self.max_live):
+        if n_paper() >= self.max_open and (not self.live_on() or n_live() >= self.max_live):
             return
         for sym, strat in list(st["strategies"].items()):
             if sym in st["positions"]:
                 continue
-            if n_paper() >= self.max_open and (not self.live or n_live() >= self.max_live):
+            if n_paper() >= self.max_open and (not self.live_on() or n_live() >= self.max_live):
                 break
             cl = klines(sym, 300)
             if len(cl) < 100:
@@ -908,9 +911,13 @@ class Engine:
         sk["lastAt"] = int(time.time() * 1000)
         return 0.0
 
+    def live_on(self):
+        """새 실주문을 내도 되는 상태(설정 live + 계좌 연결 정상)"""
+        return bool(self.live and getattr(self, "live_new", True))
+
     def live_ok(self, strat):
         """실주문 해도 되면 금액(USDT), 아니면 0 — 돈 지키기 조건을 모두 통과해야 함"""
-        if not self.live:
+        if not self.live_on():
             return self.live_skip("실주문 꺼짐(설정 paper·키 확인 실패)")
         rb = self.state["ruleBook"].get(strat["rid"]) or {}
         if rb.get("status") != "proven" and not self.side_ok(strat["side"], rb):
@@ -1158,7 +1165,7 @@ class Engine:
 
         if time.time() - at / 1000 > TEST_MAX_AGE_SEC:
             return done("expired", f"누른 지 {TEST_MAX_AGE_SEC // 60}분이 지난 요청이라 실행하지 않음 · 다시 눌러 주세요")
-        if not self.live:
+        if not self.live_on():
             return done("skipped", "실주문이 꺼져 있어 실행하지 않음 (bot_config.env BINANCE_TRADE_MODE=live·키 확인)")
         g, now = self.state["guard"], time.time()
         ll = self.live_day()
@@ -1255,6 +1262,10 @@ class Engine:
         basis = {"side": f"통과 규칙 + 방향별 모의 {SIDE_GATE_MIN_N}회·거래당 +{SIDE_GATE_MIN_AVG:.2f}% 이상인 쪽",
                  "all": "롱·숏 모두 (퇴출·평균 마이너스 규칙 제외)"}.get(self.live_basis, "통과 규칙만")
         basis += " · 업비트 봇과 별개 운용"
+        if not self.live_on():
+            n = sum(1 for p in self.state["positions"].values() if p.get("live"))
+            log(f"바이낸스 실계좌 연결됨 · 설정이 모의라 새 실주문은 안 함 · 남은 실보유 {n}개만 평소대로 정리(거래소 보호 손절 유지)")
+            return
         log(f"바이낸스 실계좌 연결됨 · 실주문 켜짐({basis}) · 기본 {self.order_usdt:.0f} USDT(확률·판 크기로 "
             f"{SIZE_MIN_X * 0.5:g}~{SIZE_MAX_X:g}배) · 하루 손실 한도 {self.daily_loss:.0f} · 월 {self.month_loss:.0f} USDT · "
             f"동시 실보유 최대 {self.max_live} · 거래소 보호 손절 켜짐")
@@ -1389,7 +1400,7 @@ class Engine:
                     "top": [{"symbol": x["symbol"], "side": x["side"], "fit": x["fit"], "p": x["p"], "n": x["n"], "gen": x["gen"]}
                             for x in self.state["genePool"][:5]]}
         return {
-            "mode": "live" if self.live else "paper", "updatedAt": int(time.time() * 1000), "tf": TF,
+            "mode": "live" if self.live_on() else "paper", "updatedAt": int(time.time() * 1000), "tf": TF,
             "liveLedger": self.state["liveLedger"], "liveOrderUsdt": self.order_usdt, "liveDailyLoss": self.daily_loss,
             "trades": n, "wins": lg["wins"], "pnlUsdt": round(lg["pnlUsdt"], 2),
             "avgPct": round(lg["sumPct"] / n, 3) if n else None,
@@ -1537,7 +1548,7 @@ class Engine:
         bn = {k: v for k, v in self.cfg.get("_appSettings", {}).items() if k.startswith("BINANCE_")}
         if bn:
             log("[설정] 대시보드에서 정한 값 적용: " + ", ".join(f"{k}={v}" for k, v in bn.items()))
-        log(f"시작 · {'실주문 켜짐' if self.live else '모의매매 전용(실제 주문 없음)'} · "
+        log(f"시작 · {'실주문 켜짐' if self.live_on() else ('모의매매 · 남은 실보유만 정리' if self.live else '모의매매 전용(실제 주문 없음)')} · "
             f"{TF}분봉 · 모의 1회 {PAPER_USDT:.0f} USDT · 계정 {uid[:6]}…")
         self.reconcile()
         last_update = time.time()
