@@ -1968,6 +1968,16 @@ function renderMore(s, stale) {
     el.querySelector(".r").textContent = r.trades
       ? `실전 ${r.trades}회 · 승률 ${Math.round(r.winrate * 100)}% · 거래당 ${pct(r.avgPct)} (예상 ${pct(r.btEdge)}) · ${r.pnl >= 0 ? "+" : ""}${r.pnl.toLocaleString()}원`
       : `실전 0회 · 예상 거래당 ${pct(r.btEdge)}`;
+    // 통과 규칙: 통과 '이후' 성적을 따로 표시 (5회 이상 쌓였는데 마이너스면 '통과 후 부진' 표시, 분석 전용)
+    if (r.status === "proven" && r.postN > 0 && r.postAvg != null) {
+      const pe = document.createElement("span");
+      const sour = r.postN >= 5 && r.postAvg < 0;
+      pe.textContent = ` · 통과 후 ${r.postN}회 거래당 ${pct(r.postAvg)}${sour ? " ⚠ 통과 후 부진" : ""}`;
+      pe.className = r.postAvg >= 0 ? "up" : "down";
+      pe.title = "실전 통과 판정 뒤에 나온 실주문 성적만 따로 집계. 5회 이상인데 평균 마이너스면 '통과 후 부진'(관찰만, 매매는 그대로)";
+      if (r.postN < 5) pe.style.opacity = "0.6";
+      el.querySelector(".r").append(pe);
+    }
     rbox.append(el);
   }
 
