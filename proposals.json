@@ -891,6 +891,17 @@
       "branch": "ai/20261109-rule-post-view",
       "createdAt": "2026-11-09T11:55:00+09:00",
       "status": "merged"
+    },
+    {
+      "id": "ai-20261109-bn-friend-standalone",
+      "title": "지인 PC에서도 바이낸스 롱·숏 엔진 실행 (별도 폴더 지원 + 설치 파일)",
+      "summary": "바이낸스 전용 폴더(C:\\chamdom_binance)에서는 엔진이 공용 파일(chamdom_bot.py)도 최신으로 받아 지인 PC(업비트 봇 stable 버전)에서도 돌아감. 지인용 설치 묶음 friend/chamdom_binance_friend.zip 추가.",
+      "why": "지인 업비트 봇(stable, 10/31)에는 바이낸스 엔진이 쓰는 함수가 없어 같은 폴더에 넣으면 바로 멈춤",
+      "risk": "성민님 PC 동작 변화 없음(start_bot.bat 있는 폴더는 기존대로). 매매·주문·한도 로직 변경 없음",
+      "pr": "https://github.com/btypenine/chamdom/pull/77",
+      "branch": "ai/20261109-bn-friend-standalone",
+      "createdAt": "2026-11-09T13:05:00+09:00",
+      "status": "pending"
     }
   ]
 }
