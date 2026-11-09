@@ -550,6 +550,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnFunding" hidden></div>
       <div class="msg" id="bnGiveback" hidden></div>
       <div class="msg" id="bnSideWeak" hidden></div>
+      <div class="msg" id="bnPCalib" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
         <div><div class="label">거래당 평균</div><div class="stat-val num" id="bnAvg">-</div></div>
@@ -1422,6 +1423,24 @@ function renderBinance(b) {
       else t += " · 아직 끝난 거래 없음(오늘부터 쌓임)";
       t += " · '약한 방향'이 계속 더 나쁘면 그 방향 실주문을 줄이는 제안 근거가 됨";
       $("bnSideWeak").textContent = t;
+    }
+  }
+  {  // 이익 확률 구간별 실주문 성적 (금액·주문·판정에는 안 씀)
+    const pc = b.pCalib;
+    $("bnPCalib").hidden = !pc;
+    if (pc) {
+      const nm = { lo: "60% 미만", mid: "60~80%", hi: "80% 이상" };
+      const usd = (v) => (v > 0 ? "+" : "") + (v ?? 0).toFixed(2);
+      let t = `🎯 이익 확률 맞히기(관찰) · 실주문을 진입 때 '이익 확률' 구간으로 나눠 실제 성적을 봄`;
+      if (pc.open) t += ` · 보유 중 ${pc.open}개`;
+      const rows = pc.rows || [];
+      if (rows.length) {
+        for (const r of rows) t += ` · ${nm[r.band] || r.band} ${r.n}회 승 ${r.wins} ${pct(r.avgPct)} (평균 ${r.avgSize} USDT)`;
+        const u = rows.reduce((a, r) => a + r.usdt, 0), f = rows.reduce((a, r) => a + r.flat, 0);
+        t += ` · 확률로 금액 조절 ${usd(u)} USDT vs 늘 ${pc.base ?? 20} USDT였다면 ${usd(f)} USDT`;
+      } else t += " · 아직 끝난 거래 없음(오늘부터 쌓임)";
+      t += " · 확률이 높을수록 성적이 좋아야 금액 조절이 맞는 것";
+      $("bnPCalib").textContent = t;
     }
   }
   const gl = $("bnGenes"); gl.textContent = "";
