@@ -1050,6 +1050,70 @@ class Engine:
         except Exception:
             return None
 
+    # --- 손절 직후 재진입 관찰 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
+    REENTRY_H = 6                                        # 같은 종목·같은 방향이 손절된 뒤 이 시간 안에 다시 들어가면 '재진입'
+
+    def reentry_recent(self, sym, side, ts=None):
+        """관찰 전용: sym·side 가 ts(기본 지금) 전 REENTRY_H 시간 안에 손절됐으면 그 손절 시각(초), 아니면 None"""
+        try:
+            now = time.time() if ts is None else ts
+            ls = self.state.get("lastStop")
+            if ls is None:                               # 처음 켤 때: 최근 거래 기록의 손절로 채움
+                ls = {}
+                for x in self.state.get("tradeLog") or []:
+                    if "손절" in str(x.get("exit", "")):
+                        try:
+                            t = datetime.strptime(f"{datetime.now(KST).year}-{x['t']}", "%Y-%m-%d %H:%M").replace(tzinfo=KST).timestamp()
+                        except Exception:
+                            continue
+                        k = f"{x['symbol']}|{x['side']}"
+                        ls[k] = max(ls.get(k, 0), t)
+                self.state["lastStop"] = ls
+            t = ls.get(f"{sym}|{side}")
+            return t if t and 0 <= now - t <= self.REENTRY_H * 3600 else None
+        except Exception:
+            return None
+
+    def reentry_mark(self, sym):
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or "reEnt" in p:
+                return
+            t = self.reentry_recent(sym, p["side"], (p.get("at") or 0) / 1000 or None)
+            p["reEnt"] = bool(t)
+            if t:
+                log(f"[재진입 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} 진입 · "
+                    f"같은 방향 손절 {round((time.time() - t) / 60)}분 뒤 다시 들어감 → '손절 후 재진입' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 재진입 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def reentry_record(self, kind, sym, p, pct, reason):
+        """관찰 전용: 손절 후 재진입 / 보통 거래 결과를 따로 누적하고, 이번 청산이 손절이면 손절 시각을 남김"""
+        try:
+            if "손절" in str(reason or ""):
+                self.reentry_recent(sym, p["side"])      # lastStop 초기화 보장
+                self.state.setdefault("lastStop", {})[f"{sym}|{p['side']}"] = time.time()
+            if "reEnt" not in p:                          # 이 기능 전에 연 포지션은 건너뜀
+                return
+            k = f"{kind}|{'re' if p['reEnt'] else 'normal'}|{p['side']}"
+            d = self.state.setdefault("reentryStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["worst"] = round(min(d["worst"], pct), 3)
+        except Exception as e:
+            log(f"[안내] 재진입 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def reentry_view(self):
+        try:
+            rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None, "worst": v.get("worst")}
+                    for k, v in sorted((self.state.get("reentryStats") or {}).items())]
+            return {"hours": self.REENTRY_H, "rows": rows,
+                    "open": sum(1 for q in self.state["positions"].values() if q.get("reEnt"))}
+        except Exception:
+            return None
+
     def scan(self):
         st = self.state
         bar = int(time.time() // (TF * 60))
@@ -1090,6 +1154,7 @@ class Engine:
                     st["positions"][sym].setdefault("regime", reg)
                 self.side_weak_mark(sym, sw)
                 self.event_mark(sym, evn)
+                self.reentry_mark(sym)
                 continue
             if n_paper() < self.max_open:
                 self.open_paper(sym, strat, px)
@@ -1097,6 +1162,7 @@ class Engine:
                     st["positions"][sym].setdefault("regime", reg)
                 self.side_weak_mark(sym, sw)
                 self.event_mark(sym, evn)
+                self.reentry_mark(sym)
         save_state(st)
 
     # --- 실주문 ---
@@ -1276,6 +1342,7 @@ class Engine:
         self.giveback_record("live", sym, p, pct)
         self.side_weak_record("live", p, pct)
         self.event_record("live", p, pct)
+        self.reentry_record("live", sym, p, pct, reason)
         self.p_calib_record(p, pct, usdt)
         self.stop_gap_record(sym, p, pct, reason)
         g = self.state["guard"]
@@ -1573,6 +1640,7 @@ class Engine:
         self.giveback_record("paper", sym, p, pct)
         self.side_weak_record("paper", p, pct)
         self.event_record("paper", p, pct)
+        self.reentry_record("paper", sym, p, pct, reason)
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
                    "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "regime": p.get("regime"),
@@ -1654,6 +1722,7 @@ class Engine:
             "giveback": self.giveback_view(),
             "sideWeak": self.side_weak_view(),
             "eventWatch": self.event_view(),
+            "reentry": self.reentry_view(),
             "pCalib": self.p_calib_view(),
             "stopGap": self.stop_gap_view(),
             "payoff": self.payoff_view(),
