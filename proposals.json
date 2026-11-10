@@ -959,6 +959,17 @@
    "branch": "ai/20261110-bn-payoff-usdt",
    "createdAt": "2026-11-10T08:58:00+09:00",
    "status": "pending"
+  },
+  {
+   "id": "ai-20261110-bn-margin-why",
+   "title": "바이낸스: 실주문 증거금 부족을 따로 집계",
+   "summary": "실주문이 바이낸스 -2019(증거금 부족)로 실패하면 '실주문 안 한 이유'에 '주문 오류' 대신 '증거금 부족(가용 잔고 모자람)'으로 셈. 대시보드에 그대로 표시됨.",
+   "why": "오늘 08:15 UAI·08:30 AIOT 실주문이 증거금 부족으로 모의 처리됨(가용 159/332 USDT). 최대 40 USDT×동시 10개=400 USDT로 잔고 초과 가능 → 빈도를 세야 설정 판단 가능.",
+   "risk": "표시·집계 전용, 매매 동작 변화 없음. 바이낸스 엔진 재시작 1회.",
+   "pr": "https://github.com/btypenine/chamdom/pull/83",
+   "branch": "ai/20261110-bn-margin-why",
+   "createdAt": "2026-11-10T11:58:00+09:00",
+   "status": "pending"
   }
  ]
 }
