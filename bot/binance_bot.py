@@ -538,6 +538,7 @@ class Engine:
             # 모의로 바꿔도 이미 들고 있는 실보유는 계좌 연결을 유지해 평소대로 익절·손절·보유시간 정리 (새 실주문만 멈춤)
             self.live = Live(key, sec)
         self.state.setdefault("liveLedger", {"trades": 0, "wins": 0, "pnlUsdt": 0.0, "day": "", "dayPnl": 0.0, "dayTrades": 0})
+        self.curve_backfill()
 
     # --- 전략 ---
     def reselect(self):
@@ -1318,6 +1319,41 @@ class Engine:
         except Exception as e:
             log(f"[안내] 체결 밀림 기록 실패(매매엔 영향 없음): {str(e)[:120]}")
 
+    def curve_record(self, usdt):
+        """관찰 전용: 실주문 1건마다 [시각, 손익 USDT(수수료 뺀 값), 그때 총자산]을 기록 → 대시보드 '거래 수익률(이체 제외)' 그래프.
+        입금·출금은 거래 손익이 아니므로 이 곡선에 안 들어감. 매매·판정·주문에는 전혀 안 씀. 실패해도 매매는 그대로."""
+        try:
+            ex = getattr(self, "_exsnap", None) or {}
+            eq = (ex.get("balance") or 0) + (ex.get("upnl") or 0)
+            cv = self.state.setdefault("liveCurve", [])
+            cv.append([int(time.time() * 1000), round(usdt, 4), round(eq, 2)])
+            del cv[:-1500]
+        except Exception as e:
+            log(f"[안내] 거래 수익률 기록 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def curve_backfill(self):
+        """처음 한 번만: 기록 기능이 생기기 전 실주문(tradeLog 최근 100건 안의 것)으로 곡선을 채움. 매매엔 영향 없음."""
+        try:
+            if "liveCurve" in self.state:
+                return
+            now = datetime.now(KST)
+            hist = self.state.get("balHist") or []
+            out = []
+            for t in self.state.get("tradeLog") or []:
+                if not t.get("live") or not t.get("t"):
+                    continue
+                d = datetime.strptime(f"{now.year}-{t['t']}", "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+                if d > now:
+                    d = d.replace(year=now.year - 1)
+                ts = int(d.timestamp() * 1000)
+                eq = next((h[1] for h in reversed(hist) if h[0] <= ts), hist[0][1] if hist else 0)
+                out.append([ts, round(float(t.get("usdt") or 0), 4), round(eq, 2)])
+            self.state["liveCurve"] = out[-1500:]
+            log(f"[안내] 거래 수익률 곡선 준비: 지난 실주문 {len(out)}건으로 채움")
+        except Exception as e:
+            self.state["liveCurve"] = []
+            log(f"[안내] 거래 수익률 곡선 준비 실패(매매엔 영향 없음): {str(e)[:120]}")
+
     def book_live(self, sym, p, exit_px, reason, record=True):
         """실주문 1건 정리 결과를 장부에 반영 (봇이 닫았든 거래소 보호 손절이 닫았든)"""
         long_ = p["side"] == "long"
@@ -1334,6 +1370,7 @@ class Engine:
         ll["monthPnl"] = round(ll["monthPnl"] + usdt, 4)
         ll["monthTrades"] += 1
         ll["peak"] = max(ll.get("peak", 0.0), ll["pnlUsdt"])
+        self.curve_record(usdt)
         self.state["positions"].pop(sym, None)
         if record:
             self.rule_record(p["rid"], pct)
@@ -1825,7 +1862,8 @@ class Engine:
         out = dict(ex, positions=ps, unmanaged=sum(1 for x in ps if not x["managed"]),
                    missing=sorted(mine - {x["symbol"] for x in ps}),
                    hist=(self.state.get("balHist") or [])[-336:],
-                   liveRecent=[t for t in self.state["tradeLog"] if t.get("live")][-20:])
+                   liveRecent=[t for t in self.state["tradeLog"] if t.get("live")][-20:],
+                   curve=(self.state.get("liveCurve") or [])[-1500:])
         return out
 
     def push_phase(self, phase):

@@ -534,6 +534,12 @@ body.compact #overCard { display: flex !important; }
           <div><div class="label">실보유</div><div class="stat-val num" id="bnExN">-</div></div>
         </div>
         <div class="ex-spark"><svg id="bnExSpark" viewBox="0 0 300 48" preserveAspectRatio="none" aria-hidden="true"></svg><span class="sub" id="bnExChg"></span></div>
+        <div class="ex-spark" id="bnCv">
+          <div class="ex-head"><b>거래 수익률 <span class="sub">입금·출금 제외 · 수수료 뺀 실주문 손익</span></b></div>
+          <div class="seg seg4" id="bnCvSeg" role="group" aria-label="기간"><button type="button" data-cv="1">1일</button><button type="button" data-cv="7">1주</button><button type="button" data-cv="30">1달</button><button type="button" data-cv="0">전체</button></div>
+          <svg id="bnCvSvg" viewBox="0 0 300 64" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <span class="sub" id="bnCvTxt"></span>
+        </div>
         <div class="warn-box" id="bnExWarn" hidden></div>
         <div class="label">실제 포지션</div>
         <div class="list" id="bnExPos"></div>
@@ -1248,6 +1254,7 @@ function renderBinance(b) {
         const hrs = Math.round((h[h.length - 1][0] - h[0][0]) / 3600000);
         $("bnExChg").textContent = `총자산 추이 · 최근 ${hrs >= 48 ? Math.round(hrs / 24) + "일" : hrs + "시간"} ${usd(d)} USDT (${(d / (vs[0] || 1) * 100).toFixed(2)}%)`;
       } else $("bnExChg").textContent = "총자산 추이: 30분마다 기록 중 (곧 그래프 표시)";
+      bnCvData = ex.curve || []; drawBnCv();
       const w = [];
       if (ex.unmanaged) w.push(`⚠ 봇이 관리하지 않는 실제 포지션 ${ex.unmanaged}개 — 봇이 1분 안에 넘겨받아 관리 시작`);
       if ((ex.missing || []).length) w.push(`⚠ 봇 장부에는 실보유인데 거래소에 없음: ${ex.missing.map((x) => x.replace("USDT", "")).join(", ")}`);
@@ -2389,6 +2396,37 @@ async function loadPnl() {
   pnlLoading = false;
   renderPnl();
 }
+// 바이낸스 거래 수익률 (입금·출금 제외): 실주문 1건마다 [시각, 손익 USDT, 그때 총자산]
+let bnCvData = [], bnCvP = "7";
+try { bnCvP = localStorage.getItem("bnCvP") || "7"; } catch (e) {}
+function drawBnCv() {
+  document.querySelectorAll("#bnCvSeg [data-cv]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.cv === bnCvP)));
+  const svg = $("bnCvSvg"), txt = $("bnCvTxt");
+  if (!svg) return;
+  const days = Number(bnCvP), cut = days ? Date.now() - days * 864e5 : 0;
+  const rows = bnCvData.filter((x) => x[0] >= cut);
+  const name = { "1": "최근 1일", "7": "최근 1주", "30": "최근 1달", "0": "기록 전체" }[bnCvP] || "";
+  svg.innerHTML = "";
+  if (!rows.length) { txt.textContent = bnCvData.length ? `${name} 실주문 청산 없음` : "실주문이 청산될 때마다 기록됨 (곧 그래프 표시)"; return; }
+  let cu = 0, cp = 0; const pts = [[rows[0][0], 0]];
+  for (const [t, u, eq] of rows) { cu += u; cp += eq > 0 ? u / eq * 100 : 0; pts.push([t, cp]); }
+  const t0 = rows.length > 1 ? rows[0][0] : rows[0][0] - 36e5, t1 = Math.max(Date.now(), rows[rows.length - 1][0]);
+  pts[0][0] = days ? Math.max(cut, t0 - 1) : t0 - 1;
+  const vs = pts.map((x) => x[1]), lo = Math.min(0, ...vs), hi = Math.max(0, ...vs), rg = (hi - lo) || 1;
+  const X = (t) => ((t - pts[0][0]) / ((t1 - pts[0][0]) || 1) * 300).toFixed(1), Y = (v) => (60 - (v - lo) / rg * 56).toFixed(1);
+  let d = `${X(pts[0][0])},${Y(0)}`;
+  for (let i = 1; i < pts.length; i++) d += ` ${X(pts[i][0])},${Y(pts[i - 1][1])} ${X(pts[i][0])},${Y(pts[i][1])}`;
+  d += ` 300,${Y(cp)}`;
+  const up = cp >= 0;
+  svg.innerHTML = `<line x1="0" x2="300" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>` +
+    `<polyline points="${d}" fill="none" stroke="var(${up ? "--up" : "--down"})" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+  const wins = rows.filter((x) => x[1] > 0).length, sg = (x) => (x > 0 ? "+" : "") + x.toFixed(2);
+  txt.textContent = `${name} 실주문 ${rows.length}회 · 익절 ${wins} · ${sg(cu)} USDT · 수익률 ${sg(cp)}% (매 거래 손익 ÷ 그때 총자산의 합)`;
+}
+document.querySelectorAll("#bnCvSeg [data-cv]").forEach((b) => b.addEventListener("click", () => {
+  bnCvP = b.dataset.cv; try { localStorage.setItem("bnCvP", bnCvP); } catch (e) {}
+  drawBnCv();
+}));
 document.querySelectorAll("#pnlSeg [data-p]").forEach((b) => b.addEventListener("click", () => {
   pnlP = b.dataset.p; try { localStorage.setItem(PNL_KEY, pnlP); } catch (e) {}
   loadPnl();
