@@ -950,6 +950,106 @@ class Engine:
         d["sumFund"] = round(d["sumFund"] + p.get("fundPct", 0.0), 4)
         d["paidN"] += p.get("fundN", 0)
 
+    def events(self):
+        """경제 일정표(bot/events.json, 업비트 봇과 같은 파일)를 30분마다 다시 받음. 실패하면 이전 값 (관찰 전용)"""
+        if time.time() - getattr(self, "_events_at", 0) >= cb.EVENTS_REFRESH:
+            self._events_at = time.time()
+            try:
+                res = requests.get(cb.EVENTS_URL, params={"t": int(time.time())}, timeout=10)
+                if res.status_code == 200:
+                    ev = res.json().get("events", [])
+                    if isinstance(ev, list):
+                        self.state["eventsCache"] = ev
+            except Exception:
+                pass
+        return self.state.get("eventsCache") or []
+
+    def event_now(self, ts=None):
+        """관찰 전용: ts(기본 지금)가 일정(FOMC·CPI 등) 앞뒤 구간이면 (이름, 발표시각), 아니면 (None, None).
+        진입·청산·금액·실주문 판단에는 전혀 쓰지 않음"""
+        now = time.time() if ts is None else ts
+        for e in self.events():
+            try:
+                at = datetime.fromisoformat(e["at"]).timestamp()
+                if at - float(e.get("before_h", 2)) * 3600 <= now <= at + float(e.get("after_h", 2)) * 3600:
+                    return e.get("name", "일정"), at
+            except Exception:
+                continue
+        return None, None
+
+    def event_mark(self, sym, name):
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or "evt" in p:
+                return
+            p["evt"] = "in" if name else "out"
+            if name:
+                log(f"[일정 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} 진입 · "
+                    f"{name} 앞뒤 구간 → '일정 구간 진입' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 일정 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def event_pass(self):
+        """관찰 전용: 발표 시각을 들고 넘긴 포지션에 '일정 넘김' 표시 (일정 구간 진입이 아닌 것만)"""
+        try:
+            now = time.time()
+            ats = []
+            for e in self.events():
+                try:
+                    ats.append(datetime.fromisoformat(e["at"]).timestamp())
+                except Exception:
+                    continue
+            for sym, p in self.state["positions"].items():
+                t0 = (p.get("at") or 0) / 1000
+                if t0 <= 0:
+                    continue
+                if "evt" not in p:                       # 이 기능 전에 연 포지션: 진입 시각으로 표시를 채움
+                    p["evt"] = "in" if self.event_now(t0)[0] else "out"
+                if p.get("evt") == "in" or p.get("evtThru"):
+                    continue
+                if any(t0 < at <= now for at in ats):
+                    p["evtThru"] = True
+                    log(f"[일정 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} "
+                        f"발표 시각을 보유한 채 넘김 → '일정 넘김' 표시 (관찰만)")
+        except Exception as e:
+            log(f"[안내] 일정 넘김 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def event_record(self, kind, p, pct):
+        """관찰 전용: 일정 구간 진입 / 발표 넘김 / 보통 거래 결과를 따로 누적 (표시가 없는 옛 포지션은 건너뜀)"""
+        try:
+            if "evt" not in p:
+                return
+            flag = "in" if p["evt"] == "in" else ("thru" if p.get("evtThru") else "out")
+            k = f"{kind}|{flag}|{p['side']}"
+            d = self.state.setdefault("eventStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+        except Exception as e:
+            log(f"[안내] 일정 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def event_view(self):
+        try:
+            name, at = self.event_now()
+            nxt = None
+            now = time.time()
+            for e in self.events():
+                try:
+                    t = datetime.fromisoformat(e["at"]).timestamp()
+                except Exception:
+                    continue
+                if t > now and (nxt is None or t < nxt[0]):
+                    nxt = (t, e.get("name", "일정"))
+            rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None}
+                    for k, v in sorted((self.state.get("eventStats") or {}).items())]
+            pos = self.state["positions"].values()
+            return {"now": name, "nowAt": int(at * 1000) if at else None,
+                    "next": {"name": nxt[1], "at": int(nxt[0] * 1000)} if nxt else None, "rows": rows,
+                    "openIn": sum(1 for q in pos if q.get("evt") == "in"), "openThru": sum(1 for q in pos if q.get("evtThru"))}
+        except Exception:
+            return None
+
     def scan(self):
         st = self.state
         bar = int(time.time() // (TF * 60))
@@ -957,6 +1057,7 @@ class Engine:
             return
         st["scannedBar"] = bar
         self.regime()                                    # 관찰 전용: 신호가 없어도 봉마다 국면을 계산해 대시보드에 지금 국면 표시 (매매 영향 없음)
+        self.event_pass()                                # 관찰 전용: 발표 시각을 들고 넘긴 포지션 표시 (매매 영향 없음)
         n_paper = lambda: sum(1 for p in st["positions"].values() if not p.get("live"))
         n_live = lambda: sum(1 for p in st["positions"].values() if p.get("live"))
         # 모의 칸(10)과 실주문 칸(BINANCE_MAX_LIVE)을 따로 셈 — 모의가 칸을 다 채워도 실주문 신호는 계속 확인
@@ -982,17 +1083,20 @@ class Engine:
                 continue
             reg = self.regime()                          # 관찰 전용 기록 (진입 판단에는 안 씀)
             sw = self.side_weak(strat["side"])           # 관찰 전용: 약한 방향 표시 (진입 판단에는 안 씀)
+            evn, _ = self.event_now()                    # 관찰 전용: 경제 일정 구간 표시 (진입 판단에는 안 씀)
             usdt = self.live_ok(strat)
             if usdt and self.open_live(sym, strat, px, usdt):
                 if sym in st["positions"] and reg:
                     st["positions"][sym].setdefault("regime", reg)
                 self.side_weak_mark(sym, sw)
+                self.event_mark(sym, evn)
                 continue
             if n_paper() < self.max_open:
                 self.open_paper(sym, strat, px)
                 if sym in st["positions"] and reg:
                     st["positions"][sym].setdefault("regime", reg)
                 self.side_weak_mark(sym, sw)
+                self.event_mark(sym, evn)
         save_state(st)
 
     # --- 실주문 ---
@@ -1171,6 +1275,7 @@ class Engine:
         self.funding_record("live", p, pct)
         self.giveback_record("live", sym, p, pct)
         self.side_weak_record("live", p, pct)
+        self.event_record("live", p, pct)
         self.p_calib_record(p, pct, usdt)
         self.stop_gap_record(sym, p, pct, reason)
         g = self.state["guard"]
@@ -1467,6 +1572,7 @@ class Engine:
         self.funding_record("paper", p, pct)
         self.giveback_record("paper", sym, p, pct)
         self.side_weak_record("paper", p, pct)
+        self.event_record("paper", p, pct)
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
                    "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "regime": p.get("regime"),
@@ -1547,6 +1653,7 @@ class Engine:
             "liveSlip": self.slip_view(),
             "giveback": self.giveback_view(),
             "sideWeak": self.side_weak_view(),
+            "eventWatch": self.event_view(),
             "pCalib": self.p_calib_view(),
             "stopGap": self.stop_gap_view(),
             "payoff": self.payoff_view(),
