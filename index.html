@@ -551,6 +551,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnGiveback" hidden></div>
       <div class="msg" id="bnSideWeak" hidden></div>
       <div class="msg" id="bnEvent" hidden></div>
+      <div class="msg" id="bnReentry" hidden></div>
       <div class="msg" id="bnPCalib" hidden></div>
       <div class="msg" id="bnStopGap" hidden></div>
       <div class="msg" id="bnPayoff" hidden></div>
@@ -1443,6 +1444,20 @@ function renderBinance(b) {
       else t += " · 아직 끝난 거래 없음(오늘부터 쌓임)";
       t += " · 일정 구간이 계속 더 나쁘면 그때 실주문을 쉬는 제안 근거가 됨";
       $("bnEvent").textContent = t;
+    }
+  }
+  {  // 손절 직후 재진입 관찰 (진입·청산·실주문 판단에는 안 씀)
+    const re = b.reentry;
+    $("bnReentry").hidden = !re;
+    if (re) {
+      let t = `🔁 손절 후 재진입(관찰) · 같은 종목·같은 방향이 손절된 뒤 ${re.hours || 6}시간 안에 다시 들어간 거래를 따로 봄`;
+      if (re.open) t += ` · 보유 중 재진입 ${re.open}개`;
+      const nm = { re: "재진입", normal: "보통" };
+      const rows = (re.rows || []).filter((x) => x.n);
+      if (rows.length) for (const r of rows) t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${r.side === "long" ? "롱" : "숏"} ${nm[r.flag] || r.flag} ${r.n}회 ${pct(r.avgPct)}`;
+      else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
+      t += " · 재진입이 계속 더 나쁘면 그때 '손절 뒤 잠깐 쉬기'를 제안할 근거가 됨";
+      $("bnReentry").textContent = t;
     }
   }
   {  // 이익 확률 구간별 실주문 성적 (금액·주문·판정에는 안 씀)
