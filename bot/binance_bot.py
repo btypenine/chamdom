@@ -1105,6 +1105,50 @@ class Engine:
         except Exception as e:
             log(f"[안내] 재진입 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
 
+    CROWD_HI = 5                                         # 진입 때 같은 방향 실보유가 이 개수 이상이면 '몰림'
+
+    def crowd_mark(self, sym):
+        """관찰 전용: 진입 때 같은 방향으로 이미 들고 있던 다른 포지션 수(실주문은 실보유끼리, 모의는 모의끼리)를 표시.
+        한쪽으로 몰렸을 때 성적이 나빠지는지(함께 손절되는지) 보는 용도. 진입·청산·금액·실주문 판단에는 전혀 안 씀"""
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or "crowd" in p:
+                return
+            live = bool(p.get("live"))
+            n = sum(1 for k, q in self.state["positions"].items()
+                    if k != sym and q.get("side") == p["side"] and bool(q.get("live")) == live)
+            p["crowd"] = n
+            if n >= self.CROWD_HI:
+                log(f"[몰림 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if live else ''} 진입 · "
+                    f"같은 방향 {'실보유' if live else '모의 보유'} 이미 {n}개 → '한쪽 몰림' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 몰림 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def crowd_record(self, kind, p, pct):
+        """관찰 전용: 몰림(같은 방향 CROWD_HI개 이상) / 보통 진입의 결과를 따로 누적"""
+        try:
+            if "crowd" not in p:                          # 이 기능 전에 연 포지션은 건너뜀
+                return
+            k = f"{kind}|{'hi' if p['crowd'] >= self.CROWD_HI else 'lo'}|{p['side']}"
+            d = self.state.setdefault("crowdStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["worst"] = round(min(d["worst"], pct), 3)
+        except Exception as e:
+            log(f"[안내] 몰림 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def crowd_view(self):
+        try:
+            rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None, "worst": v.get("worst")}
+                    for k, v in sorted((self.state.get("crowdStats") or {}).items())]
+            pos = self.state["positions"].values()
+            now = {s: sum(1 for q in pos if q.get("live") and q.get("side") == s) for s in ("long", "short")}
+            return {"hi": self.CROWD_HI, "rows": rows, "liveNow": now}
+        except Exception:
+            return None
+
     def reentry_view(self):
         try:
             rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
@@ -1156,6 +1200,7 @@ class Engine:
                 self.side_weak_mark(sym, sw)
                 self.event_mark(sym, evn)
                 self.reentry_mark(sym)
+                self.crowd_mark(sym)
                 continue
             if n_paper() < self.max_open:
                 self.open_paper(sym, strat, px)
@@ -1164,6 +1209,7 @@ class Engine:
                 self.side_weak_mark(sym, sw)
                 self.event_mark(sym, evn)
                 self.reentry_mark(sym)
+                self.crowd_mark(sym)
         save_state(st)
 
     # --- 실주문 ---
@@ -1380,6 +1426,7 @@ class Engine:
         self.side_weak_record("live", p, pct)
         self.event_record("live", p, pct)
         self.reentry_record("live", sym, p, pct, reason)
+        self.crowd_record("live", p, pct)
         self.p_calib_record(p, pct, usdt)
         self.stop_gap_record(sym, p, pct, reason)
         g = self.state["guard"]
@@ -1689,6 +1736,7 @@ class Engine:
         self.side_weak_record("paper", p, pct)
         self.event_record("paper", p, pct)
         self.reentry_record("paper", sym, p, pct, reason)
+        self.crowd_record("paper", p, pct)
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
                    "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "regime": p.get("regime"),
@@ -1771,6 +1819,7 @@ class Engine:
             "sideWeak": self.side_weak_view(),
             "eventWatch": self.event_view(),
             "reentry": self.reentry_view(),
+            "crowd": self.crowd_view(),
             "pCalib": self.p_calib_view(),
             "stopGap": self.stop_gap_view(),
             "payoff": self.payoff_view(),

@@ -558,6 +558,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnSideWeak" hidden></div>
       <div class="msg" id="bnEvent" hidden></div>
       <div class="msg" id="bnReentry" hidden></div>
+      <div class="msg" id="bnCrowd" hidden></div>
       <div class="msg" id="bnPCalib" hidden></div>
       <div class="msg" id="bnStopGap" hidden></div>
       <div class="msg" id="bnPayoff" hidden></div>
@@ -1465,6 +1466,20 @@ function renderBinance(b) {
       else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
       t += " · 재진입이 계속 더 나쁘면 그때 '손절 뒤 잠깐 쉬기'를 제안할 근거가 됨";
       $("bnReentry").textContent = t;
+    }
+  }
+  {  // 같은 방향 몰림 관찰 (진입·청산·금액·실주문 판단에는 안 씀)
+    const cw = b.crowd;
+    $("bnCrowd").hidden = !cw;
+    if (cw) {
+      const hi = cw.hi || 5, ln = cw.liveNow || {};
+      let t = `🧲 한쪽 몰림(관찰) · 진입 때 같은 방향으로 이미 ${hi}개 이상 들고 있었던 거래를 따로 봄 · 지금 실보유 롱 ${ln.long ?? 0} · 숏 ${ln.short ?? 0}`;
+      const nm = { hi: "몰림", lo: "보통" };
+      const rows = (cw.rows || []).filter((x) => x.n);
+      if (rows.length) for (const r of rows) t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${r.side === "long" ? "롱" : "숏"} ${nm[r.flag] || r.flag} ${r.n}회 ${pct(r.avgPct)}`;
+      else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
+      t += " · 몰림이 계속 더 나쁘면 그때 '같은 방향 실보유 상한'을 제안할 근거가 됨";
+      $("bnCrowd").textContent = t;
     }
   }
   {  // 이익 확률 구간별 실주문 성적 (금액·주문·판정에는 안 씀)
