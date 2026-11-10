@@ -550,6 +550,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnFunding" hidden></div>
       <div class="msg" id="bnGiveback" hidden></div>
       <div class="msg" id="bnSideWeak" hidden></div>
+      <div class="msg" id="bnEvent" hidden></div>
       <div class="msg" id="bnPCalib" hidden></div>
       <div class="msg" id="bnStopGap" hidden></div>
       <div class="msg" id="bnPayoff" hidden></div>
@@ -1425,6 +1426,23 @@ function renderBinance(b) {
       else t += " · 아직 끝난 거래 없음(오늘부터 쌓임)";
       t += " · '약한 방향'이 계속 더 나쁘면 그 방향 실주문을 줄이는 제안 근거가 됨";
       $("bnSideWeak").textContent = t;
+    }
+  }
+  {  // 경제 일정 관찰 (진입·청산·실주문 판단에는 안 씀)
+    const ev = b.eventWatch;
+    $("bnEvent").hidden = !ev;
+    if (ev) {
+      const hm = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+      let t = "📅 경제 일정(관찰) · FOMC·CPI 앞뒤 구간에 들어간 거래와 발표를 들고 넘긴 거래를 따로 봄";
+      if (ev.now) t += ` · 지금 ${ev.now} 구간`;
+      else if (ev.next) t += ` · 다음 ${ev.next.name} ${hm(ev.next.at)}`;
+      if (ev.openIn || ev.openThru) t += ` · 보유 중 구간 진입 ${ev.openIn || 0}개·발표 넘김 ${ev.openThru || 0}개`;
+      const nm = { in: "구간 진입", thru: "발표 넘김", out: "보통" };
+      const rows = (ev.rows || []).filter((x) => x.n);
+      if (rows.length) for (const r of rows) t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${r.side === "long" ? "롱" : "숏"} ${nm[r.flag] || r.flag} ${r.n}회 ${pct(r.avgPct)}`;
+      else t += " · 아직 끝난 거래 없음(오늘부터 쌓임)";
+      t += " · 일정 구간이 계속 더 나쁘면 그때 실주문을 쉬는 제안 근거가 됨";
+      $("bnEvent").textContent = t;
     }
   }
   {  // 이익 확률 구간별 실주문 성적 (금액·주문·판정에는 안 씀)
