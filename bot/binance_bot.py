@@ -78,6 +78,8 @@ REGIME_UP, REGIME_DOWN = 1.5, -1.5   # +1.5% 이상 상승장, -1.5% 이하 하�
 PAPER_USDT = 100.0                # 모의 1회 진입 금액(USDT, 레버리지 1배)
 GB_ARM = 0.5                      # 관찰 전용: 익절까지 가격 움직임의 50% 이상 갔다가
 GB_FLOOR = 0.0                    #   진입가(움직임 0%)까지 되밀리면 "여기서 본전 정리했다면" 손익을 기록 (실제 청산은 그대로)
+DC_SL = 4.0                       # 관찰 전용: 손절폭이 4% 이상으로 넓은 거래가
+DC_CUT = 2.5                      #   순손익 -2.5% 이하로 빠진 첫 순간 "여기서 일찍 끊었다면" 손익을 기록 (실제 청산은 그대로)
 SW_LOOK, SW_MIN = 20, 10          # 관찰 전용 '약한 방향': 같은 방향 최근 모의 20회(최소 10회) 평균이 0 미만이면 진입에 표시만 함
 MAX_OPEN = 10                     # 동시 모의 보유 최대
 # 확장형(wide): 대상 종목 2배 → 거래 기회 2배. 대시보드 설정 BINANCE_STYLE=wide 일 때만 (기본 swing = 기존 동작)
@@ -914,6 +916,53 @@ class Engine:
         except Exception as e:
             log(f"[안내] 되밀림 관찰 기록 실패(매매엔 영향 없음): {str(e)[:120]}")
 
+    def deepcut_watch(self, sym, p, price):
+        """관찰 전용: 손절폭이 DC_SL% 이상인 거래가 순손익(수수료·밀림 포함) -DC_CUT% 이하로 처음 빠진 순간을 표시만 해 둠.
+        청산·손익·판정·주문에는 전혀 쓰지 않음. 실패해도 매매는 그대로."""
+        try:
+            if p.get("dcPct") is not None:
+                return
+            if abs(p["sl"] / p["entry"] - 1) * 100 < DC_SL:
+                return
+            long_ = p["side"] == "long"
+            ex = price * (1 - SLIP) if long_ else price * (1 + SLIP)
+            net = ((ex / p["entry"] - 1) if long_ else (p["entry"] / ex - 1)) - 2 * FEE
+            if net * 100 > -DC_CUT:
+                return
+            p["dcPct"] = round(net * 100, 4)
+            log(f"[청산 관찰] {sym} {'롱' if long_ else '숏'}{' 실주문' if p.get('live') else ''} 넓은 손절 거래가 "
+                f"{p['dcPct']:+.2f}%까지 빠짐 → 여기서 일찍 끊었다면 {p['dcPct']:+.2f}% (관찰만, 실제 청산은 그대로)")
+        except Exception as e:
+            log(f"[안내] 넓은 손절 관찰 기록 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def deepcut_record(self, kind, sym, p, pct):
+        """관찰 전용: 넓은 손절 표시가 붙은 거래가 끝나면 '일찍 끊었다면' vs 실제 손익 차이를 누적"""
+        try:
+            dc = p.get("dcPct")
+            if dc is None:
+                return
+            d = self.state.setdefault("dcStats", {}).setdefault(kind, {"n": 0, "sumDiff": 0.0, "better": 0,
+                                                                        "sumActual": 0.0, "sumDc": 0.0})
+            diff = dc - pct
+            d["n"] += 1
+            d["sumDiff"] = round(d["sumDiff"] + diff, 4)
+            d["better"] += 1 if diff > 0 else 0
+            d["sumActual"] = round(d["sumActual"] + pct, 4)
+            d["sumDc"] = round(d["sumDc"] + dc, 4)
+            self.state["dcRecent"] = (self.state.get("dcRecent") or [])[-9:] + [
+                {"symbol": sym, "side": p["side"], "kind": kind, "dc": round(dc, 3), "actual": round(pct, 3)}]
+        except Exception as e:
+            log(f"[안내] 넓은 손절 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def deepcut_view(self):
+        rows = [{"kind": k, "n": v["n"], "better": v["better"],
+                 "avgDiff": round(v["sumDiff"] / v["n"], 3) if v["n"] else None,
+                 "avgActual": round(v["sumActual"] / v["n"], 3) if v["n"] else None,
+                 "avgDc": round(v["sumDc"] / v["n"], 3) if v["n"] else None}
+                for k, v in sorted((self.state.get("dcStats") or {}).items())]
+        return {"sl": DC_SL, "cut": DC_CUT, "rows": rows, "recent": (self.state.get("dcRecent") or [])[-5:],
+                "open": sum(1 for q in self.state["positions"].values() if q.get("dcPct") is not None)}
+
     def giveback_record(self, kind, sym, p, pct):
         """관찰 전용: 되밀림 표시가 붙은 거래가 끝나면 '본전 정리했다면' vs 실제 손익 차이를 누적"""
         try:
@@ -1423,6 +1472,7 @@ class Engine:
         self.regime_record("live", p, pct)
         self.funding_record("live", p, pct)
         self.giveback_record("live", sym, p, pct)
+        self.deepcut_record("live", sym, p, pct)
         self.side_weak_record("live", p, pct)
         self.event_record("live", p, pct)
         self.reentry_record("live", sym, p, pct, reason)
@@ -1702,6 +1752,7 @@ class Engine:
             fav = (price / p["entry"] - 1) * 100 * (1 if long_ else -1)
             p["maxFav"] = max(p.get("maxFav", 0.0), fav)
             self.giveback_watch(sym, p, price, fav)
+            self.deepcut_watch(sym, p, price)
             hit_tp = price >= p["tp"] if long_ else price <= p["tp"]
             hit_sl = price <= p["sl"] if long_ else price >= p["sl"]
             reason = "익절" if hit_tp else ("손절" if hit_sl else ("보유시간 초과" if time.time() >= p["deadline"] else None))
@@ -1733,6 +1784,7 @@ class Engine:
         self.regime_record("paper", p, pct)
         self.funding_record("paper", p, pct)
         self.giveback_record("paper", sym, p, pct)
+        self.deepcut_record("paper", sym, p, pct)
         self.side_weak_record("paper", p, pct)
         self.event_record("paper", p, pct)
         self.reentry_record("paper", sym, p, pct, reason)
@@ -1816,6 +1868,7 @@ class Engine:
             "liveSkip": self.state.get("liveSkip") or {},
             "liveSlip": self.slip_view(),
             "giveback": self.giveback_view(),
+            "deepCut": self.deepcut_view(),
             "sideWeak": self.side_weak_view(),
             "eventWatch": self.event_view(),
             "reentry": self.reentry_view(),
