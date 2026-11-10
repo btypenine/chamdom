@@ -1082,7 +1082,8 @@ class Engine:
             avg, filled = self.live.market(sym, "BUY" if long_ else "SELL", qty)
         except Exception as e:
             log(f"[실주문 실패] {sym}: {e} → 모의로 처리")
-            self.live_skip("주문 오류")
+            # 바이낸스 -2019(증거금 부족)은 '주문 오류'와 따로 세어 둠 — 동시 실보유·금액이 잔고를 넘는지 대시보드에서 바로 보이게(판단에는 안 씀)
+            self.live_skip("증거금 부족(가용 잔고 모자람)" if "-2019" in str(e) else "주문 오류")
             return False
         if filled <= 0 or avg <= 0:
             log(f"[실주문 확인 실패] {sym} 체결 수량 0 → 모의로 처리")
