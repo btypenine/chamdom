@@ -1371,6 +1371,17 @@ class Engine:
         try:
             avg, filled = self.live.market(sym, "SELL" if long_ else "BUY", p["qty"], reduce=True)
         except Exception as e:
+            if "-2022" in str(e):
+                # 코드 -2022(ReduceOnly 거절) = 대부분 거래소 보호 손절이 이미 체결돼 포지션이 없는 경우.
+                # 예전엔 20초마다 같은 실패를 되풀이하다 1분 간격 확인 2번(약 80초) 뒤에야 장부에 반영했음.
+                # 이제 거절을 '없어진 것 같음' 1번으로 세고 바로 거래소 포지션을 확인 → 거기서도 없으면 즉시 반영.
+                # 거래소에 포지션이 남아 있으면 지금처럼 다음 확인 때 다시 청산 시도(보호 손절은 그대로).
+                if not p.get("rejN"):
+                    log(f"[실주문 청산 실패] {sym}: {e} — 거래소 보호 손절이 먼저 체결됐을 수 있어 바로 포지션 확인")
+                p["rejN"] = p.get("rejN", 0) + 1
+                p["missing"] = max(p.get("missing", 0), 1)
+                self.check_exchange(force=True)
+                return
             log(f"[실주문 청산 실패] {sym}: {e} — 다음 확인 때 다시 시도 (거래소 보호 손절은 그대로 걸려 있음)")
             return
         self.live.cancel_stops(sym)
@@ -1601,7 +1612,7 @@ class Engine:
         px = prices(list(pos.keys()))
         for sym, p in list(pos.items()):
             price = px.get(sym)
-            if not price:
+            if not price or sym not in pos:                  # 같은 순회 중 거래소 확인으로 이미 장부 반영된 종목은 건너뜀
                 continue
             long_ = p["side"] == "long"
             fav = (price / p["entry"] - 1) * 100 * (1 if long_ else -1)
