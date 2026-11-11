@@ -849,6 +849,31 @@ class Engine:
         except Exception:
             return {"rows": [], "look": 100, "excluded": 0}
 
+    def hour_view(self):
+        """관찰 전용: 최근 청산(tradeLog 최대 100건)을 한국시간 4시간 구간별로 나눠 성적을 봄. 읽기만 함 — 매매·판정·주문에는 전혀 안 씀"""
+        try:
+            buckets = {}
+            for t in self.state.get("tradeLog") or []:
+                pct = t.get("pct")
+                ts = str(t.get("t") or "")
+                if pct is None or len(ts) < 8 or str(t.get("desc") or "").startswith("넘겨받은"):
+                    continue
+                try:
+                    h = int(ts[6:8])
+                except ValueError:
+                    continue
+                k = ("live" if t.get("live") else "paper", (h // 4) * 4)
+                d = buckets.setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "sumU": 0.0})
+                d["n"] += 1
+                d["wins"] += 1 if pct > 0 else 0
+                d["sumPct"] += float(pct)
+                d["sumU"] += float(t.get("usdt") or 0)
+            rows = [{"kind": k[0], "h": k[1], "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
+                     "usdt": round(v["sumU"], 2)} for k, v in sorted(buckets.items())]
+            return {"rows": rows, "look": 100, "now": datetime.now(KST).hour // 4 * 4}
+        except Exception:
+            return {"rows": [], "look": 100, "now": None}
+
     def p_calib_view(self):
         st = self.state.get("pCalib") or {}
         rows = [{"band": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
@@ -1876,6 +1901,7 @@ class Engine:
             "pCalib": self.p_calib_view(),
             "stopGap": self.stop_gap_view(),
             "payoff": self.payoff_view(),
+            "hourView": self.hour_view(),
             "nearProven": sorted(({"symbol": r.get("symbol", ""), "side": r.get("side", ""), "n": r.get("n", 0),
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
                                   for r in rb if r.get("status") == "testing"),

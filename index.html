@@ -572,6 +572,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnPCalib" hidden></div>
       <div class="msg" id="bnStopGap" hidden></div>
       <div class="msg" id="bnPayoff" hidden></div>
+      <div class="msg" id="bnHour" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
         <div><div class="label">거래당 평균</div><div class="stat-val num" id="bnAvg">-</div></div>
@@ -1544,6 +1545,20 @@ function renderBinance(b) {
       if (po.excluded) t += ` · 넘겨받은 포지션 ${po.excluded}건은 진입가 기준이 달라 제외`;
       t += " · 실제 승률이 필요 승률에 가까워지면 손절이 너무 넓다는 신호";
       $("bnPayoff").textContent = t;
+    }
+  }
+  {  // 시간대별 성적 (관찰, 매매엔 안 씀)
+    const hv = b.hourView;
+    const rows = (hv && hv.rows || []).filter((x) => x.n && x.kind === "live");
+    $("bnHour").hidden = !rows.length;
+    if (rows.length) {
+      const hh = (h) => String(h).padStart(2, "0");
+      let t = `🕒 시간대별 실주문 성적(관찰) · 최근 청산 ${hv.look ?? 100}건, 한국시간 4시간 구간`;
+      for (const r of rows) {
+        t += ` · ${hh(r.h)}~${hh(r.h + 3)}시${hv.now === r.h ? "(지금)" : ""} ${r.n}회 승률 ${Math.round(r.wins / r.n * 100)}% 평균 ${pct(r.avgPct)} (${r.usdt >= 0 ? "+" : ""}${r.usdt.toFixed(2)} USDT)`;
+      }
+      t += " · 특정 구간이 계속 약하면 '그 시간대 실주문 쉬기' 관찰 제안의 근거가 됨(표본이 작을 땐 우연일 수 있음)";
+      $("bnHour").textContent = t;
     }
   }
   const gl = $("bnGenes"); gl.textContent = "";
