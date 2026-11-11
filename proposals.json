@@ -1048,8 +1048,9 @@
       "pr": "https://github.com/btypenine/chamdom/pull/90",
       "branch": "ai/20261111-ov-bn-curve",
       "createdAt": "2026-11-11T14:55:00+09:00",
-      "status": "pending",
-      "requestId": "req-wbdp76krwj3o"
+      "status": "merged",
+      "requestId": "req-wbdp76krwj3o",
+      "mergedAt": "2026-11-11T22:33:00+09:00"
     },
     {
       "id": "ai-20261111-bn-hour-view",
