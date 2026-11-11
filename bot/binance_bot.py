@@ -1223,6 +1223,42 @@ class Engine:
         except Exception:
             return None
 
+    # --- 실주문 건너뛴 신호의 결과 관찰 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
+    def skip_mark(self, sym):
+        """관찰 전용: 실주문 대신 모의로 간 신호에 그 이유를 표시 — 건너뛴 게 잘한 일이었는지 나중에 이유별로 확인"""
+        try:
+            p = self.state["positions"].get(sym)
+            why = getattr(self, "_skip_why", None)
+            if p is None or p.get("live") or "skipWhy" in p or not why:
+                return
+            p["skipWhy"] = str(why)[:40]
+        except Exception as e:
+            log(f"[안내] 건너뜀 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def skip_record(self, p, pct):
+        """관찰 전용: 건너뛴 이유별로 그 신호의 모의 결과를 누적(n·승·평균·최악)"""
+        try:
+            why = p.get("skipWhy")
+            if not why:                                   # 이 기능 전에 연 포지션·이유 없는 모의는 건너뜀
+                return
+            k = f"{why}|{p['side']}"
+            d = self.state.setdefault("skipOutStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["worst"] = round(min(d["worst"], pct), 3)
+        except Exception as e:
+            log(f"[안내] 건너뜀 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def skip_view(self):
+        try:
+            rows = [{"why": k.rsplit("|", 1)[0], "side": k.rsplit("|", 1)[1], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None, "worst": v.get("worst")}
+                    for k, v in sorted((self.state.get("skipOutStats") or {}).items())]
+            return {"rows": rows, "open": sum(1 for q in self.state["positions"].values() if q.get("skipWhy"))}
+        except Exception:
+            return None
+
     def reentry_view(self):
         try:
             rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
@@ -1267,6 +1303,7 @@ class Engine:
             reg = self.regime()                          # 관찰 전용 기록 (진입 판단에는 안 씀)
             sw = self.side_weak(strat["side"])           # 관찰 전용: 약한 방향 표시 (진입 판단에는 안 씀)
             evn, _ = self.event_now()                    # 관찰 전용: 경제 일정 구간 표시 (진입 판단에는 안 씀)
+            self._skip_why = None
             usdt = self.live_ok(strat)
             if usdt and self.open_live(sym, strat, px, usdt):
                 if sym in st["positions"] and reg:
@@ -1284,6 +1321,7 @@ class Engine:
                 self.event_mark(sym, evn)
                 self.reentry_mark(sym)
                 self.crowd_mark(sym)
+                self.skip_mark(sym)
         save_state(st)
 
     # --- 실주문 ---
@@ -1318,6 +1356,7 @@ class Engine:
         sk["counts"][why] = sk["counts"].get(why, 0) + 1
         sk["last"] = why
         sk["lastAt"] = int(time.time() * 1000)
+        self._skip_why = why                             # 관찰 전용: 이 신호가 모의로 갈 때 이유를 표시하려고 남김
         return 0.0
 
     def live_on(self):
@@ -1814,6 +1853,7 @@ class Engine:
         self.event_record("paper", p, pct)
         self.reentry_record("paper", sym, p, pct, reason)
         self.crowd_record("paper", p, pct)
+        self.skip_record(p, pct)
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
                    "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "regime": p.get("regime"),
@@ -1898,6 +1938,7 @@ class Engine:
             "eventWatch": self.event_view(),
             "reentry": self.reentry_view(),
             "crowd": self.crowd_view(),
+            "skipOut": self.skip_view(),
             "pCalib": self.p_calib_view(),
             "stopGap": self.stop_gap_view(),
             "payoff": self.payoff_view(),

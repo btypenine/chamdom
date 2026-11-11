@@ -569,6 +569,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnEvent" hidden></div>
       <div class="msg" id="bnReentry" hidden></div>
       <div class="msg" id="bnCrowd" hidden></div>
+      <div class="msg" id="bnSkipOut" hidden></div>
       <div class="msg" id="bnPCalib" hidden></div>
       <div class="msg" id="bnStopGap" hidden></div>
       <div class="msg" id="bnPayoff" hidden></div>
@@ -1492,6 +1493,19 @@ function renderBinance(b) {
       else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
       t += " · 몰림이 계속 더 나쁘면 그때 '같은 방향 실보유 상한'을 제안할 근거가 됨";
       $("bnCrowd").textContent = t;
+    }
+  }
+  {  // 실주문 건너뛴 신호의 모의 결과 (진입·청산·금액·실주문 판단에는 안 씀)
+    const so = b.skipOut;
+    $("bnSkipOut").hidden = !so;
+    if (so) {
+      let t = "🚫 건너뛴 신호 결과(관찰) · 신호는 났지만 실주문을 안 하고 모의로 보낸 거래를, 건너뛴 이유별로 실제 결과를 봄";
+      if (so.open) t += ` · 보유 중 ${so.open}개`;
+      const rows = (so.rows || []).filter((x) => x.n);
+      if (rows.length) for (const r of rows) t += ` · ${r.why} ${r.side === "long" ? "롱" : "숏"} ${r.n}회 승 ${r.wins} ${pct(r.avgPct)}`;
+      else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
+      t += " · 건너뛴 쪽이 계속 플러스면 그 이유가 좋은 신호를 막고 있다는 근거, 마이너스면 잘 거른 것";
+      $("bnSkipOut").textContent = t;
     }
   }
   {  // 이익 확률 구간별 실주문 성적 (금액·주문·판정에는 안 씀)
