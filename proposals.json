@@ -1038,6 +1038,18 @@
       "branch": "ai/20261111-bn-deepcut",
       "createdAt": 1794355500000,
       "status": "merged"
+    },
+    {
+      "id": "ai-20261111-ov-bn-curve",
+      "title": "바이낸스: 종합 현황 아래에 거래 수익률 그래프(1일·1주·1달·전체)",
+      "summary": "최상단 종합 현황 카드 아래에 입금·출금 뺀 바이낸스 실주문 수익률 그래프를 붙임. 기간 선택은 바이낸스 카드 그래프와 함께 바뀜.",
+      "why": "사용자 요청: 바이낸스 종합 현황 출력 공간 아래에 기간별 수익률 그래프",
+      "risk": "화면 표시만 바뀜, 매매 영향 없음",
+      "pr": "https://github.com/btypenine/chamdom/pull/90",
+      "branch": "ai/20261111-ov-bn-curve",
+      "createdAt": "2026-11-11T14:55:00+09:00",
+      "status": "pending",
+      "requestId": "req-wbdp76krwj3o"
     }
   ]
 }
