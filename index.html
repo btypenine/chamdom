@@ -282,6 +282,10 @@ body.compact #overCard { display: flex !important; }
 .ov-rows { display: grid; grid-template-columns: auto 1fr; gap: 2px 6px; margin-top: 6px; font-size: 12px; }
 .ov-rows .k { color: var(--muted); white-space: nowrap; }
 .ov-rows .v { text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ov-cv { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; gap: 6px; }
+.ov-cv-h { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 14px; }
+.ov-cv svg { height: 72px; }
+@media (min-width: 900px) { .ov-cv svg { height: 96px; } }
 @media (min-width: 900px) { #appView > #overCard { column-span: all; } .ov-big { font-size: 24px; } .ov-rows { font-size: 13.5px; } }
 @media (prefers-reduced-motion: no-preference) { button { transition: background .15s, color .15s; } }
 
@@ -353,6 +357,12 @@ body.compact #overCard { display: flex !important; }
           <span class="ov-big num" id="ovBnBig">-</span><span class="sub" id="ovBnBigS">총자산</span>
           <span class="ov-rows" id="ovBnRows"></span>
         </button>
+      </div>
+      <div class="ex-spark ov-cv" id="ovCv" hidden>
+        <div class="ov-cv-h"><b>바이낸스 거래 수익률</b><span class="sub">입금·출금 제외 · 수수료 뺀 실주문 손익</span></div>
+        <div class="seg seg4" id="ovCvSeg" role="group" aria-label="수익률 기간"><button type="button" data-cv="1">1일</button><button type="button" data-cv="7">1주</button><button type="button" data-cv="30">1달</button><button type="button" data-cv="0">전체</button></div>
+        <svg id="ovCvSvg" viewBox="0 0 300 64" preserveAspectRatio="none" aria-hidden="true"></svg>
+        <span class="sub" id="ovCvTxt"></span>
       </div>
     </section>
     <section class="card" id="sumCard" hidden>
@@ -1006,6 +1016,7 @@ function renderOverview() {
       ]);
     }
   } else { setBig("ovBnBig", "-"); $("ovBnMode").textContent = ""; row($("ovBnRows"), [["상태", "엔진 정보 없음"]]); }
+  $("ovCv").hidden = !(b && b.mode === "live");
   $("ovUp").setAttribute("aria-pressed", String(curEx === "up"));
   $("ovBn").setAttribute("aria-pressed", String(curEx === "bn"));
 }
@@ -2414,10 +2425,17 @@ async function loadPnl() {
 // 바이낸스 거래 수익률 (입금·출금 제외): 실주문 1건마다 [시각, 손익 USDT, 그때 총자산]
 let bnCvData = [], bnCvP = "7";
 try { bnCvP = localStorage.getItem("bnCvP") || "7"; } catch (e) {}
+// 같은 그래프를 바이낸스 카드(bnCv)와 최상단 종합 현황(ovCv) 두 곳에 그림. 기간 선택은 함께 바뀜
 function drawBnCv() {
-  document.querySelectorAll("#bnCvSeg [data-cv]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.cv === bnCvP)));
-  const svg = $("bnCvSvg"), txt = $("bnCvTxt");
-  if (!svg) return;
+  const ov = $("ovCv");
+  if (ov) ov.hidden = !(lastBinance && lastBinance.mode === "live");
+  drawBnCvInto("bnCvSeg", "bnCvSvg", "bnCvTxt");
+  drawBnCvInto("ovCvSeg", "ovCvSvg", "ovCvTxt");
+}
+function drawBnCvInto(segId, svgId, txtId) {
+  document.querySelectorAll(`#${segId} [data-cv]`).forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.cv === bnCvP)));
+  const svg = $(svgId), txt = $(txtId);
+  if (!svg || !txt) return;
   const days = Number(bnCvP), cut = days ? Date.now() - days * 864e5 : 0;
   const rows = bnCvData.filter((x) => x[0] >= cut);
   const name = { "1": "최근 1일", "7": "최근 1주", "30": "최근 1달", "0": "기록 전체" }[bnCvP] || "";
@@ -2438,7 +2456,7 @@ function drawBnCv() {
   const wins = rows.filter((x) => x[1] > 0).length, sg = (x) => (x > 0 ? "+" : "") + x.toFixed(2);
   txt.textContent = `${name} 실주문 ${rows.length}회 · 익절 ${wins} · ${sg(cu)} USDT · 수익률 ${sg(cp)}% (매 거래 손익 ÷ 그때 총자산의 합)`;
 }
-document.querySelectorAll("#bnCvSeg [data-cv]").forEach((b) => b.addEventListener("click", () => {
+document.querySelectorAll("#bnCvSeg [data-cv], #ovCvSeg [data-cv]").forEach((b) => b.addEventListener("click", () => {
   bnCvP = b.dataset.cv; try { localStorage.setItem("bnCvP", bnCvP); } catch (e) {}
   drawBnCv();
 }));
