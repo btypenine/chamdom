@@ -80,6 +80,8 @@ GB_ARM = 0.5                      # 관찰 전용: 익절까지 가격 움직임
 GB_FLOOR = 0.0                    #   진입가(움직임 0%)까지 되밀리면 "여기서 본전 정리했다면" 손익을 기록 (실제 청산은 그대로)
 DC_SL = 4.0                       # 관찰 전용: 손절폭이 4% 이상으로 넓은 거래가
 DC_CUT = 2.5                      #   순손익 -2.5% 이하로 빠진 첫 순간 "여기서 일찍 끊었다면" 손익을 기록 (실제 청산은 그대로)
+TR_HOURS = 4                      # 관찰 전용: 익절로 끝난 거래가 그 뒤 4시간 동안 같은 방향으로 더 갔는지 기록 (익절폭·트레일링 판단 근거)
+TR_MAX_OPEN = 40                  #   동시에 추적하는 익절 건 최대 수 (넘으면 오래된 것부터 버림)
 SW_LOOK, SW_MIN = 20, 10          # 관찰 전용 '약한 방향': 같은 방향 최근 모의 20회(최소 10회) 평균이 0 미만이면 진입에 표시만 함
 MAX_OPEN = 10                     # 동시 모의 보유 최대
 # 확장형(wide): 대상 종목 2배 → 거래 기회 2배. 대시보드 설정 BINANCE_STYLE=wide 일 때만 (기본 swing = 기존 동작)
@@ -1016,6 +1018,63 @@ class Engine:
         return {"arm": GB_ARM, "rows": rows, "recent": (self.state.get("gbRecent") or [])[-5:],
                 "open": sum(1 for q in self.state["positions"].values() if q.get("gbPct") is not None)}
 
+    def tp_run_start(self, kind, sym, p, price):
+        """관찰 전용: 익절로 끝난 거래의 청산 가격을 기억해 두고 TR_HOURS 동안 같은 방향으로 더 간 폭을 잼.
+        청산·손익·판정·주문에는 전혀 쓰지 않음. 실패해도 매매는 그대로."""
+        try:
+            tpm = abs(p["tp"] / p["entry"] - 1) * 100
+            tr = self.state.setdefault("tpRun", {"open": [], "stats": {}, "recent": []})
+            tr["open"] = (tr.get("open") or [])[-(TR_MAX_OPEN - 1):] + [
+                {"symbol": sym, "side": p["side"], "kind": kind, "px": price, "tpm": round(tpm, 3),
+                 "at": int(time.time() * 1000), "until": int(time.time()) + TR_HOURS * 3600, "up": 0.0, "dn": 0.0}]
+        except Exception as e:
+            log(f"[안내] 익절 뒤 추적 시작 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def tp_run_track(self):
+        """관찰 전용: 추적 중인 익절 건의 '그 뒤 더 간 폭(up)'·'되돌아간 폭(dn)'을 갱신하고, 끝나면 집계"""
+        tr = self.state.get("tpRun")
+        if not tr or not tr.get("open"):
+            return
+        try:
+            px = prices(list({o["symbol"] for o in tr["open"]}))
+        except Exception as e:
+            log(f"[안내] 익절 뒤 추적 가격 확인 실패(매매엔 영향 없음): {str(e)[:100]}")
+            return
+        now, keep = int(time.time()), []
+        for o in tr["open"]:
+            price = px.get(o["symbol"])
+            if price:
+                mv = (price / o["px"] - 1) * 100 * (1 if o["side"] == "long" else -1)
+                o["up"] = round(max(o.get("up", 0.0), mv), 3)
+                o["dn"] = round(min(o.get("dn", 0.0), mv), 3)
+                o["end"] = round(mv, 3)
+            if now < o["until"]:
+                keep.append(o)
+                continue
+            d = tr.setdefault("stats", {}).setdefault(o["kind"], {"n": 0, "sumUp": 0.0, "sumEnd": 0.0, "sumDn": 0.0,
+                                                                  "half": 0, "full": 0})
+            d["n"] += 1
+            d["sumUp"] = round(d["sumUp"] + o["up"], 4)
+            d["sumDn"] = round(d["sumDn"] + o["dn"], 4)
+            d["sumEnd"] = round(d["sumEnd"] + o.get("end", 0.0), 4)
+            d["half"] += 1 if o["up"] >= 0.5 * o["tpm"] else 0       # 익절폭의 절반 이상 더 감
+            d["full"] += 1 if o["up"] >= o["tpm"] else 0             # 익절폭만큼 한 번 더 감
+            tr["recent"] = (tr.get("recent") or [])[-9:] + [
+                {"symbol": o["symbol"], "side": o["side"], "kind": o["kind"], "tpm": o["tpm"], "up": o["up"],
+                 "dn": o["dn"], "end": o.get("end", 0.0)}]
+            log(f"[청산 관찰] {o['symbol']} {'롱' if o['side'] == 'long' else '숏'}{' 실주문' if o['kind'] == 'live' else ''} "
+                f"익절 뒤 {TR_HOURS}시간: 최대 {o['up']:+.2f}% 더 감 · 최저 {o['dn']:+.2f}% · 끝 {o.get('end', 0.0):+.2f}% "
+                f"(익절폭 {o['tpm']:.1f}%, 관찰만)")
+        tr["open"] = keep
+
+    def tp_run_view(self):
+        tr = self.state.get("tpRun") or {}
+        rows = [{"kind": k, "n": v["n"], "avgUp": round(v["sumUp"] / v["n"], 3) if v["n"] else None,
+                 "avgDn": round(v["sumDn"] / v["n"], 3) if v["n"] else None,
+                 "avgEnd": round(v["sumEnd"] / v["n"], 3) if v["n"] else None, "half": v["half"], "full": v["full"]}
+                for k, v in sorted((tr.get("stats") or {}).items())]
+        return {"hours": TR_HOURS, "rows": rows, "recent": (tr.get("recent") or [])[-5:], "open": len(tr.get("open") or [])}
+
     def funding_record(self, kind, p, pct):
         """청산 1건의 누적 펀딩비를 방향별 표에 더함 (관찰 전용)"""
         k = f"{kind}|{p['side']}"
@@ -1504,6 +1563,8 @@ class Engine:
         self.crowd_record("live", p, pct)
         self.p_calib_record(p, pct, usdt)
         self.stop_gap_record(sym, p, pct, reason)
+        if reason == "익절":
+            self.tp_run_start("live", sym, p, exit_px)
         g = self.state["guard"]
         g["streak"] = g.get("streak", 0) + 1 if pct <= 0 else 0
         rest = ""
@@ -1814,6 +1875,8 @@ class Engine:
         self.event_record("paper", p, pct)
         self.reentry_record("paper", sym, p, pct, reason)
         self.crowd_record("paper", p, pct)
+        if reason == "익절":
+            self.tp_run_start("paper", sym, p, price)
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
                    "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "regime": p.get("regime"),
@@ -1902,6 +1965,7 @@ class Engine:
             "stopGap": self.stop_gap_view(),
             "payoff": self.payoff_view(),
             "hourView": self.hour_view(),
+            "tpRun": self.tp_run_view(),
             "nearProven": sorted(({"symbol": r.get("symbol", ""), "side": r.get("side", ""), "n": r.get("n", 0),
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
                                   for r in rb if r.get("status") == "testing"),
@@ -2067,6 +2131,10 @@ class Engine:
                         or self.state.get("style", "swing") != STYLE):
                     self.reselect()
                 self.manage()
+                try:
+                    self.tp_run_track()                  # 관찰 전용 (실패해도 매매 영향 없음)
+                except Exception as e:
+                    log(f"[안내] 익절 뒤 추적 건너뜀: {type(e).__name__}: {str(e)[:80]}")
                 try:
                     self.funding_track()                 # 관찰 전용 (실패해도 매매 영향 없음)
                 except Exception as e:
