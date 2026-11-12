@@ -1094,7 +1094,8 @@
       "pr": "https://github.com/btypenine/chamdom/pull/94",
       "branch": "ai/20261112-bn-deepcut-opt",
       "createdAt": 1794451929998,
-      "status": "pending"
+      "status": "merged",
+      "mergedAt": "2026-11-12T14:50:00+09:00"
     }
   ]
 }
