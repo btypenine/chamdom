@@ -565,6 +565,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnRegime" hidden></div>
       <div class="msg" id="bnFunding" hidden></div>
       <div class="msg" id="bnGiveback" hidden></div>
+      <div class="msg" id="bnDeepCut" hidden></div>
       <div class="msg" id="bnSideWeak" hidden></div>
       <div class="msg" id="bnEvent" hidden></div>
       <div class="msg" id="bnReentry" hidden></div>
@@ -1057,6 +1058,8 @@ const SETTINGS = [
     opts: [["all", "롱·숏 모두"], ["side", "방향별 성적"], ["rule", "규칙별 통과"]] },
   { k: "BINANCE_STYLE", g: "bn", label: "대상 종목", hint: "확장형: 거래대금 상위 40종목·동시 모의 20개 → 거래 약 2배 / 기본: 20종목", type: "choice",
     opts: [["wide", "확장형 40종목"], ["swing", "기본 20종목"]] },
+  { k: "BINANCE_DEEP_CUT", g: "bn", label: "깊은 손실 조기 정리", hint: "켜면: 손절폭 4%↑ 실주문이 -2.5%까지 빠지면 바로 정리 / 꺼짐: 원래 손절까지 기다림(모의는 늘 관찰만)", type: "choice",
+    opts: [["off", "꺼짐(기존)"], ["on", "켜기"]] },
   { k: "BINANCE_ORDER_USDT", g: "bn", label: "1회 실주문 금액", hint: "USDT · 5~200", type: "num", min: 5, max: 200, step: 1 },
   { k: "BINANCE_DAILY_LOSS_USDT", g: "bn", label: "하루 손실 한도", hint: "USDT · 1~500", type: "num", min: 1, max: 500, step: 1 },
   { k: "BINANCE_MAX_LIVE", g: "bn", label: "동시 실주문 최대", hint: "개 · 1~10", type: "num", min: 1, max: 10, step: 1 },
@@ -1435,6 +1438,19 @@ function renderBinance(b) {
       else t += " · 아직 끝난 해당 거래 없음(오늘부터 쌓임)";
       t += " · 차이가 +면 본전 정리가 나았음";
       $("bnGiveback").textContent = t;
+    }
+  }
+  {  // 넓은 손절 중간 차단 관찰 (설정 BINANCE_DEEP_CUT=on 일 때만 실주문에 적용)
+    const dc = b.deepCut;
+    $("bnDeepCut").hidden = !dc;
+    if (dc) {
+      const rows = (dc.rows || []).filter((x) => x.n);
+      let t = `✂️ 깊은 손실 조기 정리(${dc.liveOn ? "실주문 적용 중" : "관찰"}) · 손절폭 ${dc.sl ?? 4}%↑ 거래가 -${dc.cut ?? 2.5}%까지 빠졌을 때 끊었다면`;
+      if (dc.open) t += ` · 지금 보유 중 해당 ${dc.open}개`;
+      if (rows.length) for (const r of rows) t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${r.n}회: 실제 ${pct(r.avgActual)} → 끊었다면 ${pct(r.avgDc)} (차이 ${pct(r.avgDiff)}, 나았던 경우 ${r.better}회)`;
+      else t += " · 아직 끝난 해당 거래 없음";
+      t += dc.liveOn ? " · 실주문은 이 자리에서 정리, 모의는 계속 끝까지 들고 가며 비교" : " · 설정에서 켜면 실주문에 적용(기본 꺼짐)";
+      $("bnDeepCut").textContent = t;
     }
   }
   {  // 약한 방향 관찰 (진입·청산·실주문 판단에는 안 씀)
