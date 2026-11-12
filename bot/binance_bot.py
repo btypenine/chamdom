@@ -80,6 +80,7 @@ GB_ARM = 0.5                      # 관찰 전용: 익절까지 가격 움직임
 GB_FLOOR = 0.0                    #   진입가(움직임 0%)까지 되밀리면 "여기서 본전 정리했다면" 손익을 기록 (실제 청산은 그대로)
 DC_SL = 4.0                       # 관찰 전용: 손절폭이 4% 이상으로 넓은 거래가
 DC_CUT = 2.5                      #   순손익 -2.5% 이하로 빠진 첫 순간 "여기서 일찍 끊었다면" 손익을 기록 (실제 청산은 그대로)
+DEEP_CUT_LIVE = False             # 대시보드 설정 BINANCE_DEEP_CUT=on 일 때만: 위 표시가 붙은 '실주문'을 그 자리에서 정리(모의는 계속 관찰만)
 TR_HOURS = 4                      # 관찰 전용: 익절로 끝난 거래가 그 뒤 4시간 동안 같은 방향으로 더 갔는지 기록 (익절폭·트레일링 판단 근거)
 TR_MAX_OPEN = 40                  #   동시에 추적하는 익절 건 최대 수 (넘으면 오래된 것부터 버림)
 SW_LOOK, SW_MIN = 20, 10          # 관찰 전용 '약한 방향': 같은 방향 최근 모의 20회(최소 10회) 평균이 0 미만이면 진입에 표시만 함
@@ -529,6 +530,9 @@ class Engine:
         global STYLE
         STYLE = "wide" if str(c.get("BINANCE_STYLE", "swing")).strip().lower() == "wide" else "swing"
         self.max_open = WIDE_MAX_OPEN if STYLE == "wide" else MAX_OPEN
+        global DEEP_CUT_LIVE
+        c.setdefault("BINANCE_DEEP_CUT", "off")                                  # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
+        DEEP_CUT_LIVE = str(c.get("BINANCE_DEEP_CUT", "off")).strip().lower() == "on"   # 기본 꺼짐 = 기존 동작
         c.setdefault("BINANCE_MONTH_LOSS_USDT", f"{MONTH_LOSS_DEFAULT:g}")      # 대시보드에 '기본값 40'으로 보이게
         self.month_loss = num("BINANCE_MONTH_LOSS_USDT", MONTH_LOSS_DEFAULT)
         self._last_exchange_check = 0
@@ -987,7 +991,7 @@ class Engine:
                  "avgActual": round(v["sumActual"] / v["n"], 3) if v["n"] else None,
                  "avgDc": round(v["sumDc"] / v["n"], 3) if v["n"] else None}
                 for k, v in sorted((self.state.get("dcStats") or {}).items())]
-        return {"sl": DC_SL, "cut": DC_CUT, "rows": rows, "recent": (self.state.get("dcRecent") or [])[-5:],
+        return {"sl": DC_SL, "cut": DC_CUT, "liveOn": DEEP_CUT_LIVE, "rows": rows, "recent": (self.state.get("dcRecent") or [])[-5:],
                 "open": sum(1 for q in self.state["positions"].values() if q.get("dcPct") is not None)}
 
     def giveback_record(self, kind, sym, p, pct):
@@ -1881,6 +1885,10 @@ class Engine:
             hit_tp = price >= p["tp"] if long_ else price <= p["tp"]
             hit_sl = price <= p["sl"] if long_ else price >= p["sl"]
             reason = "익절" if hit_tp else ("손절" if hit_sl else ("보유시간 초과" if time.time() >= p["deadline"] else None))
+            if not reason and DEEP_CUT_LIVE and p.get("live") and p.get("dcPct") is not None:
+                # 설정 BINANCE_DEEP_CUT=on: 손절폭 4%↑ 실주문이 순손익 -2.5% 이하로 빠지면 끝까지 기다리지 않고 정리
+                # (사유에 '손절'을 넣지 않음 → 손절 넘침·재진입 관찰에 섞이지 않게)
+                reason = "깊은 손실 조기 정리"
             if reason:
                 if p.get("live"):
                     if self.live:
