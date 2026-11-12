@@ -574,6 +574,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnStopGap" hidden></div>
       <div class="msg" id="bnPayoff" hidden></div>
       <div class="msg" id="bnHour" hidden></div>
+      <div class="msg" id="bnTpRun" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
         <div><div class="label">거래당 평균</div><div class="stat-val num" id="bnAvg">-</div></div>
@@ -1573,6 +1574,19 @@ function renderBinance(b) {
       }
       t += " · 특정 구간이 계속 약하면 '그 시간대 실주문 쉬기' 관찰 제안의 근거가 됨(표본이 작을 땐 우연일 수 있음)";
       $("bnHour").textContent = t;
+    }
+  }
+  {  // 익절 뒤 더 간 폭 (관찰, 매매엔 안 씀)
+    const tr = b.tpRun;
+    $("bnTpRun").hidden = !tr;
+    if (tr) {
+      const rows = (tr.rows || []).filter((x) => x.n);
+      let t = `🚀 익절 뒤 ${tr.hours ?? 4}시간(관찰) · 익절로 끝난 거래가 그 뒤 같은 방향으로 더 갔는지 봄`;
+      if (tr.open) t += ` · 지금 추적 중 ${tr.open}건`;
+      if (rows.length) for (const r of rows) t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${r.n}건: 최대 더 감 평균 ${pct(r.avgUp)} · 4시간 뒤 ${pct(r.avgEnd)} · 익절폭 절반 이상 더 감 ${r.half}건 · 익절폭만큼 더 감 ${r.full}건`;
+      else t += " · 아직 끝난 추적 없음(오늘부터 쌓임)";
+      t += " · '더 감'이 자주 크면 익절을 늘리거나 트레일링으로 바꾸는 제안 근거가 됨";
+      $("bnTpRun").textContent = t;
     }
   }
   const gl = $("bnGenes"); gl.textContent = "";
