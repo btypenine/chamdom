@@ -38,6 +38,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -1286,6 +1287,72 @@ class Engine:
         except Exception:
             return None
 
+    # --- 손절폭/익절폭 비대칭 관찰 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
+    ASYM_HI = 2.5                                        # 손절폭이 익절폭의 이 배 이상이면 '비대칭' (예: 익절+1.5%/손절-5%)
+
+    @staticmethod
+    def _asym_ratio_desc(desc):
+        m = re.search(r"익절\+([\d.]+)% / 손절-([\d.]+)%", desc or "")
+        if not m or float(m.group(1)) <= 0:
+            return None
+        return float(m.group(2)) / float(m.group(1))
+
+    def _asym_ratio_pos(self, p):
+        try:
+            e, tp, sl = float(p["entry"]), float(p["tp"]), float(p["sl"])
+            if abs(tp - e) > 0:
+                return abs(sl - e) / abs(tp - e)
+        except Exception:
+            pass
+        return self._asym_ratio_desc(p.get("desc"))
+
+    def _asym_add(self, kind, ratio, side, pct):
+        k = f"{kind}|{'hi' if ratio >= self.ASYM_HI else 'lo'}|{side}"
+        d = self.state["asymStats"].setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0, "sumR": 0.0})
+        d["n"] += 1
+        d["wins"] += 1 if pct > 0 else 0
+        d["sumPct"] = round(d["sumPct"] + pct, 4)
+        d["worst"] = round(min(d["worst"], pct), 3)
+        d["sumR"] = round(d["sumR"] + ratio, 3)
+
+    def _asym_seed(self):
+        """처음 한 번: 이미 끝난 거래 기록(tradeLog)으로 집계를 채워 바로 비교할 수 있게 함"""
+        if "asymStats" in self.state:
+            return
+        self.state["asymStats"] = {}
+        for t in self.state.get("tradeLog") or []:
+            r = self._asym_ratio_desc(t.get("desc"))
+            if r is None or t.get("pct") is None:
+                continue
+            self._asym_add("live" if t.get("live") else "paper", r, t.get("side") or "long", float(t["pct"]))
+
+    def asym_record(self, kind, p, pct):
+        """관찰 전용: 손절폭/익절폭 비율이 큰(비대칭) 규칙과 보통 규칙의 결과를 따로 누적"""
+        try:
+            self._asym_seed()
+            r = self._asym_ratio_pos(p)
+            if r is None:
+                return
+            self._asym_add(kind, r, p["side"], pct)
+        except Exception as e:
+            log(f"[안내] 비대칭 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def asym_view(self):
+        try:
+            self._asym_seed()
+            rows = []
+            for k, v in sorted((self.state.get("asymStats") or {}).items()):
+                kind, flag, side = k.split("|")
+                n = v["n"]
+                rows.append({"kind": kind, "flag": flag, "side": side, "n": n, "wins": v["wins"],
+                             "avgPct": round(v["sumPct"] / n, 3) if n else None, "worst": v.get("worst"),
+                             # 이 비율로 본전이 되려면 필요한 승률 ≈ R/(1+R) (수수료 제외)
+                             "beWin": round((v["sumR"] / n) / (1 + v["sumR"] / n), 3) if n else None})
+            op = [q for q in self.state["positions"].values() if (self._asym_ratio_pos(q) or 0) >= self.ASYM_HI]
+            return {"hi": self.ASYM_HI, "rows": rows, "open": len(op), "openLive": sum(1 for q in op if q.get("live"))}
+        except Exception:
+            return None
+
     # --- 실주문 건너뛴 신호의 결과 관찰 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
     def skip_mark(self, sym):
         """관찰 전용: 실주문 대신 모의로 간 신호에 그 이유를 표시 — 건너뛴 게 잘한 일이었는지 나중에 이유별로 확인"""
@@ -1604,6 +1671,7 @@ class Engine:
         self.event_record("live", p, pct)
         self.reentry_record("live", sym, p, pct, reason)
         self.crowd_record("live", p, pct)
+        self.asym_record("live", p, pct)
         self.p_calib_record(p, pct, usdt)
         self.stop_gap_record(sym, p, pct, reason)
         if reason == "익절":
@@ -1922,6 +1990,7 @@ class Engine:
         self.event_record("paper", p, pct)
         self.reentry_record("paper", sym, p, pct, reason)
         self.crowd_record("paper", p, pct)
+        self.asym_record("paper", p, pct)
         self.skip_record(p, pct)
         if reason == "익절":
             self.tp_run_start("paper", sym, p, price)
@@ -2009,6 +2078,7 @@ class Engine:
             "eventWatch": self.event_view(),
             "reentry": self.reentry_view(),
             "crowd": self.crowd_view(),
+            "asym": self.asym_view(),
             "skipOut": self.skip_view(),
             "pCalib": self.p_calib_view(),
             "stopGap": self.stop_gap_view(),

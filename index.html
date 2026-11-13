@@ -570,6 +570,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnEvent" hidden></div>
       <div class="msg" id="bnReentry" hidden></div>
       <div class="msg" id="bnCrowd" hidden></div>
+      <div class="msg" id="bnAsym" hidden></div>
       <div class="msg" id="bnSkipOut" hidden></div>
       <div class="msg" id="bnPCalib" hidden></div>
       <div class="msg" id="bnStopGap" hidden></div>
@@ -1510,6 +1511,21 @@ function renderBinance(b) {
       else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
       t += " · 몰림이 계속 더 나쁘면 그때 '같은 방향 실보유 상한'을 제안할 근거가 됨";
       $("bnCrowd").textContent = t;
+    }
+  }
+  {  // 손절폭/익절폭 비대칭 관찰 (진입·청산·금액·실주문 판단에는 안 씀)
+    const as = b.asym;
+    $("bnAsym").hidden = !as;
+    if (as) {
+      const hi = as.hi || 2.5;
+      let t = `⚖️ 손절·익절 비대칭(관찰) · 손절폭이 익절폭의 ${hi}배 이상인 규칙(예: 익절+1.5%/손절-5%)을 따로 봄 · 이런 규칙은 이겨도 적게, 지면 크게 잃어 높은 승률이 필요함`;
+      if (as.open) t += ` · 지금 보유 중 ${as.open}개(실주문 ${as.openLive || 0})`;
+      const nm = { hi: "비대칭", lo: "보통" };
+      const rows = (as.rows || []).filter((x) => x.n);
+      if (rows.length) for (const r of rows) t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${r.side === "long" ? "롱" : "숏"} ${nm[r.flag] || r.flag} ${r.n}회 승률 ${Math.round(100 * r.wins / r.n)}%(본전 ${r.beWin != null ? Math.round(100 * r.beWin) + "%" : "-"}) ${pct(r.avgPct)}`;
+      else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
+      t += " · 비대칭 쪽이 계속 마이너스면 그때 '비대칭 규칙은 모의로만' 같은 관문을 제안할 근거가 됨";
+      $("bnAsym").textContent = t;
     }
   }
   {  // 실주문 건너뛴 신호의 모의 결과 (진입·청산·금액·실주문 판단에는 안 씀)
