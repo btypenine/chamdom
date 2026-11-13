@@ -1106,7 +1106,7 @@
       "pr": "https://github.com/btypenine/chamdom/pull/95",
       "branch": "ai/20261112-bn-asym",
       "createdAt": "2026-11-12T17:58:00+09:00",
-      "status": "pending"
+      "status": "merged"
     },
     {
       "id": "ai-20261113-bn-weak-hour",
@@ -1117,7 +1117,7 @@
       "pr": "https://github.com/btypenine/chamdom/pull/96",
       "branch": "ai/20261113-bn-weak-hour",
       "createdAt": "2026-11-13T11:55:00+09:00",
-      "status": "pending"
+      "status": "merged"
     }
   ]
 }
