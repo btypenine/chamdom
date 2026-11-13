@@ -82,6 +82,8 @@ GB_FLOOR = 0.0                    #   진입가(움직임 0%)까지 되밀리면
 DC_SL = 4.0                       # 관찰 전용: 손절폭이 4% 이상으로 넓은 거래가
 DC_CUT = 2.5                      #   순손익 -2.5% 이하로 빠진 첫 순간 "여기서 일찍 끊었다면" 손익을 기록 (실제 청산은 그대로)
 DEEP_CUT_LIVE = False             # 대시보드 설정 BINANCE_DEEP_CUT=on 일 때만: 위 표시가 붙은 '실주문'을 그 자리에서 정리(모의는 계속 관찰만)
+WEAK_HOUR_LIVE = False            # 대시보드 설정 BINANCE_WEAK_HOUR=on 일 때만: 지금 한국시간 4시간 구간의 최근 실주문 성적이 약하면 새 실주문 대신 모의로 (기본 꺼짐 = 기존 동작)
+WH_MIN_N = 8                      #   약한 구간 판단: 최근 청산 100건 중 그 구간 실주문 8회 이상 + 평균 마이너스 + USDT 합계 마이너스
 TR_HOURS = 4                      # 관찰 전용: 익절로 끝난 거래가 그 뒤 4시간 동안 같은 방향으로 더 갔는지 기록 (익절폭·트레일링 판단 근거)
 TR_MAX_OPEN = 40                  #   동시에 추적하는 익절 건 최대 수 (넘으면 오래된 것부터 버림)
 SW_LOOK, SW_MIN = 20, 10          # 관찰 전용 '약한 방향': 같은 방향 최근 모의 20회(최소 10회) 평균이 0 미만이면 진입에 표시만 함
@@ -534,6 +536,9 @@ class Engine:
         global DEEP_CUT_LIVE
         c.setdefault("BINANCE_DEEP_CUT", "off")                                  # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
         DEEP_CUT_LIVE = str(c.get("BINANCE_DEEP_CUT", "off")).strip().lower() == "on"   # 기본 꺼짐 = 기존 동작
+        global WEAK_HOUR_LIVE
+        c.setdefault("BINANCE_WEAK_HOUR", "off")                                 # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
+        WEAK_HOUR_LIVE = str(c.get("BINANCE_WEAK_HOUR", "off")).strip().lower() == "on"  # 기본 꺼짐 = 기존 동작
         c.setdefault("BINANCE_MONTH_LOSS_USDT", f"{MONTH_LOSS_DEFAULT:g}")      # 대시보드에 '기본값 40'으로 보이게
         self.month_loss = num("BINANCE_MONTH_LOSS_USDT", MONTH_LOSS_DEFAULT)
         self._last_exchange_check = 0
@@ -877,9 +882,26 @@ class Engine:
                 d["sumU"] += float(t.get("usdt") or 0)
             rows = [{"kind": k[0], "h": k[1], "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
                      "usdt": round(v["sumU"], 2)} for k, v in sorted(buckets.items())]
-            return {"rows": rows, "look": 100, "now": datetime.now(KST).hour // 4 * 4}
+            now = datetime.now(KST).hour // 4 * 4
+            return {"rows": rows, "look": 100, "now": now, "weakNow": self.weak_hour_now(rows, now),
+                    "minN": WH_MIN_N, "liveOn": WEAK_HOUR_LIVE}
         except Exception:
             return {"rows": [], "look": 100, "now": None}
+
+    def weak_hour_now(self, rows=None, now=None):
+        """지금 한국시간 4시간 구간이 '약한 시간대'인지: 최근 청산 100건 중 그 구간 실주문 WH_MIN_N회 이상·평균 마이너스·USDT 합계 마이너스.
+        계산 실패하면 False(기존 동작). 설정 BINANCE_WEAK_HOUR=on 일 때만 live_ok 에서 쓰고, 꺼져 있으면 대시보드 표시만 함"""
+        try:
+            if rows is None:
+                rows = self.hour_view().get("rows") or []
+            if now is None:
+                now = datetime.now(KST).hour // 4 * 4
+            for r in rows:
+                if r.get("kind") == "live" and r.get("h") == now:
+                    return bool(r["n"] >= WH_MIN_N and r["avgPct"] < 0 and r["usdt"] < 0)
+            return False
+        except Exception:
+            return False
 
     def p_calib_view(self):
         st = self.state.get("pCalib") or {}
@@ -1512,6 +1534,8 @@ class Engine:
             return self.live_skip("하루 손실 한도 도달")
         if sum(1 for p in self.state["positions"].values() if p.get("live")) >= self.max_live:
             return self.live_skip("동시 실보유 최대")
+        if WEAK_HOUR_LIVE and self.weak_hour_now():
+            return self.live_skip("약한 시간대(설정)")
         usdt, p = self.size_for(rb)
         if not usdt:
             return self.live_skip("이익 확률 낮은 규칙(40% 미만)")
