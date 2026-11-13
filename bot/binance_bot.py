@@ -83,6 +83,8 @@ DC_SL = 4.0                       # 관찰 전용: 손절폭이 4% 이상으로 
 DC_CUT = 2.5                      #   순손익 -2.5% 이하로 빠진 첫 순간 "여기서 일찍 끊었다면" 손익을 기록 (실제 청산은 그대로)
 DEEP_CUT_LIVE = False             # 대시보드 설정 BINANCE_DEEP_CUT=on 일 때만: 위 표시가 붙은 '실주문'을 그 자리에서 정리(모의는 계속 관찰만)
 REENTRY_SKIP_LIVE = False         # 대시보드 설정 BINANCE_REENTRY_SKIP=on 일 때만: 같은 종목·같은 방향이 손절된 뒤 6시간 안의 재진입은 새 실주문 대신 모의로 (기본 꺼짐 = 기존 동작)
+REGIME_FOCUS_LIVE = False         # 대시보드 설정 BINANCE_REGIME_FOCUS=on 일 때만: 지금 시장 국면(BTC 24시간)에서 그 방향 실주문 성적이 약하면(15회↑·평균 마이너스) 새 실주문 대신 모의로 (기본 꺼짐 = 기존 동작)
+RF_MIN_N = 15                     #   국면×방향 실주문 최소 표본
 WEAK_HOUR_LIVE = False            # 대시보드 설정 BINANCE_WEAK_HOUR=on 일 때만: 지금 한국시간 4시간 구간의 최근 실주문 성적이 약하면 새 실주문 대신 모의로 (기본 꺼짐 = 기존 동작)
 WH_MIN_N = 8                      #   약한 구간 판단: 최근 청산 100건 중 그 구간 실주문 8회 이상 + 평균 마이너스 + USDT 합계 마이너스
 TR_HOURS = 4                      # 관찰 전용: 익절로 끝난 거래가 그 뒤 4시간 동안 같은 방향으로 더 갔는지 기록 (익절폭·트레일링 판단 근거)
@@ -540,6 +542,9 @@ class Engine:
         global WEAK_HOUR_LIVE
         c.setdefault("BINANCE_WEAK_HOUR", "off")                                 # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
         WEAK_HOUR_LIVE = str(c.get("BINANCE_WEAK_HOUR", "off")).strip().lower() == "on"  # 기본 꺼짐 = 기존 동작
+        global REGIME_FOCUS_LIVE
+        c.setdefault("BINANCE_REGIME_FOCUS", "off")                              # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
+        REGIME_FOCUS_LIVE = str(c.get("BINANCE_REGIME_FOCUS", "off")).strip().lower() == "on"  # 기본 꺼짐 = 기존 동작
         global REENTRY_SKIP_LIVE
         c.setdefault("BINANCE_REENTRY_SKIP", "off")                              # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
         REENTRY_SKIP_LIVE = str(c.get("BINANCE_REENTRY_SKIP", "off")).strip().lower() == "on"  # 기본 꺼짐 = 기존 동작
@@ -727,6 +732,18 @@ class Engine:
         except Exception as e:
             log(f"[안내] 시장 국면(BTC 24시간) 확인 실패 (매매는 그대로): {str(e)[:100]}")
         return self._regime
+
+    def regime_weak(self, side):
+        """지금 국면에서 이 방향의 실주문 성적이 약한지(RF_MIN_N회 이상 + 평균 마이너스). 국면 모르면 False(기존 동작).
+        설정 BINANCE_REGIME_FOCUS=on 일 때만 live_ok 에서 쓰고, 꺼져 있으면 대시보드 표시만 함"""
+        try:
+            reg = self.regime()
+            if not reg:
+                return False
+            d = (self.state.get("regimeStats") or {}).get(f"live|{reg}|{side}")
+            return bool(d and d["n"] >= RF_MIN_N and d["sumPct"] / d["n"] < 0)
+        except Exception:
+            return False
 
     def regime_record(self, kind, p, pct):
         """청산 1건을 국면×방향 표에 더함 (진입 때 국면을 모르는 포지션은 건너뜀)"""
@@ -1542,6 +1559,8 @@ class Engine:
             return self.live_skip("약한 시간대(설정)")
         if REENTRY_SKIP_LIVE and sym and self.reentry_recent(sym, strat["side"]):
             return self.live_skip("손절 직후 재진입(설정)")
+        if REGIME_FOCUS_LIVE and self.regime_weak(strat["side"]):
+            return self.live_skip("지금 국면에서 약한 방향(설정)")
         usdt, p = self.size_for(rb)
         if not usdt:
             return self.live_skip("이익 확률 낮은 규칙(40% 미만)")
@@ -2126,6 +2145,8 @@ class Engine:
                             "gen": v.get("gen", 0)} for k, v in self.state["strategies"].items()],
             "testOrder": self.state.get("testOrder") or {},
             "regime": {"now": getattr(self, "_regime", None), "btc24h": getattr(self, "_regime_chg", None),
+                       "focusOn": REGIME_FOCUS_LIVE, "focusMinN": RF_MIN_N,
+                       "weakNow": [sd for sd in ("long", "short") if getattr(self, "_regime", None) and self.regime_weak(sd)],
                        "rows": [{"kind": k.split("|")[0], "regime": k.split("|")[1], "side": k.split("|")[2], "n": v["n"],
                                  "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None}
                                 for k, v in sorted(self.state.get("regimeStats", {}).items())]},

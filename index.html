@@ -1065,6 +1065,8 @@ const SETTINGS = [
     opts: [["off", "꺼짐(기존)"], ["on", "켜기"]] },
   { k: "BINANCE_REENTRY_SKIP", g: "bn", label: "손절 직후 재진입 쉬기", hint: "켜면: 같은 종목·같은 방향이 손절된 뒤 6시간 안에 다시 나온 신호는 새 실주문 대신 모의로(신호·모의 기록은 그대로, '건너뛴 신호 결과'에서 효과 확인) / 꺼짐: 재진입도 실주문", type: "choice",
     opts: [["off", "꺼짐(기존)"], ["on", "켜기"]] },
+  { k: "BINANCE_REGIME_FOCUS", g: "bn", label: "국면에 맞는 방향만 실주문", hint: "켜면: 지금 시장 국면(BTC 24시간 상승·하락·횡보)에서 그 방향 실주문이 15회↑·평균 마이너스면 새 실주문 대신 모의로(예: 지금 하락장 롱 28회 평균 -0.51% → 롱은 모의, 숏은 실주문) / 꺼짐: 국면 상관없이 실주문", type: "choice",
+    opts: [["off", "꺼짐(기존)"], ["on", "켜기"]] },
   { k: "BINANCE_ORDER_USDT", g: "bn", label: "1회 실주문 금액", hint: "USDT · 5~200", type: "num", min: 5, max: 200, step: 1 },
   { k: "BINANCE_DAILY_LOSS_USDT", g: "bn", label: "하루 손실 한도", hint: "USDT · 1~500", type: "num", min: 1, max: 500, step: 1 },
   { k: "BINANCE_MAX_LIVE", g: "bn", label: "동시 실주문 최대", hint: "개 · 1~10", type: "num", min: 1, max: 10, step: 1 },
@@ -1415,6 +1417,7 @@ function renderBinance(b) {
       for (const reg of ["상승", "횡보", "하락"]) t += ` · ${reg}장 모의 롱 ${cell("paper", reg, "long")} / 숏 ${cell("paper", reg, "short")}`;
       const lv = (rg.rows || []).filter((x) => x.kind === "live");
       if (lv.length) t += " · 실주문 " + lv.map((x) => `${x.regime} ${x.side === "long" ? "롱" : "숏"} ${x.n}회 ${pct(x.avgPct)}`).join(", ");
+      if (rg.weakNow && rg.weakNow.length) t += ` · ⚠️ 지금 국면에서 약한 방향: ${rg.weakNow.map((sd) => sd === "long" ? "롱" : "숏").join("·")}(실주문 ${rg.focusMinN ?? 15}회↑·평균 마이너스) → ${rg.focusOn ? "설정 켜짐: 새 실주문은 모의로 보냄" : "설정 꺼짐: 표시만(실주문은 그대로)"}`;
       t += " · 기준: BTC 24시간 +1.5% 이상 상승 / -1.5% 이하 하락 / 그 사이 횡보 · 오늘부터 쌓임";
       $("bnRegime").textContent = t;
     }
