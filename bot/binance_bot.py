@@ -82,6 +82,7 @@ GB_FLOOR = 0.0                    #   진입가(움직임 0%)까지 되밀리면
 DC_SL = 4.0                       # 관찰 전용: 손절폭이 4% 이상으로 넓은 거래가
 DC_CUT = 2.5                      #   순손익 -2.5% 이하로 빠진 첫 순간 "여기서 일찍 끊었다면" 손익을 기록 (실제 청산은 그대로)
 DEEP_CUT_LIVE = False             # 대시보드 설정 BINANCE_DEEP_CUT=on 일 때만: 위 표시가 붙은 '실주문'을 그 자리에서 정리(모의는 계속 관찰만)
+REENTRY_SKIP_LIVE = False         # 대시보드 설정 BINANCE_REENTRY_SKIP=on 일 때만: 같은 종목·같은 방향이 손절된 뒤 6시간 안의 재진입은 새 실주문 대신 모의로 (기본 꺼짐 = 기존 동작)
 WEAK_HOUR_LIVE = False            # 대시보드 설정 BINANCE_WEAK_HOUR=on 일 때만: 지금 한국시간 4시간 구간의 최근 실주문 성적이 약하면 새 실주문 대신 모의로 (기본 꺼짐 = 기존 동작)
 WH_MIN_N = 8                      #   약한 구간 판단: 최근 청산 100건 중 그 구간 실주문 8회 이상 + 평균 마이너스 + USDT 합계 마이너스
 TR_HOURS = 4                      # 관찰 전용: 익절로 끝난 거래가 그 뒤 4시간 동안 같은 방향으로 더 갔는지 기록 (익절폭·트레일링 판단 근거)
@@ -539,6 +540,9 @@ class Engine:
         global WEAK_HOUR_LIVE
         c.setdefault("BINANCE_WEAK_HOUR", "off")                                 # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
         WEAK_HOUR_LIVE = str(c.get("BINANCE_WEAK_HOUR", "off")).strip().lower() == "on"  # 기본 꺼짐 = 기존 동작
+        global REENTRY_SKIP_LIVE
+        c.setdefault("BINANCE_REENTRY_SKIP", "off")                              # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
+        REENTRY_SKIP_LIVE = str(c.get("BINANCE_REENTRY_SKIP", "off")).strip().lower() == "on"  # 기본 꺼짐 = 기존 동작
         c.setdefault("BINANCE_MONTH_LOSS_USDT", f"{MONTH_LOSS_DEFAULT:g}")      # 대시보드에 '기본값 40'으로 보이게
         self.month_loss = num("BINANCE_MONTH_LOSS_USDT", MONTH_LOSS_DEFAULT)
         self._last_exchange_check = 0
@@ -1456,7 +1460,7 @@ class Engine:
             sw = self.side_weak(strat["side"])           # 관찰 전용: 약한 방향 표시 (진입 판단에는 안 씀)
             evn, _ = self.event_now()                    # 관찰 전용: 경제 일정 구간 표시 (진입 판단에는 안 씀)
             self._skip_why = None
-            usdt = self.live_ok(strat)
+            usdt = self.live_ok(strat, sym)
             if usdt and self.open_live(sym, strat, px, usdt):
                 if sym in st["positions"] and reg:
                     st["positions"][sym].setdefault("regime", reg)
@@ -1515,7 +1519,7 @@ class Engine:
         """새 실주문을 내도 되는 상태(설정 live + 계좌 연결 정상)"""
         return bool(self.live and getattr(self, "live_new", True))
 
-    def live_ok(self, strat):
+    def live_ok(self, strat, sym=None):
         """실주문 해도 되면 금액(USDT), 아니면 0 — 돈 지키기 조건을 모두 통과해야 함"""
         if not self.live_on():
             return self.live_skip("실주문 꺼짐(설정 paper·키 확인 실패)")
@@ -1536,6 +1540,8 @@ class Engine:
             return self.live_skip("동시 실보유 최대")
         if WEAK_HOUR_LIVE and self.weak_hour_now():
             return self.live_skip("약한 시간대(설정)")
+        if REENTRY_SKIP_LIVE and sym and self.reentry_recent(sym, strat["side"]):
+            return self.live_skip("손절 직후 재진입(설정)")
         usdt, p = self.size_for(rb)
         if not usdt:
             return self.live_skip("이익 확률 낮은 규칙(40% 미만)")
