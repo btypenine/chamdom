@@ -56,6 +56,7 @@ APP_SETTINGS = {
     "BINANCE_LIVE_BASIS": ("choice", ("rule", "side", "all")),
     "BINANCE_STYLE": ("choice", ("swing", "wide")),
     "BINANCE_DEEP_CUT": ("choice", ("off", "on")),
+    "BINANCE_WEAK_HOUR": ("choice", ("off", "on")),
     "BINANCE_MONTH_LOSS_USDT": ("num", (5, 2000)),
 }
 APP_SETTINGS_EVERY = 600                                       # 대시보드 설정 확인 주기(초) — 읽기 한도(429) 아끼려고 10분
