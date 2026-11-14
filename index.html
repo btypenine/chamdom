@@ -1067,6 +1067,8 @@ const SETTINGS = [
     opts: [["off", "꺼짐(기존)"], ["on", "켜기"]] },
   { k: "BINANCE_REGIME_FOCUS", g: "bn", label: "국면에 맞는 방향만 실주문", hint: "켜면: 지금 시장 국면(BTC 24시간 상승·하락·횡보)에서 그 방향 실주문이 15회↑·평균 마이너스면 새 실주문 대신 모의로(예: 지금 하락장 롱 28회 평균 -0.51% → 롱은 모의, 숏은 실주문) / 꺼짐: 국면 상관없이 실주문", type: "choice",
     opts: [["off", "꺼짐(기존)"], ["on", "켜기"]] },
+  { k: "BINANCE_STOP_BUFFER", g: "bn", label: "거래소 보호 손절 여유폭", hint: "실주문 진입 때 거래소에 거는 보호 손절을 규칙 손절가보다 몇 %p 바깥에 둘지 · 좁히면: 봇이 못 따라간 급락·급등 때 덜 밀려 나감(지금까지 거래소 손절 평균 -0.83%p 넘침) / 대신 잠깐 찍고 돌아오는 꼬리에 거래소 손절이 걸릴 수 있음 · 새로 들어가는 실주문부터 적용", type: "choice",
+    opts: [["0.5", "0.5%p(기존)"], ["0.3", "0.3%p"], ["0.2", "0.2%p"]] },
   { k: "BINANCE_ORDER_USDT", g: "bn", label: "1회 실주문 금액", hint: "USDT · 5~200", type: "num", min: 5, max: 200, step: 1 },
   { k: "BINANCE_DAILY_LOSS_USDT", g: "bn", label: "하루 손실 한도", hint: "USDT · 1~500", type: "num", min: 1, max: 500, step: 1 },
   { k: "BINANCE_MAX_LIVE", g: "bn", label: "동시 실주문 최대", hint: "개 · 1~10", type: "num", min: 1, max: 10, step: 1 },
