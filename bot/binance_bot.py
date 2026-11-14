@@ -105,7 +105,7 @@ SIDE_GATE_MIN_N = 50              # (선택) 방향별 통과 기준: 모의 50�
 SIDE_GATE_MIN_AVG = 0.30          #   거래당 +0.30% 이상
 
 # 돈 지키기 (실주문에만 적용, 모의에는 영향 없음)
-EXCHANGE_STOP_BUFFER = 0.5        # 거래소 보호 손절: 봇 손절가보다 0.5%p 더 바깥 (평소엔 봇이 먼저 정리, PC가 멈추면 거래소가 정리)
+EXCHANGE_STOP_BUFFER = 0.5        # 거래소 보호 손절: 봇 손절가보다 0.5%p 더 바깥 (평소엔 봇이 먼저 정리, PC가 멈추면 거래소가 정리) · 대시보드 설정 BINANCE_STOP_BUFFER(0.2~0.5)로 좁힐 수 있음
 EXCHANGE_CHECK_SEC = 60           # 실보유가 거래소에서 정리됐는지 확인하는 주기(초)
 STOP_FAIL_BLOCK_HOURS = 6         # 보호 손절을 못 걸면 바로 정리하고 이 시간 동안 실주문 쉼
 LOSS_STREAK_MAX = 3               # 실주문 연속 손실 이 횟수면
@@ -548,6 +548,13 @@ class Engine:
         global REENTRY_SKIP_LIVE
         c.setdefault("BINANCE_REENTRY_SKIP", "off")                              # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
         REENTRY_SKIP_LIVE = str(c.get("BINANCE_REENTRY_SKIP", "off")).strip().lower() == "on"  # 기본 꺼짐 = 기존 동작
+        global EXCHANGE_STOP_BUFFER
+        c.setdefault("BINANCE_STOP_BUFFER", "0.5")                               # 대시보드에 '0.5%p(기존) · 기본값'으로 보이게
+        try:                                                                     # 거래소 보호 손절 여유폭: 0.2~0.5%p 만 허용, 그 밖·잘못된 값은 기존 0.5
+            _sb = float(str(c.get("BINANCE_STOP_BUFFER", "0.5")).replace(",", "").strip() or 0.5)
+        except ValueError:
+            _sb = 0.5
+        EXCHANGE_STOP_BUFFER = _sb if 0.2 <= _sb <= 0.5 else 0.5
         c.setdefault("BINANCE_MONTH_LOSS_USDT", f"{MONTH_LOSS_DEFAULT:g}")      # 대시보드에 '기본값 40'으로 보이게
         self.month_loss = num("BINANCE_MONTH_LOSS_USDT", MONTH_LOSS_DEFAULT)
         self._last_exchange_check = 0
@@ -1619,7 +1626,7 @@ class Engine:
         return True
 
     def arm_stop(self, sym, p):
-        """거래소에 보호 손절 걸기 (봇 손절가보다 0.5%p 바깥). PC·봇이 멈춰도 거래소가 손실을 끊어 줌"""
+        """거래소에 보호 손절 걸기 (봇 손절가보다 EXCHANGE_STOP_BUFFER%p 바깥, 기본 0.5). PC·봇이 멈춰도 거래소가 손실을 끊어 줌"""
         long_ = p["side"] == "long"
         move = abs((p["sl"] / p["entry"] - 1) * 100) + EXCHANGE_STOP_BUFFER
         trig = p["entry"] * (1 - move / 100) if long_ else p["entry"] * (1 + move / 100)
@@ -1628,7 +1635,7 @@ class Engine:
             p["stopId"] = self.live.stop_order(sym, "SELL" if long_ else "BUY", trig)
             p["stopPx"] = trig
             save_state(self.state)
-            log(f"[돈 지키기] {sym} 거래소 보호 손절 걸림 @ {trig:.6g} (-{move:.1f}%)")
+            log(f"[돈 지키기] {sym} 거래소 보호 손절 걸림 @ {trig:.6g} (-{move:.2f}%, 여유 {EXCHANGE_STOP_BUFFER:g}%p)")
             return True
         except Exception as e:
             log(f"[경고] {sym} 거래소 보호 손절 실패: {str(e)[:160]}")
