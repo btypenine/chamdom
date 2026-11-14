@@ -49,6 +49,7 @@ SETTINGS_FILE = os.path.join(BASE_DIR, "bot_settings.json")   # 대시보드 '�
 APP_SETTINGS = {
     "TRADE_MODE": ("choice", ("paper", "live")),
     "DAILY_LOSS_LIMIT": ("num", (0, 1000000)),
+    "MONTH_LOSS_LIMIT": ("num", (0, 10000000)),
     "BINANCE_TRADE_MODE": ("choice", ("paper", "live")),
     "BINANCE_ORDER_USDT": ("num", (5, 200)),
     "BINANCE_DAILY_LOSS_USDT": ("num", (1, 500)),
@@ -286,6 +287,7 @@ def load_config():
     cfg["ORDER_KRW"] = int(num("ORDER_KRW", 10000))
     cfg["MARTINGALE_MAX_LEVEL"] = int(num("MARTINGALE_MAX_LEVEL", 3))     # 0이면 마틴게일 끔
     cfg["DAILY_LOSS_LIMIT"] = int(num("DAILY_LOSS_LIMIT", 100000))       # 0이면 제한 없음
+    cfg["MONTH_LOSS_LIMIT"] = int(num("MONTH_LOSS_LIMIT", 0))            # 월(09시 기준) 손실 한도 · 0이면 제한 없음(기본)
     cfg["TRADE_MODE"] = cfg.get("TRADE_MODE", "paper").lower()
     cfg["DEVICE_NAME"] = cfg.get("DEVICE_NAME") or "PC"
     key = cfg.get("ANTHROPIC_API_KEY", "")
@@ -336,6 +338,11 @@ def today_key(now=None):
     """09:00 KST 기준 '거래일' (09:00 이전은 전날로 침)"""
     now = now or datetime.now(KST)
     return (now - timedelta(hours=9)).strftime("%Y-%m-%d")
+
+
+def month_key(now=None):
+    """today_key 와 같은 09:00 KST 기준 '거래월' (매월 1일 09:00 이전은 전달로 침)"""
+    return today_key(now)[:7]
 
 
 def load_state(budget):
@@ -1451,7 +1458,29 @@ class Bot:
     def available(self):
         return max(0.0, self.ledger["seed"] - self.in_use())
 
+    def roll_month(self):
+        """월 손실 한도용 이번 달 실현 손익 — 매월 1일 09:00 KST 에 새로 셈 (바이낸스 live_day 와 같은 방식)"""
+        lg = self.ledger
+        m = month_key()
+        if lg.get("month") == m:
+            return lg
+        if "month" not in lg:
+            # 이 기능이 처음 켜질 때: 이번 달 거래일의 오늘 손익만 이어받음 (그 전 날짜 기록은 장부에 없음)
+            same = str(lg.get("day", ""))[:7] == m
+            lg.update({"month": m, "monthPnl": float(lg.get("dayPnl", 0.0)) if same else 0.0,
+                       "monthTrades": int(lg.get("dayTrades", 0)) if same else 0})
+        else:
+            log(f"거래월 마감 {lg['month']}: {lg.get('monthTrades', 0)}회 손익 {lg.get('monthPnl', 0):+,.0f}원")
+            lg.update({"month": m, "monthPnl": 0.0, "monthTrades": 0})
+        save_state(self.state)
+        return lg
+
+    def month_blocked(self):
+        lim = self.cfg.get("MONTH_LOSS_LIMIT", 0)
+        return bool(lim) and self.roll_month()["monthPnl"] <= -lim
+
     def roll_day(self):
+        self.roll_month()
         day = today_key()
         lg = self.ledger
         if lg["day"] != day:
@@ -1472,9 +1501,11 @@ class Bot:
             log(f"새 거래일 {day} 시작 · 시드 {lg['seed']:,.0f}원 · 잠긴 수익 {lg['locked']:,.0f}원")
 
     def book(self, pnl, market=None):
-        lg = self.ledger
+        lg = self.roll_month()
         lg["realizedTotal"] += pnl
         lg["dayPnl"] += pnl
+        lg["monthPnl"] += pnl
+        lg["monthTrades"] += 1
         lg["tradesTotal"] += 1
         lg["dayTrades"] += 1
         lg["gateTrades"] += 1
@@ -1819,6 +1850,8 @@ class Bot:
             return False, "일시정지"
         if time.time() < lg["cooldownUntil"]:
             return False, "손실 후 대기"
+        if self.month_blocked():
+            return False, "이번 달 손실 한도 도달 → 다음 달 1일 09시까지 매수 멈춤"
         if self.cfg["DAILY_LOSS_LIMIT"] and lg["dayPnl"] <= -self.cfg["DAILY_LOSS_LIMIT"]:
             return False, "오늘 손실 한도 도달"
         if not EXPLORE_MODE and lg["gateTrades"] >= LIVE_DAY_MIN_TRADES and lg["gateWins"] / lg["gateTrades"] < LIVE_DAY_MIN_WINRATE:
@@ -2960,6 +2993,7 @@ class Bot:
         return {
             "규칙": {"기본주문": self.cfg["ORDER_KRW"], "마틴게일최대단계": self.cfg["MARTINGALE_MAX_LEVEL"],
                    "손실후대기분": LOSS_COOLDOWN_MIN, "하루손실한도": self.cfg["DAILY_LOSS_LIMIT"],
+                   "월손실한도": self.cfg.get("MONTH_LOSS_LIMIT", 0),
                    "수익잠금비율": PROFIT_LOCK_RATIO, "동시보유최대": MAX_OPEN_POSITIONS,
                    "백테스트": {"분봉수": BT_CANDLES, "시험조합": BT_TRIALS, "최소거래": BT_MIN_TRADES,
                              "검증구간비율": BT_HOLDOUT, "거래당최소순익%": BT_MIN_EDGE_PCT,
@@ -3058,6 +3092,8 @@ class Bot:
                      "ledger": {"seed": round(lg["seed"]), "locked": round(lg["locked"]),
                                 "realizedTotal": round(lg["realizedTotal"]), "dayPnl": round(lg["dayPnl"]),
                                 "dayTrades": lg["dayTrades"], "dayWins": lg["dayWins"], "martLevel": lg["martLevel"],
+                                "month": lg.get("month", ""), "monthPnl": round(lg.get("monthPnl", 0)),
+                                "monthTrades": lg.get("monthTrades", 0), "monthLoss": self.cfg.get("MONTH_LOSS_LIMIT", 0),
                                 "tradesTotal": lg["tradesTotal"], "winsTotal": lg["winsTotal"],
                                 "mode": "live" if self.live else "paper",
                                 "provenOnly": bool(self.live and PROVEN_ONLY_LIVE),
@@ -3277,7 +3313,8 @@ class Bot:
         log("AI 분석가: " + (f"켜짐 ({self.cfg['AI_MODEL']} · 매일 {'/'.join(str(h) for h in AI_SCHEDULE_HOURS)}시 + 손실 {AI_EVERY_LOSSES}건마다)" if self.cfg["ANTHROPIC_API_KEY"]
                             else "꺼짐 (bot_config.env 에 ANTHROPIC_API_KEY 를 넣으면 켜짐)"))
         log(f"기본 주문 {self.cfg['ORDER_KRW']:,}원 · 익절/손절은 전략별 백테스트로 결정 · 손실 후 {LOSS_COOLDOWN_MIN}분 대기 · "
-            f"마틴게일 최대 {self.cfg['MARTINGALE_MAX_LEVEL']}단계 · 하루 손실 한도 {self.cfg['DAILY_LOSS_LIMIT']:,}원")
+            f"마틴게일 최대 {self.cfg['MARTINGALE_MAX_LEVEL']}단계 · 하루 손실 한도 {self.cfg['DAILY_LOSS_LIMIT']:,}원 · "
+            f"월 손실 한도 {self.cfg.get('MONTH_LOSS_LIMIT', 0):,}원" + (" (제한 없음)" if not self.cfg.get("MONTH_LOSS_LIMIT") else ""))
         if EXPLORE_MODE:
             log(f"탐험 모드: 상위 {TOP_N}종목 · 1회 {EXPLORE_ORDER_KRW:,}원 고정 · 마틴게일 끔 · 동시 보유 최대 {MAX_OPEN_POSITIONS} · "
                 f"손실 난 종목만 {LOSS_COOLDOWN_MIN}분 정지 · 규칙은 5회마다 판정·{RULE_OUT_LIMIT}아웃 퇴출")
