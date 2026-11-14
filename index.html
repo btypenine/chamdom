@@ -401,6 +401,7 @@ body.compact #overCard { display: flex !important; }
         <div><div class="label">다음 주문</div><div class="stat-val num" id="nextOrder">-</div></div>
       </div>
       <div class="sub" id="perfNote"></div>
+      <div class="sub" id="monthNote" style="word-break:keep-all" hidden></div>
       <div class="msg" id="shadowBox" hidden></div>
       <div class="msg" id="reportBox" hidden></div>
     </section>
@@ -1054,6 +1055,7 @@ $("acctNickBtn").addEventListener("click", () => { $("setSheet").close(); $("who
 const SETTINGS = [
   { k: "TRADE_MODE", g: "up", label: "업비트 거래 방식", type: "choice", opts: [["live", "실제 주문"], ["paper", "모의매매"]] },
   { k: "DAILY_LOSS_LIMIT", g: "up", label: "하루 손실 한도", hint: "원 · 0이면 제한 없음", type: "num", min: 0, max: 1000000, step: 1000 },
+  { k: "MONTH_LOSS_LIMIT", g: "up", label: "월 손실 한도", hint: "원 · 이번 달(1일 09시 기준) 실현 손실이 이만큼이면 다음 달 1일 09시까지 새 매수 멈춤(매도·손절은 그대로) · 0이면 제한 없음", type: "num", min: 0, max: 10000000, step: 10000 },
   { k: "BINANCE_TRADE_MODE", g: "bn", label: "바이낸스 거래 방식", type: "choice", opts: [["live", "실제 주문"], ["paper", "모의만"]] },
   { k: "BINANCE_LIVE_BASIS", g: "bn", label: "실주문 기준", hint: "모두: 마이너스 규칙만 제외 · 방향별: 50회·+0.30%↑ 쪽 · 규칙별: 5회·+0.15%↑", type: "choice",
     opts: [["all", "롱·숏 모두"], ["side", "방향별 성적"], ["rule", "규칙별 통과"]] },
@@ -1830,6 +1832,15 @@ function renderMore(s, stale) {
     if (lg.tradesTotal) notes.push(`누적 ${lg.tradesTotal}회 · 승률 ${Math.round(lg.winsTotal / lg.tradesTotal * 100)}% · 실현 ${signed(lg.realizedTotal)}`);
     if ((s.blocked || []).length) notes.push("오늘 제외(실전 부진): " + s.blocked.map((m) => m.split("-")[1]).join(", "));
     $("perfNote").textContent = notes.join(" · ");
+    // 월 손실 한도: 새 버전 봇만 monthPnl 을 보냄(지인용 stable 봇은 이 줄이 안 보임)
+    const mn = $("monthNote"), hasMonth = lg.monthPnl !== undefined;
+    mn.hidden = !hasMonth;
+    if (hasMonth) {
+      const lim = Number(lg.monthLoss) || 0, hit = lim > 0 && lg.monthPnl <= -lim;
+      mn.textContent = `이번 달 손익 ${signed(lg.monthPnl)} (${lg.monthTrades || 0}회) / 월 손실 한도 ` +
+        (lim ? `-${lim.toLocaleString("ko-KR")}원` : "없음") + (hit ? " · ⏸ 한도 도달 → 다음 달 1일 09시까지 새 매수 멈춤" : "");
+      mn.classList.toggle("down", hit);
+    }
     // 실전 통과 규칙만 실주문일 때: 나머지 규칙의 검증(모의) 성적 — 실제 돈은 안 움직임
     const sh = $("shadowBox");
     sh.hidden = !lg.provenOnly;
