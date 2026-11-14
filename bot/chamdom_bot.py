@@ -50,6 +50,7 @@ APP_SETTINGS = {
     "TRADE_MODE": ("choice", ("paper", "live")),
     "DAILY_LOSS_LIMIT": ("num", (0, 1000000)),
     "MONTH_LOSS_LIMIT": ("num", (0, 10000000)),
+    "RULE_IDLE_RELEASE_H": ("num", (0, 720)),
     "BINANCE_TRADE_MODE": ("choice", ("paper", "live")),
     "BINANCE_ORDER_USDT": ("num", (5, 200)),
     "BINANCE_DAILY_LOSS_USDT": ("num", (1, 500)),
@@ -289,6 +290,7 @@ def load_config():
     cfg["MARTINGALE_MAX_LEVEL"] = int(num("MARTINGALE_MAX_LEVEL", 3))     # 0이면 마틴게일 끔
     cfg["DAILY_LOSS_LIMIT"] = int(num("DAILY_LOSS_LIMIT", 100000))       # 0이면 제한 없음
     cfg["MONTH_LOSS_LIMIT"] = int(num("MONTH_LOSS_LIMIT", 0))            # 월(09시 기준) 손실 한도 · 0이면 제한 없음(기본)
+    cfg["RULE_IDLE_RELEASE_H"] = int(num("RULE_IDLE_RELEASE_H", 0))      # 검증 중 규칙이 이 시간 넘게 신호 없으면 교체 · 0이면 끔(기본 = 기존 동작)
     cfg["TRADE_MODE"] = cfg.get("TRADE_MODE", "paper").lower()
     cfg["DEVICE_NAME"] = cfg.get("DEVICE_NAME") or "PC"
     key = cfg.get("ANTHROPIC_API_KEY", "")
@@ -1710,6 +1712,33 @@ class Bot:
             if r["status"] != "proven":
                 rbk.pop(r["id"], None)
 
+    def rule_idle_h(self, rb):
+        """규칙이 마지막으로 거래한 뒤(거래 없으면 등록 뒤) 지난 시간"""
+        return (time.time() * 1000 - (rb.get("lastAt") or rb["firstAt"])) / 3600000
+
+    def rule_idle_release(self, rb, market):
+        """설정(RULE_IDLE_RELEASE_H)을 켰고, 검증 중 규칙이 그 시간 넘게 신호가 없고, 그 규칙으로 산 코인을 들고 있지 않으면 True"""
+        lim = self.cfg.get("RULE_IDLE_RELEASE_H", 0)
+        if not lim or rb.get("status") != "testing":
+            return False
+        if (self.state["positions"].get(market) or {}).get("rid") == rb["id"]:
+            return False
+        return self.rule_idle_h(rb) > lim
+
+    def rule_idle_view(self):
+        """관찰: 지금 쓰는 규칙 중 오래 신호가 없는 규칙 수 (매매에는 영향 없음)"""
+        rows = []
+        for m, cur in self.state["strategies"].items():
+            rb = self.state["ruleBook"].get(cur.get("rid") or "")
+            if rb:
+                rows.append((m, rb, self.rule_idle_h(rb)))
+        idle = [x for x in rows if x[2] >= 48]
+        top = sorted(idle, key=lambda x: -x[2])[:5]
+        return {"active": len(rows), "idle24": sum(1 for x in rows if x[2] >= 24), "idle48": len(idle),
+                "idleTesting48": sum(1 for x in idle if x[1]["status"] == "testing"),
+                "releaseH": self.cfg.get("RULE_IDLE_RELEASE_H", 0),
+                "top": [{"coin": m.split("-")[1], "status": rb["status"], "trades": rb["trades"], "idleH": round(h)} for m, rb, h in top]}
+
     def keep_rule(self, market):
         """지금 규칙을 유지해야 하면 그 spec 반환: 실전 5회 전(검증 중)이거나 실전에서 통한 규칙"""
         cur = self.state["strategies"].get(market)
@@ -1717,7 +1746,10 @@ class Bot:
             rb = self.state["ruleBook"].get(cur.get("rid") or rule_id(market, cur))
             if rb and rb["status"] == "proven":
                 return cur
-            if rb and rb["status"] == "testing" and rb.get("outs", 0) < RULE_OUT_LIMIT:
+            if rb and self.rule_idle_release(rb, market):
+                log(f"[규칙 정체] {market.split('-')[1]} {rb['id']} 검증 {rb['trades']}회 · {self.rule_idle_h(rb):.0f}시간 신호 없음 "
+                    f"(설정 {self.cfg.get('RULE_IDLE_RELEASE_H')}시간) → 새 규칙 찾기 (기록은 장부에 남음)")
+            elif rb and rb["status"] == "testing" and rb.get("outs", 0) < RULE_OUT_LIMIT:
                 # 6시간 동안 한 번도 신호가 없던 규칙은 붙잡고 있지 않음 (기록은 장부에 남음)
                 # 단, 이 규칙으로 산 코인을 아직 들고 있으면 신호가 났던 것 → 유지 (안 그러면 매도 후 1/5회에서 끊겨 판정 못 함)
                 holding = (self.state["positions"].get(market) or {}).get("rid") == rb["id"]
@@ -1736,7 +1768,8 @@ class Bot:
             # 실전 1~4회에서 끊긴 검증 중 규칙(종목이 상위권에서 잠시 빠졌다 돌아온 경우 등)은 5회를 마저 채움
             for rb in self.state["ruleBook"].values():
                 if (rb["market"] == market and rb["status"] == "testing" and rb.get("spec")
-                        and rb["trades"] > 0 and rb.get("outs", 0) < RULE_OUT_LIMIT):
+                        and rb["trades"] > 0 and rb.get("outs", 0) < RULE_OUT_LIMIT
+                        and not self.rule_idle_release(rb, market)):
                     if best is None or (rb.get("lastAt") or 0) > (best[1].get("lastAt") or 0):
                         best = (0, rb)
         if best:
@@ -3107,6 +3140,7 @@ class Bot:
                      "universe": self.state["universe"]["markets"],
                      "blocked": self.state["blocked"], "marketStats": self.state["marketStats"],
                      "ruleBook": self.rulebook_view(),
+                     "ruleIdle": self.rule_idle_view(),
                      "marketGates": self.gates_view(),
                      "exitRules": self.exits_view(),
                      "proposals": self.state.get("proposals", []),
