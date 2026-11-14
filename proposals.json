@@ -1151,7 +1151,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/99",
    "branch": "ai/20261114-up-month-loss",
    "createdAt": "2026-11-14T15:10:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-11-14T23:40:00+09:00"
   },
   {
    "id": "ai-20261114-bn-stop-buffer",
@@ -1162,7 +1163,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/100",
    "branch": "ai/20261114-bn-stop-buffer",
    "createdAt": "2026-11-14T14:55:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-11-14T23:40:00+09:00"
   }
  ]
 }
