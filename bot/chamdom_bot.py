@@ -60,7 +60,7 @@ APP_SETTINGS = {
     "BINANCE_STYLE": ("choice", ("swing", "wide")),
     "BINANCE_DEEP_CUT": ("choice", ("off", "on")),
     "BINANCE_WEAK_HOUR": ("choice", ("off", "on")),
-    "BINANCE_REENTRY_SKIP": ("choice", ("off", "on")),
+    "BINANCE_REENTRY_SKIP": ("choice", ("off", "on", "long")),
     "BINANCE_REGIME_FOCUS": ("choice", ("off", "on")),
     "BINANCE_MONTH_LOSS_USDT": ("num", (5, 2000)),
     "BINANCE_STOP_BUFFER": ("choice", ("0.5", "0.3", "0.2")),
