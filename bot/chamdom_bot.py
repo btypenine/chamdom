@@ -1410,12 +1410,31 @@ def exit_deep_cut(bot, pos, price):
     return (sl_pct <= DEEP_CUT_SL and pnl <= DEEP_CUT_PNL), f"규칙 손절 {sl_pct:.1f}% · 지금 포지션 {pnl:+.2f}%"
 
 
+EARLY_BLEED_FRAC = 0.25         # 초반 흘러내림: 보유시간의 이 비율이 지났는데
+EARLY_BLEED_PROG = 10           # 익절까지 진행률(최고가 기준)이 이 % 미만(거의 한 번도 못 오름)이고
+EARLY_BLEED_PNL = -0.5          # 지금 순손익(수수료 포함)이 이 % 이하이면 조기 정리 대상
+
+
+def exit_early_bleed(bot, pos, price):
+    """실패 원인 1위 '서서히 하락(추세 반대 진입)' 대응 — 산 뒤 한 번도 못 오르고 흘러내리는 거래를
+    힘 빠진 보유 정리(보유시간 50%)보다 일찍(25%) 끊는 게 나은지 관찰로 시작해 실제 결과와 비교"""
+    start, end = pos["at"] / 1000, pos["deadline"]
+    if end <= start:
+        return False, ""
+    frac = (time.time() - start) / (end - start)
+    up_room = pos["tp"] - pos["unit"]
+    prog = (pos.get("maxP", pos["unit"]) - pos["unit"]) / up_room * 100 if up_room > 0 else 0
+    pnl = (price * (1 - FEE_RATE) / pos["unit"] - 1) * 100
+    return (frac >= EARLY_BLEED_FRAC and prog < EARLY_BLEED_PROG and pnl <= EARLY_BLEED_PNL), \
+        f"보유시간 {frac * 100:.0f}% 경과 · 익절 진행률 최고 {max(prog, 0):.0f}% · 포지션 {pnl:+.2f}%"
+
 EXIT_RULES = [
     {"id": "btc_exit", "name": "보유 중 BTC 하락 정리", "desc": f"들고 있는 동안 BTC가 {BTC_EXIT_PCT}% 이상 빠지고 손실 중이면 일찍 정리", "fn": exit_btc_drop},
     {"id": "stale_exit", "name": "힘 빠진 보유 정리", "desc": f"보유시간 {STALE_EXIT_FRAC * 100:.0f}%가 지나도 익절까지 {STALE_EXIT_PROG}%도 못 갔고 손실 중이면 일찍 정리", "fn": exit_stale},
     {"id": "giveback_exit", "name": "익절 근처 되밀림 정리", "desc": f"익절까지 {GIVEBACK_PROG}% 이상 갔다가 순손익 {GIVEBACK_PNL:+.1f}% 이하로 되밀리면 일찍 정리", "fn": exit_giveback},
     {"id": "mid_fade_exit", "name": "중간 진행 후 되밀림 정리", "desc": f"보유시간 {MID_FADE_FRAC * 100:.0f}%가 지났고 익절까지 {MID_FADE_PROG}% 이상 갔었는데 순손익 {MID_FADE_PNL:+.1f}% 이하로 되밀렸으면 일찍 정리", "fn": exit_mid_fade},
     {"id": "deep_cut_exit", "name": "넓은 손절 중간 차단", "desc": f"손절폭 {DEEP_CUT_SL:.0f}% 이하로 넓은 규칙이 순손익 {DEEP_CUT_PNL:.0f}% 이하로 빠지면 손절선까지 기다리지 않고 일찍 정리", "fn": exit_deep_cut},
+    {"id": "early_bleed_exit", "name": "초반 흘러내림 정리", "desc": f"보유시간 {EARLY_BLEED_FRAC * 100:.0f}%가 지나도 익절까지 {EARLY_BLEED_PROG}%도 못 오르고 순손익 {EARLY_BLEED_PNL:+.1f}% 이하로 흘러내리면 일찍 정리", "fn": exit_early_bleed},
 ]
 
 
