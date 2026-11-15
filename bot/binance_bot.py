@@ -84,6 +84,7 @@ DC_SL = 4.0                       # 관찰 전용: 손절폭이 4% 이상으로 
 DC_CUT = 2.5                      #   순손익 -2.5% 이하로 빠진 첫 순간 "여기서 일찍 끊었다면" 손익을 기록 (실제 청산은 그대로)
 DEEP_CUT_LIVE = False             # 대시보드 설정 BINANCE_DEEP_CUT=on 일 때만: 위 표시가 붙은 '실주문'을 그 자리에서 정리(모의는 계속 관찰만)
 REENTRY_SKIP_LIVE = False         # 대시보드 설정 BINANCE_REENTRY_SKIP=on 일 때만: 같은 종목·같은 방향이 손절된 뒤 6시간 안의 재진입은 새 실주문 대신 모의로 (기본 꺼짐 = 기존 동작)
+REENTRY_SKIP_SIDES = ("long", "short")  #   =long 이면 롱 재진입만 모의로(숏 재진입은 실주문 그대로)
 REGIME_FOCUS_LIVE = False         # 대시보드 설정 BINANCE_REGIME_FOCUS=on 일 때만: 지금 시장 국면(BTC 24시간)에서 그 방향 실주문 성적이 약하면(15회↑·평균 마이너스) 새 실주문 대신 모의로 (기본 꺼짐 = 기존 동작)
 RF_MIN_N = 15                     #   국면×방향 실주문 최소 표본
 WEAK_HOUR_LIVE = False            # 대시보드 설정 BINANCE_WEAK_HOUR=on 일 때만: 지금 한국시간 4시간 구간의 최근 실주문 성적이 약하면 새 실주문 대신 모의로 (기본 꺼짐 = 기존 동작)
@@ -548,7 +549,10 @@ class Engine:
         REGIME_FOCUS_LIVE = str(c.get("BINANCE_REGIME_FOCUS", "off")).strip().lower() == "on"  # 기본 꺼짐 = 기존 동작
         global REENTRY_SKIP_LIVE
         c.setdefault("BINANCE_REENTRY_SKIP", "off")                              # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
-        REENTRY_SKIP_LIVE = str(c.get("BINANCE_REENTRY_SKIP", "off")).strip().lower() == "on"  # 기본 꺼짐 = 기존 동작
+        global REENTRY_SKIP_SIDES
+        _rs = str(c.get("BINANCE_REENTRY_SKIP", "off")).strip().lower()
+        REENTRY_SKIP_LIVE = _rs in ("on", "long")                                # 기본 꺼짐 = 기존 동작
+        REENTRY_SKIP_SIDES = ("long",) if _rs == "long" else ("long", "short")   # long = 롱 재진입만 쉬기
         global EXCHANGE_STOP_BUFFER
         c.setdefault("BINANCE_STOP_BUFFER", "0.5")                               # 대시보드에 '0.5%p(기존) · 기본값'으로 보이게
         try:                                                                     # 거래소 보호 손절 여유폭: 0.2~0.5%p 만 허용, 그 밖·잘못된 값은 기존 0.5
@@ -1624,7 +1628,7 @@ class Engine:
             return self.live_skip("동시 실보유 최대")
         if WEAK_HOUR_LIVE and self.weak_hour_now():
             return self.live_skip("약한 시간대(설정)")
-        if REENTRY_SKIP_LIVE and sym and self.reentry_recent(sym, strat["side"]):
+        if REENTRY_SKIP_LIVE and sym and strat["side"] in REENTRY_SKIP_SIDES and self.reentry_recent(sym, strat["side"]):
             return self.live_skip("손절 직후 재진입(설정)")
         if REGIME_FOCUS_LIVE and self.regime_weak(strat["side"]):
             return self.live_skip("지금 국면에서 약한 방향(설정)")
