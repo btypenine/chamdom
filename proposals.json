@@ -1186,7 +1186,7 @@
    "pr": "https://github.com/btypenine/chamdom/pull/102",
    "branch": "ai/20261115-bn-btc-flow",
    "createdAt": "2026-11-15T11:55:00+09:00",
-   "status": "pending"
+   "status": "merged"
   },
   {
    "id": "ai-20261115-early-bleed",
@@ -1197,7 +1197,7 @@
    "pr": "https://github.com/btypenine/chamdom/pull/103",
    "branch": "ai/20261115-early-bleed",
    "createdAt": "2026-11-15T14:55:00+09:00",
-   "status": "pending"
+   "status": "merged"
   }
  ]
 }
