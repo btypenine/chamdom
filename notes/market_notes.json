@@ -29,6 +29,15 @@
     "https://fortune.com/article/price-of-bitcoin-11-05-2026/"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-15T11:33:00+09:00",
+   "btcMove": "30분 +3.51%, 120분 +1.49% (봇 관문 기준치), 60분 저점 대비 +2.1%(11:08)",
+   "summary": "[사실] 봇 기록상 BTC가 10:45 무렵 약 62,100 USDT에서 11:12 무렵 약 64,000 USDT로 급반등, ETH도 1,731→1,805(+4%). 직전 24시간 -4~8% 하락 뒤의 반등. [추정] 원인 뉴스는 웹 검색에서 날짜가 확인되는 기사를 찾지 못해 미확인 — 숏 포지션 청산(숏 스퀴즈) 가능성만 추정.",
+   "sources": [
+    "https://www.investing.com/analysis/bitcoin-rebounds-from-november-lows-as-technicals-hint-at-trend-change-200673465"
+   ],
+   "confirmed": false
   }
  ]
 }
