@@ -51,6 +51,7 @@ APP_SETTINGS = {
     "DAILY_LOSS_LIMIT": ("num", (0, 1000000)),
     "MONTH_LOSS_LIMIT": ("num", (0, 10000000)),
     "RULE_IDLE_RELEASE_H": ("num", (0, 720)),
+    "UPBIT_EVO_SHARE": ("num", (0, 75)),
     "BINANCE_TRADE_MODE": ("choice", ("paper", "live")),
     "BINANCE_ORDER_USDT": ("num", (5, 200)),
     "BINANCE_DAILY_LOSS_USDT": ("num", (1, 500)),
@@ -291,6 +292,7 @@ def load_config():
     cfg["DAILY_LOSS_LIMIT"] = int(num("DAILY_LOSS_LIMIT", 100000))       # 0이면 제한 없음
     cfg["MONTH_LOSS_LIMIT"] = int(num("MONTH_LOSS_LIMIT", 0))            # 월(09시 기준) 손실 한도 · 0이면 제한 없음(기본)
     cfg["RULE_IDLE_RELEASE_H"] = int(num("RULE_IDLE_RELEASE_H", 0))      # 검증 중 규칙이 이 시간 넘게 신호 없으면 교체 · 0이면 끔(기본 = 기존 동작)
+    cfg["UPBIT_EVO_SHARE"] = int(num("UPBIT_EVO_SHARE", 0))              # 새 전략 시도 중 진화(변이·교배) 출신 비율 % · 0이면 끔(기본 = 기존 동작, 모두 무작위)
     cfg["TRADE_MODE"] = cfg.get("TRADE_MODE", "paper").lower()
     cfg["DEVICE_NAME"] = cfg.get("DEVICE_NAME") or "PC"
     key = cfg.get("ANTHROPIC_API_KEY", "")
@@ -803,6 +805,77 @@ def rule_id(market, spec):
 
 
 SPEC_KEYS = ("conds", "tp", "sl", "hold")
+
+# ---------------- 진화 (11-15 추가, 설정 UPBIT_EVO_SHARE 로 켬 · 기본 0 = 기존과 똑같이 모두 무작위) ----------------
+# 바이낸스 엔진에서 진화 출신 규칙이 무작위 출신보다 거래당 성적이 좋아(11-15 기준 +0.76% vs +0.12%) 업비트에도 같은 방식을 둠.
+# 실전 3회 이상·평균 플러스인 규칙의 조건 조합을 '유전자'로 모아 살짝 바꾸거나(변이) 둘을 섞어(교배) 새 후보를 만들고,
+# 후보는 무작위 후보와 똑같이 백테스트(학습/검증 구간)를 통과해야만 채택됨. 진화·무작위 출신 성적은 evoStats 로 따로 잼.
+EVO_GENE_MIN_N = 3               # 이만큼 거래한 규칙부터 유전자 자격
+EVO_GENE_MAX = 40                # 유전자 풀 크기
+EVO_PRIOR_N = 5                  # 거래가 적은 규칙은 평균 0 쪽으로 당겨서 실력 추정
+
+
+def _evo_near(choices, v, rng):
+    """보기 목록에서 지금 값의 바로 옆 칸으로 (끝이면 안쪽으로)"""
+    if v not in choices:
+        return rng.choice(choices)
+    i = choices.index(v) + rng.choice((-1, 1))
+    return choices[min(len(choices) - 1, max(0, i))]
+
+
+def evo_mutate(spec, rng):
+    """유전자 하나를 살짝 바꿈: 익절·손절·보유시간 한 칸, 조건 값 바꾸기, 조건 더하기·빼기 중 1~2개"""
+    sp = json.loads(json.dumps({k: spec[k] for k in SPEC_KEYS if k in spec}))
+    pool = dict(CONDITION_POOL)
+    for _ in range(rng.choice((1, 1, 2))):
+        ops = ["tp", "sl", "hold", "tweak"]
+        if len(sp["conds"]) < 3:
+            ops.append("add")
+        if len(sp["conds"]) > 1:
+            ops.append("drop")
+        op = rng.choice(ops)
+        if op == "tp":
+            sp["tp"] = _evo_near(TP_CHOICES, sp.get("tp", TARGET_NET_PCT), rng)
+        elif op == "sl":
+            sp["sl"] = _evo_near(SL_CHOICES, sp["sl"], rng)
+        elif op == "hold":
+            sp["hold"] = _evo_near(HOLD_CHOICES, sp["hold"], rng)
+        elif op == "tweak":
+            c = rng.choice(sp["conds"])
+            c[1] = rng.choice(pool.get(c[0], [c[1]]))
+        elif op == "add":
+            have = {c[0] for c in sp["conds"]}
+            name = rng.choice([n for n in pool if n not in have])
+            sp["conds"].append([name, rng.choice(pool[name])])
+        else:
+            sp["conds"].pop(rng.randrange(len(sp["conds"])))
+    return sp
+
+
+def evo_crossover(a, b, rng):
+    """두 부모의 조건을 섞고 익절·손절·보유시간은 각각 한쪽에서 받음"""
+    genes = {}
+    for c in a["conds"] + b["conds"]:
+        genes.setdefault(c[0], c[1])
+    names = list(genes)
+    rng.shuffle(names)
+    k = min(len(names), rng.choice((1, 2, 2, 3)))
+    return {"conds": [[n, json.loads(json.dumps(genes[n]))] for n in names[:k]],
+            "tp": rng.choice((a, b)).get("tp", TARGET_NET_PCT), "sl": rng.choice((a, b))["sl"], "hold": rng.choice((a, b))["hold"]}
+
+
+def evo_breed(genes, rng):
+    """유전자 풀에서 부모 고르기(3개 중 성적 좋은 쪽) → (자식 spec, 세대, 부모 종목)"""
+    def tour():
+        return max(rng.sample(genes, min(3, len(genes))), key=lambda g: g["fit"])
+    p = tour()
+    if len(genes) >= 2 and rng.random() < 0.35:
+        q = tour()
+        child = evo_crossover(p["spec"], q["spec"], rng)
+        if rng.random() < 0.5:
+            child = evo_mutate(child, rng)
+        return child, max(p.get("gen", 0), q.get("gen", 0)) + 1, f"{p['coin']}×{q['coin']}"
+    return evo_mutate(p["spec"], rng), p.get("gen", 0) + 1, p["coin"]
 ENTRY_CHART_BARS = 60            # 대시보드 '진입 근거' 팝업에 보여줄 진입 직전 1분봉 수
 
 
@@ -1603,6 +1676,10 @@ class Bot:
                 log(f"[통과 후 부진] {rb['market'].split('-')[1]} {rb['id']} 통과 이후 {pn['n']}회 거래당 "
                     f"{pn['sumPct'] / pn['n']:+.2f}% (누적 {(rb['sumPct'] + pct) / (rb['trades'] + 1):+.2f}%) "
                     "· 관찰만: 이후 거래를 따로 모아 다른 통과 규칙과 비교 (자격·매매는 그대로)")
+        try:
+            self.evo_record(rb, pos, pct)
+        except Exception as e:                    # 분석 전용 기록 실패가 매매를 막으면 안 됨
+            log(f"[경고] 진화 성적 기록 실패: {e}")
         rb["trades"] += 1
         rb["wins"] += 1 if pnl > 0 else 0
         rb["sumPct"] = round(rb["sumPct"] + pct, 4)
@@ -1718,8 +1795,40 @@ class Bot:
             "id": rid, "market": market, "desc": describe(spec), "spec": {k: spec[k] for k in SPEC_KEYS if k in spec},
             "btWinrate": spec.get("winrate"), "btEdge": spec.get("edgePct"), "btVol": spec.get("btVol"),
             "trades": 0, "wins": 0, "sumPct": 0.0, "pnl": 0, "status": "testing",
-            "firstAt": int(time.time() * 1000), "lastAt": 0})
+            "firstAt": int(time.time() * 1000), "lastAt": 0,
+            "origin": spec.get("origin", "rand"), "gen": spec.get("gen", 0), "parent": spec.get("parent", "")})
         return rb
+
+    def evo_pool(self):
+        """유전자 풀: 실전(검증 모의 포함) 3회 이상·추정 실력 플러스·퇴출 아닌 규칙의 조건 조합, 실력 순 상위 40개"""
+        genes = []
+        for rb in self.state["ruleBook"].values():
+            if not rb.get("spec") or rb.get("status") == "retired" or rb.get("trades", 0) < EVO_GENE_MIN_N:
+                continue
+            fit = rb["sumPct"] / (rb["trades"] + EVO_PRIOR_N)
+            if fit <= 0:
+                continue
+            genes.append({"spec": rb["spec"], "fit": round(fit, 4), "n": rb["trades"], "gen": rb.get("gen", 0),
+                          "coin": rb["market"].split("-")[1]})
+        genes.sort(key=lambda g: -g["fit"])
+        return genes[:EVO_GENE_MAX]
+
+    def evo_record(self, rb, pos, pct):
+        """관찰 전용(매매 영향 없음): 진화 출신·무작위 출신 규칙의 실전 성적을 따로 쌓음 (실주문/검증 모의 구분)"""
+        es = self.state.setdefault("evoStats", {})
+        k = ("evo" if rb.get("origin") == "evo" else "rand") + (":paper" if pos.get("paper") else ":live")
+        b = es.setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0})
+        b["n"] += 1
+        b["wins"] += 1 if pct > 0 else 0
+        b["sumPct"] = round(b["sumPct"] + pct, 4)
+
+    def evo_view(self):
+        es = self.state.get("evoStats", {})
+        rows = [{"kind": k, "n": b["n"], "wins": b["wins"], "avgPct": round(b["sumPct"] / b["n"], 3) if b["n"] else None}
+                for k, b in sorted(es.items())]
+        return {"share": self.cfg.get("UPBIT_EVO_SHARE", 0), "rows": rows,
+                "activeEvo": sum(1 for s in self.state.get("strategies", {}).values()
+                                 if (self.state["ruleBook"].get(s.get("rid")) or {}).get("origin") == "evo")}
 
     def trim_rulebook(self):
         rbk = self.state["ruleBook"]
@@ -1851,6 +1960,11 @@ class Bot:
                 ("익절 " if k == "tp" else "보유 ") + ", ".join(f"{('+%g%%' % v) if k == 'tp' else ('%d분' % v)} ×{w:.1f}"
                                                               for v, w in sorted(m.items(), key=lambda x: -x[1]))
                 for k, m in shape.items()))
+        evo_share = max(0, min(75, self.cfg.get("UPBIT_EVO_SHARE", 0))) / 100
+        genes = self.evo_pool() if evo_share > 0 else []
+        if evo_share > 0:
+            log(f"[진화] 새 전략 시도 중 진화 출신 {evo_share * 100:.0f}% · 유전자 풀 {len(genes)}개"
+                + ("" if genes else " (자격 있는 규칙이 없어 이번에는 모두 무작위)"))
         for idx, mk in enumerate(markets, 1):
             if self.state["positions"]:
                 try:
@@ -1874,7 +1988,11 @@ class Bot:
                 continue
             best = None
             for _ in range(BT_TRIALS):
-                spec = random_spec(self.rng, weights, shape)
+                if genes and self.rng.random() < evo_share:     # 설정이 0이면 이 줄은 건너뜀 → 기존과 똑같은 무작위 순서
+                    spec, gen, parent = evo_breed(genes, self.rng)
+                    spec.update({"origin": "evo", "gen": gen, "parent": parent})
+                else:
+                    spec = random_spec(self.rng, weights, shape)
                 rb = self.state["ruleBook"].get(rule_id(mk, spec))
                 if rb and rb["status"] == "retired":
                     continue                              # 실전에서 퇴출된 규칙은 다시 안 씀
@@ -1887,6 +2005,8 @@ class Bot:
                 spec["btVol"] = round(avg_range_pct(series, series.n), 4)
                 self.rule_open(mk, spec)
                 chosen[mk] = spec
+                if spec.get("origin") == "evo":
+                    log(f"  🧬 {mk.split('-')[1]} 진화 {spec.get('gen')}세대 후보 채택 (부모 {spec.get('parent')})")
                 log(f"  채택 {mk.split('-')[1]}: {describe(spec)} · 승률 {r['winrate']*100:.0f}% "
                     f"{r['trades']}회 · 거래당 {r['edgePct']:+.2f}% · 검증구간 {r['holdoutTrades']}회 승률 {r['holdoutWinrate']*100:.0f}% 거래당 {r['holdoutEdgePct']:+.2f}%")
             else:
@@ -3160,6 +3280,7 @@ class Bot:
                      "blocked": self.state["blocked"], "marketStats": self.state["marketStats"],
                      "ruleBook": self.rulebook_view(),
                      "ruleIdle": self.rule_idle_view(),
+                     "evoStats": self.evo_view(),
                      "marketGates": self.gates_view(),
                      "exitRules": self.exits_view(),
                      "proposals": self.state.get("proposals", []),
