@@ -76,6 +76,7 @@ RESELECT_HOURS = 4                # 전략 다시 고르는 주기
 FUNDING_CHECK_SEC = 300           # 펀딩비(관찰 전용): 5분마다 예상 펀딩비를 읽어 보유 포지션에 정산 시점마다 누적 (손익·판정에는 안 씀)
 REGIME_BARS = 96                  # 시장 국면(관찰 전용): BTC 최근 24시간(15분봉 96개) 변화로 나눔
 REGIME_UP, REGIME_DOWN = 1.5, -1.5   # +1.5% 이상 상승장, -1.5% 이하 하락장, 그 사이 횡보
+BF_BARS, BF_HI = 8, 1.0             # BTC 흐름 관찰(관찰 전용): 진입 때 BTC 최근 2시간(15분봉 8개)이 내 방향과 1.0% 이상 반대면 '역행'
 PAPER_USDT = 100.0                # 모의 1회 진입 금액(USDT, 레버리지 1배)
 GB_ARM = 0.5                      # 관찰 전용: 익절까지 가격 움직임의 50% 이상 갔다가
 GB_FLOOR = 0.0                    #   진입가(움직임 0%)까지 되밀리면 "여기서 본전 정리했다면" 손익을 기록 (실제 청산은 그대로)
@@ -730,8 +731,11 @@ class Engine:
         if getattr(self, "_regime_bar", None) == bar:
             return self._regime
         self._regime_bar, self._regime, self._regime_chg = bar, None, None
+        self._btc2h = None
         try:
             cl = klines("BTCUSDT", REGIME_BARS + 1)
+            if len(cl) > BF_BARS:                        # 관찰 전용: BTC 최근 2시간 변화 (매매에는 안 씀)
+                self._btc2h = round((cl[-1]["trade_price"] / cl[-1 - BF_BARS]["trade_price"] - 1) * 100, 2)
             if len(cl) > REGIME_BARS:
                 chg = (cl[-1]["trade_price"] / cl[-1 - REGIME_BARS]["trade_price"] - 1) * 100
                 self._regime_chg = round(chg, 2)
@@ -1337,6 +1341,60 @@ class Engine:
         except Exception:
             return None
 
+    # --- BTC 단기 흐름 역행 관찰 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
+    def btcflow_mark(self, sym):
+        """관찰 전용: 진입 때 BTC 최근 2시간 변화를 표시. 숏인데 BTC가 BF_HI% 이상 오르는 중이거나
+        롱인데 BF_HI% 이상 빠지는 중이면 '역행', 같은 쪽으로 BF_HI% 이상이면 '순행', 나머지는 '잔잔'.
+        급락 뒤 반등 때 숏이 줄줄이 손절되는지(또는 반대) 보는 용도"""
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or "btc2h" in p:
+                return
+            self.regime()                                # 봉마다 한 번만 BTC 시세를 받음(이미 받았으면 재사용)
+            v = getattr(self, "_btc2h", None)
+            if v is None:
+                return
+            p["btc2h"] = v
+            up = v if p["side"] == "long" else -v        # 내 방향 기준으로 BTC가 도와주는 정도
+            if up <= -BF_HI:
+                log(f"[BTC 흐름 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} 진입 · "
+                    f"BTC 2시간 {v:+.2f}% (내 방향과 반대) → '역행' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] BTC 흐름 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    @staticmethod
+    def _btcflow_flag(p):
+        v = p.get("btc2h")
+        if v is None:
+            return None
+        up = v if p["side"] == "long" else -v
+        return "against" if up <= -BF_HI else ("with" if up >= BF_HI else "flat")
+
+    def btcflow_record(self, kind, p, pct):
+        """관찰 전용: 역행 / 순행 / 잔잔 진입의 결과를 따로 누적"""
+        try:
+            f = self._btcflow_flag(p)
+            if f is None:                                # 이 기능 전에 연 포지션은 건너뜀
+                return
+            k = f"{kind}|{f}|{p['side']}"
+            d = self.state.setdefault("btcFlowStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["worst"] = round(min(d["worst"], pct), 3)
+        except Exception as e:
+            log(f"[안내] BTC 흐름 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def btcflow_view(self):
+        try:
+            rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None, "worst": v.get("worst")}
+                    for k, v in sorted((self.state.get("btcFlowStats") or {}).items())]
+            opn = sum(1 for q in self.state["positions"].values() if self._btcflow_flag(q) == "against")
+            return {"hi": BF_HI, "now": getattr(self, "_btc2h", None), "rows": rows, "openAgainst": opn}
+        except Exception:
+            return None
+
     # --- 손절폭/익절폭 비대칭 관찰 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
     ASYM_HI = 2.5                                        # 손절폭이 익절폭의 이 배 이상이면 '비대칭' (예: 익절+1.5%/손절-5%)
 
@@ -1492,6 +1550,7 @@ class Engine:
                 self.event_mark(sym, evn)
                 self.reentry_mark(sym)
                 self.crowd_mark(sym)
+                self.btcflow_mark(sym)
                 continue
             if n_paper() < self.max_open:
                 self.open_paper(sym, strat, px)
@@ -1501,6 +1560,7 @@ class Engine:
                 self.event_mark(sym, evn)
                 self.reentry_mark(sym)
                 self.crowd_mark(sym)
+                self.btcflow_mark(sym)
                 self.skip_mark(sym)
         save_state(st)
 
@@ -1727,6 +1787,7 @@ class Engine:
         self.event_record("live", p, pct)
         self.reentry_record("live", sym, p, pct, reason)
         self.crowd_record("live", p, pct)
+        self.btcflow_record("live", p, pct)
         self.asym_record("live", p, pct)
         self.p_calib_record(p, pct, usdt)
         self.stop_gap_record(sym, p, pct, reason)
@@ -2046,6 +2107,7 @@ class Engine:
         self.event_record("paper", p, pct)
         self.reentry_record("paper", sym, p, pct, reason)
         self.crowd_record("paper", p, pct)
+        self.btcflow_record("paper", p, pct)
         self.asym_record("paper", p, pct)
         self.skip_record(p, pct)
         if reason == "익절":
@@ -2134,6 +2196,7 @@ class Engine:
             "eventWatch": self.event_view(),
             "reentry": self.reentry_view(),
             "crowd": self.crowd_view(),
+            "btcFlow": self.btcflow_view(),
             "asym": self.asym_view(),
             "skipOut": self.skip_view(),
             "pCalib": self.p_calib_view(),
