@@ -571,6 +571,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnEvent" hidden></div>
       <div class="msg" id="bnReentry" hidden></div>
       <div class="msg" id="bnCrowd" hidden></div>
+      <div class="msg" id="bnBtcFlow" hidden></div>
       <div class="msg" id="bnAsym" hidden></div>
       <div class="msg" id="bnSkipOut" hidden></div>
       <div class="msg" id="bnPCalib" hidden></div>
@@ -1523,6 +1524,22 @@ function renderBinance(b) {
       else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
       t += " · 몰림이 계속 더 나쁘면 그때 '같은 방향 실보유 상한'을 제안할 근거가 됨";
       $("bnCrowd").textContent = t;
+    }
+  }
+  {  // BTC 단기 흐름 역행 관찰 (진입·청산·금액·실주문 판단에는 안 씀)
+    const bf = b.btcFlow;
+    $("bnBtcFlow").hidden = !bf;
+    if (bf) {
+      const hi = bf.hi || 1;
+      let t = `🌊 BTC 흐름 역행(관찰) · 진입 때 BTC 최근 2시간이 내 방향과 ${hi}% 이상 반대였던 거래(예: BTC 반등 중 숏)를 따로 봄`;
+      if (bf.now != null) t += ` · 지금 BTC 2시간 ${bf.now > 0 ? "+" : ""}${bf.now}%`;
+      if (bf.openAgainst) t += ` · 역행 진입 보유 중 ${bf.openAgainst}개`;
+      const nm = { against: "역행", with: "순행", flat: "잔잔" };
+      const rows = (bf.rows || []).filter((x) => x.n);
+      if (rows.length) for (const r of rows) t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${r.side === "long" ? "롱" : "숏"} ${nm[r.flag] || r.flag} ${r.n}회 ${pct(r.avgPct)}`;
+      else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
+      t += " · 역행이 계속 더 나쁘면 그때 'BTC 반대 흐름일 땐 실주문 쉬기'를 제안할 근거가 됨";
+      $("bnBtcFlow").textContent = t;
     }
   }
   {  // 손절폭/익절폭 비대칭 관찰 (진입·청산·금액·실주문 판단에는 안 씀)
