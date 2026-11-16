@@ -1264,7 +1264,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/109",
    "branch": "ai/20261116-bn-symbol-view",
    "createdAt": "2026-11-16T17:55:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-11-17T08:50:00+09:00"
   }
  ]
 }
