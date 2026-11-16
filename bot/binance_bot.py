@@ -936,6 +936,35 @@ class Engine:
         except Exception:
             return {"rows": [], "look": 100, "now": None}
 
+    def symbol_view(self):
+        """관찰 전용: 최근 청산(tradeLog 최대 100건)의 실주문을 종목·방향별로 묶어 성적과 쏠림(한 종목 비중)을 봄.
+        읽기만 함 — 매매·판정·주문에는 전혀 안 씀"""
+        try:
+            g = {}
+            total = 0
+            for t in self.state.get("tradeLog") or []:
+                pct = t.get("pct")
+                if pct is None or not t.get("live") or str(t.get("desc") or "").startswith("넘겨받은"):
+                    continue
+                total += 1
+                k = (str(t.get("symbol") or ""), str(t.get("side") or ""))
+                d = g.setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "sumU": 0.0, "worst": 0.0})
+                d["n"] += 1
+                d["wins"] += 1 if pct > 0 else 0
+                d["sumPct"] += float(pct)
+                d["sumU"] += float(t.get("usdt") or 0)
+                d["worst"] = min(d["worst"], float(pct))
+            rows = [{"symbol": k[0], "side": k[1], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3), "usdt": round(v["sumU"], 2), "worst": round(v["worst"], 2)}
+                    for k, v in g.items()]
+            rows.sort(key=lambda r: r["usdt"])
+            top = max(rows, key=lambda r: r["n"]) if rows else None
+            return {"look": 100, "total": total, "symbols": len(rows),
+                    "worst": rows[:3], "best": rows[::-1][:3] if len(rows) > 3 else [],
+                    "top": top, "topShare": round(top["n"] / total, 3) if top and total else None}
+        except Exception:
+            return {"look": 100, "total": 0, "symbols": 0, "worst": [], "best": [], "top": None, "topShare": None}
+
     def weak_hour_now(self, rows=None, now=None):
         """지금 한국시간 4시간 구간이 '약한 시간대'인지: 최근 청산 100건 중 그 구간 실주문 WH_MIN_N회 이상·평균 마이너스·USDT 합계 마이너스.
         계산 실패하면 False(기존 동작). 설정 BINANCE_WEAK_HOUR=on 일 때만 live_ok 에서 쓰고, 꺼져 있으면 대시보드 표시만 함"""
@@ -2262,6 +2291,7 @@ class Engine:
             "stopGap": self.stop_gap_view(),
             "payoff": self.payoff_view(),
             "hourView": self.hour_view(),
+            "symbolView": self.symbol_view(),
             "tpRun": self.tp_run_view(),
             "nearProven": sorted(({"symbol": r.get("symbol", ""), "side": r.get("side", ""), "n": r.get("n", 0),
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
