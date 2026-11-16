@@ -172,6 +172,7 @@ def load_state():
                          "maxGen": 0, "born": 0})
     s.setdefault("guard", {"streak": 0, "restUntil": 0, "blockUntil": 0, "blockWhy": ""})
     s.setdefault("regimeStats", {})      # 관찰 전용: {"paper|하락|short": {"n","wins","sumPct"}} — 매매에는 안 씀
+    s.setdefault("regimeFlipStats", {})  # 관찰 전용: {"live|flip|short": {"n","wins","sumPct"}} — 진입 때와 청산 때 국면이 다른지(flip/same)
     return s
 
 
@@ -770,6 +771,16 @@ class Engine:
         d["n"] += 1
         d["wins"] += 1 if pct > 0 else 0
         d["sumPct"] = round(d["sumPct"] + pct, 4)
+        try:                                             # 관찰 전용: 보유 중 국면이 바뀌었는지(진입 국면 ≠ 청산 때 국면) — 매매에는 안 씀
+            now = getattr(self, "_regime", None)         # 이미 계산된 값만 씀(추가 시세 요청 없음)
+            if now:
+                fk = f"{kind}|{'same' if now == reg else 'flip'}|{p['side']}"
+                f = self.state.setdefault("regimeFlipStats", {}).setdefault(fk, {"n": 0, "wins": 0, "sumPct": 0.0})
+                f["n"] += 1
+                f["wins"] += 1 if pct > 0 else 0
+                f["sumPct"] = round(f["sumPct"] + pct, 4)
+        except Exception:
+            pass
 
     def side_weak(self, side):
         """관찰 전용: 같은 방향의 최근 모의 청산 SW_LOOK회 평균. SW_MIN회 미만이면 None.
@@ -2223,7 +2234,13 @@ class Engine:
                        "weakNow": [sd for sd in ("long", "short") if getattr(self, "_regime", None) and self.regime_weak(sd)],
                        "rows": [{"kind": k.split("|")[0], "regime": k.split("|")[1], "side": k.split("|")[2], "n": v["n"],
                                  "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None}
-                                for k, v in sorted(self.state.get("regimeStats", {}).items())]},
+                                for k, v in sorted(self.state.get("regimeStats", {}).items())],
+                       "flipRows": [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"],
+                                     "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None}
+                                    for k, v in sorted(self.state.get("regimeFlipStats", {}).items())],
+                       "openFlip": [{"symbol": k, "side": v["side"], "live": bool(v.get("live")), "from": v.get("regime")}
+                                    for k, v in self.state.get("positions", {}).items()
+                                    if getattr(self, "_regime", None) and v.get("regime") and v.get("regime") != self._regime]},
             "funding": {"rows": [{"kind": k.split("|")[0], "side": k.split("|")[1], "n": v["n"], "paidN": v.get("paidN", 0),
                                   "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None,
                                   "avgFund": round(v["sumFund"] / v["n"], 4) if v["n"] else None,

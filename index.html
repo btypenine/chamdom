@@ -1425,6 +1425,10 @@ function renderBinance(b) {
       const lv = (rg.rows || []).filter((x) => x.kind === "live");
       if (lv.length) t += " · 실주문 " + lv.map((x) => `${x.regime} ${x.side === "long" ? "롱" : "숏"} ${x.n}회 ${pct(x.avgPct)}`).join(", ");
       if (rg.weakNow && rg.weakNow.length) t += ` · ⚠️ 지금 국면에서 약한 방향: ${rg.weakNow.map((sd) => sd === "long" ? "롱" : "숏").join("·")}(실주문 ${rg.focusMinN ?? 15}회↑·평균 마이너스) → ${rg.focusOn ? "설정 켜짐: 새 실주문은 모의로 보냄" : "설정 꺼짐: 표시만(실주문은 그대로)"}`;
+      const of = rg.openFlip || [];
+      if (of.length) { const lvF = of.filter((x) => x.live); t += ` · 🔄 진입 때와 국면이 바뀐 보유 ${of.length}개(실주문 ${lvF.length}: ${lvF.map((x) => `${x.symbol.replace("USDT", "")} ${x.side === "long" ? "롱" : "숏"}`).join(", ") || "없음"})`; }
+      const fr = (rg.flipRows || []).filter((x) => x.kind === "live");
+      if (fr.length) t += " · 국면 바뀐 채 청산(실주문) " + fr.map((x) => `${x.flag === "flip" ? "바뀜" : "그대로"} ${x.side === "long" ? "롱" : "숏"} ${x.n}회 ${pct(x.avgPct)}`).join(", ");
       t += " · 기준: BTC 24시간 +1.5% 이상 상승 / -1.5% 이하 하락 / 그 사이 횡보 · 오늘부터 쌓임";
       $("bnRegime").textContent = t;
     }
