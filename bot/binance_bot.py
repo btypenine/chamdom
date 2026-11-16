@@ -1829,7 +1829,7 @@ class Engine:
         self.curve_record(usdt)
         self.state["positions"].pop(sym, None)
         if record:
-            self.rule_record(p["rid"], pct)
+            self.rule_record(p["rid"], pct, "live")
         self.regime_record("live", p, pct)
         self.funding_record("live", p, pct)
         self.giveback_record("live", sym, p, pct)
@@ -2172,10 +2172,18 @@ class Engine:
         log(f"[모의 청산] {sym} {'롱' if long_ else '숏'} {pct:+.2f}% ({usdt:+.2f} USDT, {reason}) · "
             f"누적 {lg['trades']}회 거래당 {lg['sumPct'] / lg['trades']:+.3f}%")
 
-    def rule_record(self, rid, pct):
+    def rule_record(self, rid, pct, kind="paper"):
         rb = self.state["ruleBook"].get(rid)
         if not rb:
             return
+        # 통과 '이후' 성적(관찰 전용): 이 거래 직전 규칙 상태(통과/검증 중)별로 실주문·모의를 따로 쌓음 — 매매에는 안 씀
+        st0 = "proven" if rb.get("status") == "proven" else ("testing" if rb.get("status") == "testing" else None)
+        if st0:
+            pa = self.state.setdefault("passAfter", {})
+            c = pa.setdefault(f"{kind}:{st0}", {"n": 0, "wins": 0, "sumPct": 0.0})
+            c["n"] += 1
+            c["wins"] += 1 if pct > 0 else 0
+            c["sumPct"] = round(c["sumPct"] + pct, 4)
         rb["n"] += 1
         rb["wins"] += 1 if pct > 0 else 0
         rb["sumPct"] = round(rb["sumPct"] + pct, 4)
@@ -2259,6 +2267,9 @@ class Engine:
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
                                   for r in rb if r.get("status") == "testing"),
                                  key=lambda x: (-(x["n"] or 0), -(x["avgPct"] or -99)))[:3],
+            "passAfter": [{"kind": k.split(":")[0], "status": k.split(":")[1], "n": v["n"], "wins": v["wins"],
+                           "avgPct": round(v["sumPct"] / v["n"], 3)}
+                          for k, v in sorted(self.state.get("passAfter", {}).items()) if v.get("n")],
             "ruleEval": RULE_EVAL, "rulePromote": RULE_PROMOTE_MIN_AVG, "liveBasis": self.live_basis, "style": STYLE,
             "guard": guard, "evo": evo_view,
             "settings": cb.settings_view(self.cfg, binance=True),

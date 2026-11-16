@@ -1326,6 +1326,12 @@ function renderBinance(b) {
   else if (!(b.rules?.proven)) why = `실주문 대기: 통과한 규칙이 아직 0개 · 통과 문턱 모의 ${b.ruleEval || 5}회 이상·거래당 +${(b.rulePromote ?? 0.15).toFixed(2)}% 이상`;
   if (parts.length) why += (why ? " · " : "") + "오늘 신호가 모의로 간 이유: " + parts.join(", ");
   if (isLive && near.length) why += " · 통과에 가까운 규칙: " + near.join(", ");
+  {  // 통과 '이후' 성적(관찰): 통과 판정이 앞으로도 맞는지 — 통과 규칙 vs 검증 중 규칙, 실주문 기준
+    const pa = b.passAfter || [];
+    const g = (k, st) => pa.find((x) => x.kind === k && x.status === st);
+    const lp = g("live", "proven"), lt = g("live", "testing");
+    if (lp || lt) why += ` · 통과 이후(관찰·실주문): 통과 규칙 ${lp ? `${lp.n}회 ${pct(lp.avgPct)}` : "0회"} vs 검증 중 규칙 ${lt ? `${lt.n}회 ${pct(lt.avgPct)}` : "0회"}` + ((lp?.n || 0) < 20 ? " (표본 적음)" : "");
+  }
   // 실주문 체결 밀림(관찰): 신호 가격 대비 실제 체결이 얼마나 불리했는지(+면 불리) — 모의는 0.02%만 가정
   const sl = b.liveSlip || {};
   if (isLive && (sl.entryN || sl.exitN)) {
