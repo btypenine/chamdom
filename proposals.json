@@ -1230,7 +1230,7 @@
    "pr": "https://github.com/btypenine/chamdom/pull/106",
    "branch": "ai/20261116-bn-regime-flip",
    "createdAt": "2026-11-16T08:55:00+09:00",
-   "status": "pending"
+   "status": "merged"
   },
   {
    "id": "ai-20261116-bn-fund-hot",
@@ -1241,7 +1241,7 @@
    "pr": "https://github.com/btypenine/chamdom/pull/107",
    "branch": "ai/20261116-bn-fund-hot",
    "createdAt": "2026-11-16T11:55:00+09:00",
-   "status": "pending"
+   "status": "merged"
   }
  ]
 }
