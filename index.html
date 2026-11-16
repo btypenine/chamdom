@@ -578,6 +578,7 @@ body.compact #overCard { display: flex !important; }
       <div class="msg" id="bnStopGap" hidden></div>
       <div class="msg" id="bnPayoff" hidden></div>
       <div class="msg" id="bnHour" hidden></div>
+      <div class="msg" id="bnSymbol" hidden></div>
       <div class="msg" id="bnTpRun" hidden></div>
       <div class="stats">
         <div><div class="label">거래 / 익절</div><div class="stat-val num" id="bnTrades">-</div></div>
@@ -1656,6 +1657,20 @@ function renderBinance(b) {
       else if (hv.now != null) t += ` · 지금 구간(${cur})은 약한 시간대 아님`;
       t += " · 표본이 작을 땐 우연일 수 있음(설정 '약한 시간대 실주문 쉬기'는 기본 꺼짐)";
       $("bnHour").textContent = t;
+    }
+  }
+  {  // 종목별 실주문 성적 (관찰, 매매엔 안 씀)
+    const sv = b.symbolView;
+    $("bnSymbol").hidden = !(sv && sv.total);
+    if (sv && sv.total) {
+      const nm = (r) => `${r.symbol.replace(/USDT$/, "")} ${r.side === "long" ? "롱" : "숏"}`;
+      const one = (r) => `${nm(r)} ${r.n}회 승률 ${Math.round(r.wins / r.n * 100)}% 평균 ${pct(r.avgPct)} (${r.usdt >= 0 ? "+" : ""}${r.usdt.toFixed(2)} USDT, 최악 ${pct(r.worst)})`;
+      let t = `🎯 종목별 실주문 성적(관찰) · 최근 청산 ${sv.look ?? 100}건 중 실주문 ${sv.total}건 · ${sv.symbols}개 종목·방향`;
+      if ((sv.worst || []).length) t += " · 가장 손해: " + sv.worst.map(one).join(" / ");
+      if ((sv.best || []).length) t += " · 가장 이익: " + sv.best.map(one).join(" / ");
+      if (sv.top && sv.topShare != null) t += ` · 가장 많이 거래: ${nm(sv.top)} ${Math.round(sv.topShare * 100)}%` + (sv.topShare >= 0.2 ? " ⚠️ 한 종목 쏠림" : "");
+      t += " · 표본이 작을 땐 우연일 수 있음(매매는 그대로)";
+      $("bnSymbol").textContent = t;
     }
   }
   {  // 익절 뒤 더 간 폭 (관찰, 매매엔 안 씀)
