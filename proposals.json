@@ -1252,7 +1252,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/108",
    "branch": "ai/20261116-bn-pass-after",
    "createdAt": "2026-11-16T14:58:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-11-16T17:35:00+09:00"
   }
  ]
 }
