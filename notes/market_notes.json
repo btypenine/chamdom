@@ -38,6 +38,13 @@
     "https://www.investing.com/analysis/bitcoin-rebounds-from-november-lows-as-technicals-hint-at-trend-change-200673465"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-16T23:37:00+09:00",
+   "btcMove": "60분 저점 대비 +2.3%(23:37, 업비트 봇 기록), 23:33 30분 +1.02%, 이후 00:06 30분 -0.78% 되돌림. 바이낸스 BTC 24시간 -0.45%",
+   "summary": "[사실] 봇 기록상 BTC가 22:40~23:37 사이 약 2% 급등했다가 자정 무렵 일부 되돌림, 24시간 기준으론 보합. [추정] 웹 검색에서 이 시각 원인 기사를 찾지 못함 — 미 증시 개장(23:30 KST) 무렵 매수세나 숏 청산 가능성만 추정.",
+   "sources": [],
+   "confirmed": false
   }
  ]
 }
