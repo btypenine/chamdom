@@ -74,6 +74,7 @@ TRAIN_BARS = 1920                 # 학습 20일
 TOP_N = 20                        # 거래대금 상위 종목 수
 RESELECT_HOURS = 4                # 전략 다시 고르는 주기
 FUNDING_CHECK_SEC = 300           # 펀딩비(관찰 전용): 5분마다 예상 펀딩비를 읽어 보유 포지션에 정산 시점마다 누적 (손익·판정에는 안 씀)
+FUND_HOT_PCT = 0.10               # 펀딩비 경고(관찰 전용): 다음 정산 예상 펀딩이 내 쪽에 이만큼(%) 이상 불리하면 '펀딩 과열' 표시 (매매엔 안 씀)
 REGIME_BARS = 96                  # 시장 국면(관찰 전용): BTC 최근 24시간(15분봉 96개) 변화로 나눔
 REGIME_UP, REGIME_DOWN = 1.5, -1.5   # +1.5% 이상 상승장, -1.5% 이하 하락장, 그 사이 횡보
 BF_BARS, BF_HI = 8, 1.0             # BTC 흐름 관찰(관찰 전용): 진입 때 BTC 최근 2시간(15분봉 8개)이 내 방향과 1.0% 이상 반대면 '역행'
@@ -984,6 +985,7 @@ class Engine:
                 p["fundNext"] = int(d.get("nextFundingTime") or 0) or None
             except (TypeError, ValueError):
                 pass
+            self.fund_hot_mark(sym, p)
         if paid:
             log("[펀딩비 관찰] 정산 반영(손익 계산엔 안 넣음): " + ", ".join(paid[:12]) + (" 외" if len(paid) > 12 else ""))
 
@@ -1138,6 +1140,30 @@ class Engine:
                 for k, v in sorted((tr.get("stats") or {}).items())]
         return {"hours": TR_HOURS, "rows": rows, "recent": (tr.get("recent") or [])[-5:], "open": len(tr.get("open") or [])}
 
+    def fund_hot_mark(self, sym, p):
+        """관찰 전용: 다음 정산 예상 펀딩비가 내 방향에 FUND_HOT_PCT% 이상 불리하면(롱은 +펀딩, 숏은 -펀딩) 포지션에
+        '펀딩 과열' 표시(fundHot)를 남기고 정산마다 한 번 로그로 알림. 청산·손익·판정·실주문에는 전혀 안 씀"""
+        try:
+            rate = p.get("fundRate")
+            if rate is None:
+                return
+            f = rate * 100 * (-1 if p["side"] == "long" else 1)     # 내 쪽에서 본 다음 정산 예상(%) — 음수면 냄
+            if f > -FUND_HOT_PCT:
+                return
+            p["fundHot"] = True
+            p["fundWorst"] = round(min(p.get("fundWorst", 0.0), f), 4)
+            nft = p.get("fundNext")
+            if nft and p.get("fundHotWarned") != nft:
+                p["fundHotWarned"] = nft
+                tpm = abs(p["tp"] / p["entry"] - 1) * 100 if p.get("entry") else 0
+                left = max(0, int((nft - time.time() * 1000) / 60000))
+                share = f" (익절폭 {tpm:.1f}%의 {abs(f) / tpm * 100:.0f}%)" if tpm > 0 else ""
+                log(f"[펀딩비 경고] {sym.replace('USDT', '')} {'롱' if p['side'] == 'long' else '숏'}"
+                    f"{' 실주문' if p.get('live') else ''} · 다음 정산 예상 {f:+.3f}%{share} · 정산까지 약 {left}분 "
+                    f"→ '펀딩 과열' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 펀딩 과열 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
     def funding_record(self, kind, p, pct):
         """청산 1건의 누적 펀딩비를 방향별 표에 더함 (관찰 전용)"""
         k = f"{kind}|{p['side']}"
@@ -1146,6 +1172,16 @@ class Engine:
         d["sumPct"] = round(d["sumPct"] + pct, 4)
         d["sumFund"] = round(d["sumFund"] + p.get("fundPct", 0.0), 4)
         d["paidN"] += p.get("fundN", 0)
+        try:                                              # 펀딩 과열(fundHot) / 보통 결과를 따로 (관찰 전용)
+            h = self.state.setdefault("fundHotStats", {}).setdefault(
+                f"{kind}|{'hot' if p.get('fundHot') else 'ok'}|{p['side']}",
+                {"n": 0, "wins": 0, "sumPct": 0.0, "sumFund": 0.0})
+            h["n"] += 1
+            h["wins"] += 1 if pct > 0 else 0
+            h["sumPct"] = round(h["sumPct"] + pct, 4)
+            h["sumFund"] = round(h["sumFund"] + p.get("fundPct", 0.0), 4)
+        except Exception as e:
+            log(f"[안내] 펀딩 과열 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
 
     def events(self):
         """경제 일정표(bot/events.json, 업비트 봇과 같은 파일)를 30분마다 다시 받음. 실패하면 이전 값 (관찰 전용)"""
@@ -2229,7 +2265,14 @@ class Engine:
                                   "avgFund": round(v["sumFund"] / v["n"], 4) if v["n"] else None,
                                   "avgWithFund": round((v["sumPct"] + v["sumFund"]) / v["n"], 3) if v["n"] else None}
                                  for k, v in sorted(self.state.get("fundStats", {}).items())],
-                        "openFund": round(sum(q.get("fundPct", 0.0) for q in self.state["positions"].values()), 4)},
+                        "openFund": round(sum(q.get("fundPct", 0.0) for q in self.state["positions"].values()), 4),
+                        "hotPct": FUND_HOT_PCT,
+                        "hotNow": [{"symbol": k, "side": q["side"], "live": bool(q.get("live")), "worst": q.get("fundWorst")}
+                                   for k, q in self.state["positions"].items() if q.get("fundHot")],
+                        "hotRows": [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"],
+                                     "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None,
+                                     "avgWithFund": round((v["sumPct"] + v["sumFund"]) / v["n"], 3) if v["n"] else None}
+                                    for k, v in sorted(self.state.get("fundHotStats", {}).items())]},
             "foreign": self.state.get("foreign") or {},
             "readLimitedUntil": self.state.get("readLimitedUntil") or 0,
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],

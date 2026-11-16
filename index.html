@@ -1439,6 +1439,13 @@ function renderBinance(b) {
       if (rows.length) for (const r of rows) t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${r.side === "long" ? "롱" : "숏"} ${r.n}회: 지금 ${pct(r.avgPct)} → 펀딩 반영 ${pct(r.avgWithFund)} (거래당 ${sgn(r.avgFund)}, 정산 ${r.paidN}번)`;
       else t += " · 아직 청산된 거래 없음(오늘부터 쌓임)";
       t += " · 롱은 내고 숏은 받음(음수 펀딩이면 반대)";
+      if (fd.hotPct != null) {
+        const hn = fd.hotNow || [];
+        t += ` · 🔥 펀딩 과열(다음 정산이 내 쪽에 ${fd.hotPct}% 이상 불리) 보유 ${hn.length}개`;
+        if (hn.length) t += "(" + hn.slice(0, 5).map((q) => `${q.symbol.replace("USDT", "")} ${q.side === "long" ? "롱" : "숏"}${q.live ? " 실" : ""} ${sgn(q.worst)}`).join(", ") + ")";
+        const hr = (fd.hotRows || []).filter((x) => x.n && x.kind === "live");
+        if (hr.length) t += " · 실주문 청산: " + hr.map((r) => `${r.flag === "hot" ? "과열" : "보통"} ${r.side === "long" ? "롱" : "숏"} ${r.n}회 ${pct(r.avgPct)}(펀딩 반영 ${pct(r.avgWithFund)})`).join(", ");
+      }
       $("bnFunding").textContent = t;
     }
   }
