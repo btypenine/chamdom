@@ -1276,7 +1276,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/110",
    "branch": "ai/20261117-up-standby",
    "createdAt": "2026-11-17T12:20:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-11-17T14:36:00+09:00"
   },
   {
    "id": "ai-20261117-bn-first-dash",
@@ -1287,7 +1288,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/111",
    "branch": "ai/20261117-bn-first-dash",
    "createdAt": "2026-11-17T12:40:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-11-17T14:36:00+09:00"
   }
  ]
 }
