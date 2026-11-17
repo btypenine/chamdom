@@ -38,6 +38,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -72,16 +73,32 @@ TF = 15                           # 봉 길이(분) — 실험에서 가장 좋�
 TRAIN_BARS = 1920                 # 학습 20일
 TOP_N = 20                        # 거래대금 상위 종목 수
 RESELECT_HOURS = 4                # 전략 다시 고르는 주기
+FUNDING_CHECK_SEC = 300           # 펀딩비(관찰 전용): 5분마다 예상 펀딩비를 읽어 보유 포지션에 정산 시점마다 누적 (손익·판정에는 안 씀)
+FUND_HOT_PCT = 0.10               # 펀딩비 경고(관찰 전용): 다음 정산 예상 펀딩이 내 쪽에 이만큼(%) 이상 불리하면 '펀딩 과열' 표시 (매매엔 안 씀)
+REGIME_BARS = 96                  # 시장 국면(관찰 전용): BTC 최근 24시간(15분봉 96개) 변화로 나눔
+REGIME_UP, REGIME_DOWN = 1.5, -1.5   # +1.5% 이상 상승장, -1.5% 이하 하락장, 그 사이 횡보
+BF_BARS, BF_HI = 8, 1.0             # BTC 흐름 관찰(관찰 전용): 진입 때 BTC 최근 2시간(15분봉 8개)이 내 방향과 1.0% 이상 반대면 '역행'
 PAPER_USDT = 100.0                # 모의 1회 진입 금액(USDT, 레버리지 1배)
+GB_ARM = 0.5                      # 관찰 전용: 익절까지 가격 움직임의 50% 이상 갔다가
+GB_FLOOR = 0.0                    #   진입가(움직임 0%)까지 되밀리면 "여기서 본전 정리했다면" 손익을 기록 (실제 청산은 그대로)
+DC_SL = 4.0                       # 관찰 전용: 손절폭이 4% 이상으로 넓은 거래가
+DC_CUT = 2.5                      #   순손익 -2.5% 이하로 빠진 첫 순간 "여기서 일찍 끊었다면" 손익을 기록 (실제 청산은 그대로)
+DEEP_CUT_LIVE = False             # 대시보드 설정 BINANCE_DEEP_CUT=on 일 때만: 위 표시가 붙은 '실주문'을 그 자리에서 정리(모의는 계속 관찰만)
+REENTRY_SKIP_LIVE = False         # 대시보드 설정 BINANCE_REENTRY_SKIP=on 일 때만: 같은 종목·같은 방향이 손절된 뒤 6시간 안의 재진입은 새 실주문 대신 모의로 (기본 꺼짐 = 기존 동작)
+REENTRY_SKIP_SIDES = ("long", "short")  #   =long 이면 롱 재진입만 모의로(숏 재진입은 실주문 그대로)
+REGIME_FOCUS_LIVE = False         # 대시보드 설정 BINANCE_REGIME_FOCUS=on 일 때만: 지금 시장 국면(BTC 24시간)에서 그 방향 실주문 성적이 약하면(15회↑·평균 마이너스) 새 실주문 대신 모의로 (기본 꺼짐 = 기존 동작)
+RF_MIN_N = 15                     #   국면×방향 실주문 최소 표본
+WEAK_HOUR_LIVE = False            # 대시보드 설정 BINANCE_WEAK_HOUR=on 일 때만: 지금 한국시간 4시간 구간의 최근 실주문 성적이 약하면 새 실주문 대신 모의로 (기본 꺼짐 = 기존 동작)
+WH_MIN_N = 8                      #   약한 구간 판단: 최근 청산 100건 중 그 구간 실주문 8회 이상 + 평균 마이너스 + USDT 합계 마이너스
+TR_HOURS = 4                      # 관찰 전용: 익절로 끝난 거래가 그 뒤 4시간 동안 같은 방향으로 더 갔는지 기록 (익절폭·트레일링 판단 근거)
+TR_MAX_OPEN = 40                  #   동시에 추적하는 익절 건 최대 수 (넘으면 오래된 것부터 버림)
+SW_LOOK, SW_MIN = 20, 10          # 관찰 전용 '약한 방향': 같은 방향 최근 모의 20회(최소 10회) 평균이 0 미만이면 진입에 표시만 함
 MAX_OPEN = 10                     # 동시 모의 보유 최대
-# 회전형(scalp): '작은 수익을 자주' — 대시보드 설정 BINANCE_STYLE=scalp 일 때만 (기본 swing = 기존 동작)
+# 확장형(wide): 대상 종목 2배 → 거래 기회 2배. 대시보드 설정 BINANCE_STYLE=wide 일 때만 (기본 swing = 기존 동작)
+# bt-lab 11-07: 보지 않은 다음 10일 — 20종목 134회 거래당 +0.206% / 40종목 284회 +0.284% (회전형 작은 익절은 -0.12~-0.20%로 탈락)
 STYLE = "swing"
-SCALP_TOP_N = 40                  # 대상 종목 수 (거래 기회 2배)
-SCALP_TP = [0.3, 0.5, 0.8, 1.0]   # 익절: 수수료 뺀 순수익 % (작게)
-SCALP_SL = [-0.8, -1.0, -1.5, -2.0]
-SCALP_HOLD = [8, 16, 24]          # 최대 보유(봉 수): 2·4·6시간 → 칸이 빨리 비어 다음 기회를 잡음
-SCALP_MIN_TRADES = 12             # 학습 20일 동안 최소 12번은 신호가 나야 채택(자주 거래하는 전략만)
-SCALP_MAX_OPEN = 20               # 동시 모의 보유
+WIDE_TOP_N = 40
+WIDE_MAX_OPEN = 20                # 동시 모의 보유
 EXCLUDE = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BTCDOMUSDT"}
 RULE_EVAL = 5                     # 규칙 판정 시작 횟수 (업비트 봇과 같음)
 RULE_PROMOTE_MIN_AVG = 0.15
@@ -91,7 +108,7 @@ SIDE_GATE_MIN_N = 50              # (선택) 방향별 통과 기준: 모의 50�
 SIDE_GATE_MIN_AVG = 0.30          #   거래당 +0.30% 이상
 
 # 돈 지키기 (실주문에만 적용, 모의에는 영향 없음)
-EXCHANGE_STOP_BUFFER = 0.5        # 거래소 보호 손절: 봇 손절가보다 0.5%p 더 바깥 (평소엔 봇이 먼저 정리, PC가 멈추면 거래소가 정리)
+EXCHANGE_STOP_BUFFER = 0.5        # 거래소 보호 손절: 봇 손절가보다 0.5%p 더 바깥 (평소엔 봇이 먼저 정리, PC가 멈추면 거래소가 정리) · 대시보드 설정 BINANCE_STOP_BUFFER(0.2~0.5)로 좁힐 수 있음
 EXCHANGE_CHECK_SEC = 60           # 실보유가 거래소에서 정리됐는지 확인하는 주기(초)
 STOP_FAIL_BLOCK_HOURS = 6         # 보호 손절을 못 걸면 바로 정리하고 이 시간 동안 실주문 쉼
 LOSS_STREAK_MAX = 3               # 실주문 연속 손실 이 횟수면
@@ -155,6 +172,8 @@ def load_state():
     s.setdefault("evo", {"share": EVO_SHARE_START, "evo": {"n": 0, "sumPct": 0.0}, "rand": {"n": 0, "sumPct": 0.0},
                          "maxGen": 0, "born": 0})
     s.setdefault("guard", {"streak": 0, "restUntil": 0, "blockUntil": 0, "blockWhy": ""})
+    s.setdefault("regimeStats", {})      # 관찰 전용: {"paper|하락|short": {"n","wins","sumPct"}} — 매매에는 안 씀
+    s.setdefault("regimeFlipStats", {})  # 관찰 전용: {"live|flip|short": {"n","wins","sumPct"}} — 진입 때와 청산 때 국면이 다른지(flip/same)
     return s
 
 
@@ -349,6 +368,28 @@ class Live:
                     pass
         return avg, filled
 
+    def close_fill(self, sym, long_, since_ms, qty):
+        """거래소가 대신 닫은 포지션(보호 손절 체결·직접 정리)의 실제 체결 평균가 조회 (읽기 전용).
+        진입 이후 닫는 방향 체결을 최근 것부터 qty 만큼 모아 평균. 못 찾으면 None → 예전처럼 손절가로 추정"""
+        start = max(int(since_ms or 0), int(time.time() * 1000) - 6 * 86400 * 1000)   # 조회 창은 최대 7일
+        rows = self.call("GET", "/fapi/v1/userTrades", {"symbol": sym, "startTime": start, "limit": 100})
+        want = "SELL" if long_ else "BUY"
+        got, cost = 0.0, 0.0
+        for t in sorted(rows, key=lambda x: x.get("time", 0), reverse=True):
+            if t.get("side") != want:
+                continue
+            q = float(t.get("qty") or 0)
+            if q <= 0:
+                continue
+            take = min(q, qty - got)
+            got += take
+            cost += take * float(t.get("price") or 0)
+            if got >= qty * 0.999:
+                break
+        if got < qty * 0.999 or cost <= 0:
+            return None
+        return cost / got
+
     def snapshot(self):
         """대시보드 표시용: 거래소 실제 선물 지갑·포지션 (봇 장부와 상관없이 있는 그대로)"""
         bal = {}
@@ -467,24 +508,13 @@ def pick_for(symbol, rng, pool=None, share=0.0):
                 origin = {"origin": "evo", "gen": gen, "parent": parent}
             else:
                 sp, origin = cb.random_spec(rng), {"origin": "rand", "gen": 0, "parent": ""}
-            if STYLE == "scalp":                                  # 회전형: 작은 익절·짧은 보유로 다듬기
-                sp = dict(sp)
-                if sp.get("tp", 0) not in SCALP_TP:
-                    sp["tp"] = rng.choice(SCALP_TP)
-                if sp.get("sl") not in SCALP_SL:
-                    sp["sl"] = rng.choice(SCALP_SL)
-                if sp.get("hold") not in SCALP_HOLD:
-                    sp["hold"] = rng.choice(SCALP_HOLD)
             tr = cb.stats(cb.backtest(ser, sp, end=split))
-            min_n = SCALP_MIN_TRADES if STYLE == "scalp" else cb.EXPLORE_MIN_TRADES
-            if tr["n"] < min_n or tr["edge"] < cb.EXPLORE_MIN_EDGE:
+            if tr["n"] < cb.EXPLORE_MIN_TRADES or tr["edge"] < cb.EXPLORE_MIN_EDGE:
                 continue
             ho = cb.stats(cb.backtest(ser, sp, start=split))
             if ho["n"] and ho["edge"] < cb.EXPLORE_HOLDOUT_FLOOR:
                 continue
             score = tr["edge"] if not ho["n"] else (tr["edge"] * tr["n"] + ho["edge"] * ho["n"]) / (tr["n"] + ho["n"])
-            if STYLE == "scalp":                                  # 회전형: 거래당 수익 × 횟수(√) — 자주 버는 전략 우대
-                score = score * min(2.0, ((tr["n"] + ho["n"]) / 20) ** 0.5)
             cands.append((score, side, sp, tr, ho, origin))
     if not cands:
         return None
@@ -508,18 +538,44 @@ class Engine:
         self.daily_loss = num("BINANCE_DAILY_LOSS_USDT", 10)
         self.max_live = int(num("BINANCE_MAX_LIVE", 3))
         global STYLE
-        STYLE = "scalp" if str(c.get("BINANCE_STYLE", "swing")).strip().lower() == "scalp" else "swing"
-        self.max_open = SCALP_MAX_OPEN if STYLE == "scalp" else MAX_OPEN
+        STYLE = "wide" if str(c.get("BINANCE_STYLE", "swing")).strip().lower() == "wide" else "swing"
+        self.max_open = WIDE_MAX_OPEN if STYLE == "wide" else MAX_OPEN
+        global DEEP_CUT_LIVE
+        c.setdefault("BINANCE_DEEP_CUT", "off")                                  # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
+        DEEP_CUT_LIVE = str(c.get("BINANCE_DEEP_CUT", "off")).strip().lower() == "on"   # 기본 꺼짐 = 기존 동작
+        global WEAK_HOUR_LIVE
+        c.setdefault("BINANCE_WEAK_HOUR", "off")                                 # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
+        WEAK_HOUR_LIVE = str(c.get("BINANCE_WEAK_HOUR", "off")).strip().lower() == "on"  # 기본 꺼짐 = 기존 동작
+        global REGIME_FOCUS_LIVE
+        c.setdefault("BINANCE_REGIME_FOCUS", "off")                              # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
+        REGIME_FOCUS_LIVE = str(c.get("BINANCE_REGIME_FOCUS", "off")).strip().lower() == "on"  # 기본 꺼짐 = 기존 동작
+        global REENTRY_SKIP_LIVE
+        c.setdefault("BINANCE_REENTRY_SKIP", "off")                              # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
+        global REENTRY_SKIP_SIDES
+        _rs = str(c.get("BINANCE_REENTRY_SKIP", "off")).strip().lower()
+        REENTRY_SKIP_LIVE = _rs in ("on", "long")                                # 기본 꺼짐 = 기존 동작
+        REENTRY_SKIP_SIDES = ("long",) if _rs == "long" else ("long", "short")   # long = 롱 재진입만 쉬기
+        global EXCHANGE_STOP_BUFFER
+        c.setdefault("BINANCE_STOP_BUFFER", "0.5")                               # 대시보드에 '0.5%p(기존) · 기본값'으로 보이게
+        try:                                                                     # 거래소 보호 손절 여유폭: 0.2~0.5%p 만 허용, 그 밖·잘못된 값은 기존 0.5
+            _sb = float(str(c.get("BINANCE_STOP_BUFFER", "0.5")).replace(",", "").strip() or 0.5)
+        except ValueError:
+            _sb = 0.5
+        EXCHANGE_STOP_BUFFER = _sb if 0.2 <= _sb <= 0.5 else 0.5
         c.setdefault("BINANCE_MONTH_LOSS_USDT", f"{MONTH_LOSS_DEFAULT:g}")      # 대시보드에 '기본값 40'으로 보이게
         self.month_loss = num("BINANCE_MONTH_LOSS_USDT", MONTH_LOSS_DEFAULT)
         self._last_exchange_check = 0
         self.live_basis = str(c.get("BINANCE_LIVE_BASIS", "rule")).strip().lower()   # rule(기본) | side | all
         key, sec = c.get("BINANCE_API_KEY", ""), c.get("BINANCE_SECRET_KEY", "")
         self.live = None
-        if (c.get("BINANCE_TRADE_MODE", "paper").lower() == "live" and key and sec
-                and not key.startswith("여기에") and not sec.startswith("여기에")):
+        has_key = key and sec and not key.startswith("여기에") and not sec.startswith("여기에")
+        self.live_new = bool(has_key and c.get("BINANCE_TRADE_MODE", "paper").lower() == "live")   # 새 실주문 허용 여부
+        holding = any(p.get("live") for p in self.state.get("positions", {}).values())
+        if has_key and (self.live_new or holding):
+            # 모의로 바꿔도 이미 들고 있는 실보유는 계좌 연결을 유지해 평소대로 익절·손절·보유시간 정리 (새 실주문만 멈춤)
             self.live = Live(key, sec)
         self.state.setdefault("liveLedger", {"trades": 0, "wins": 0, "pnlUsdt": 0.0, "day": "", "dayPnl": 0.0, "dayTrades": 0})
+        self.curve_backfill()
 
     # --- 전략 ---
     def reselect(self):
@@ -531,9 +587,9 @@ class Engine:
                 rb.setdefault("origin", cur.get("origin", "rand"))
         self.refresh_pool()
         evo = self.state["evo"]
-        log(f"종목·전략 선정 시작 (15분봉, {'회전형 · ' if STYLE == 'scalp' else ''}상위 {SCALP_TOP_N if STYLE == 'scalp' else TOP_N}종목, 롱·숏 각 {cb.BT_TRIALS}개 조합 · "
+        log(f"종목·전략 선정 시작 (15분봉, {'확장형 · ' if STYLE == 'wide' else ''}상위 {WIDE_TOP_N if STYLE == 'wide' else TOP_N}종목, 롱·숏 각 {cb.BT_TRIALS}개 조합 · "
             f"진화 비율 {evo['share'] * 100:.0f}% · 유전자 풀 {len(self.state['genePool'])}개)")
-        syms = top_symbols(SCALP_TOP_N if STYLE == "scalp" else TOP_N)
+        syms = top_symbols(WIDE_TOP_N if STYLE == "wide" else TOP_N)
         if self.state.get("style", "swing") != STYLE:                # 방식이 바뀌면 전략을 새로 고름(보유 포지션은 그대로 관리)
             log(f"[설정] 매매 방식 {self.state.get('style', 'swing')} → {STYLE}: 전략을 새로 고름")
             self.state["strategies"] = {}
@@ -663,22 +719,891 @@ class Engine:
         s = self.state["ledger"].get(side) or {}
         return s.get("n", 0) >= SIDE_GATE_MIN_N and s["sumPct"] / s["n"] >= SIDE_GATE_MIN_AVG
 
+    def skip_why(self, rb):
+        """실주문 대신 모의로 간 이유를 실제 걸린 조건대로 나눠 적음(표시용, 판단은 side_ok 그대로)"""
+        if self.live_basis in ("side", "all"):
+            if rb.get("status") == "retired":
+                return "퇴출 규칙"
+            if rb.get("n", 0) and rb["sumPct"] / rb["n"] < 0:
+                return "모의 평균 마이너스 규칙"
+            if self.live_basis == "side":
+                return "방향별 모의 성적 기준 미달"
+        return "통과 전 규칙(모의 검증 중)"
+
     # --- 모의 진입·청산 ---
+    def regime(self):
+        """관찰 전용 시장 국면: BTC 최근 24시간 변화 → 상승/하락/횡보. 봉마다 한 번만 계산, 실패하면 None (매매에는 영향 없음)"""
+        bar = int(time.time() // (TF * 60))
+        if getattr(self, "_regime_bar", None) == bar:
+            return self._regime
+        self._regime_bar, self._regime, self._regime_chg = bar, None, None
+        self._btc2h = None
+        try:
+            cl = klines("BTCUSDT", REGIME_BARS + 1)
+            if len(cl) > BF_BARS:                        # 관찰 전용: BTC 최근 2시간 변화 (매매에는 안 씀)
+                self._btc2h = round((cl[-1]["trade_price"] / cl[-1 - BF_BARS]["trade_price"] - 1) * 100, 2)
+            if len(cl) > REGIME_BARS:
+                chg = (cl[-1]["trade_price"] / cl[-1 - REGIME_BARS]["trade_price"] - 1) * 100
+                self._regime_chg = round(chg, 2)
+                self._regime = "상승" if chg >= REGIME_UP else ("하락" if chg <= REGIME_DOWN else "횡보")
+        except Exception as e:
+            log(f"[안내] 시장 국면(BTC 24시간) 확인 실패 (매매는 그대로): {str(e)[:100]}")
+        return self._regime
+
+    def regime_weak(self, side):
+        """지금 국면에서 이 방향의 실주문 성적이 약한지(RF_MIN_N회 이상 + 평균 마이너스). 국면 모르면 False(기존 동작).
+        설정 BINANCE_REGIME_FOCUS=on 일 때만 live_ok 에서 쓰고, 꺼져 있으면 대시보드 표시만 함"""
+        try:
+            reg = self.regime()
+            if not reg:
+                return False
+            d = (self.state.get("regimeStats") or {}).get(f"live|{reg}|{side}")
+            return bool(d and d["n"] >= RF_MIN_N and d["sumPct"] / d["n"] < 0)
+        except Exception:
+            return False
+
+    def regime_record(self, kind, p, pct):
+        """청산 1건을 국면×방향 표에 더함 (진입 때 국면을 모르는 포지션은 건너뜀)"""
+        reg = p.get("regime")
+        if not reg:
+            return
+        k = f"{kind}|{reg}|{p['side']}"
+        d = self.state.setdefault("regimeStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0})
+        d["n"] += 1
+        d["wins"] += 1 if pct > 0 else 0
+        d["sumPct"] = round(d["sumPct"] + pct, 4)
+        try:                                             # 관찰 전용: 보유 중 국면이 바뀌었는지(진입 국면 ≠ 청산 때 국면) — 매매에는 안 씀
+            now = getattr(self, "_regime", None)         # 이미 계산된 값만 씀(추가 시세 요청 없음)
+            if now:
+                fk = f"{kind}|{'same' if now == reg else 'flip'}|{p['side']}"
+                f = self.state.setdefault("regimeFlipStats", {}).setdefault(fk, {"n": 0, "wins": 0, "sumPct": 0.0})
+                f["n"] += 1
+                f["wins"] += 1 if pct > 0 else 0
+                f["sumPct"] = round(f["sumPct"] + pct, 4)
+        except Exception:
+            pass
+
+    def side_weak(self, side):
+        """관찰 전용: 같은 방향의 최근 모의 청산 SW_LOOK회 평균. SW_MIN회 미만이면 None.
+        진입·청산·손익·규칙 판정·실주문 판단에는 전혀 쓰지 않음"""
+        try:
+            xs = [t["pct"] for t in self.state.get("tradeLog") or []
+                  if not t.get("live") and t.get("side") == side and t.get("pct") is not None][-SW_LOOK:]
+            if len(xs) < SW_MIN:
+                return None
+            return round(sum(xs) / len(xs), 3)
+        except Exception:
+            return None
+
+    def side_weak_mark(self, sym, avg):
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or avg is None or "sideAvg" in p:
+                return
+            p["sideAvg"] = avg
+            p["sideWeak"] = avg < 0
+            if p["sideWeak"]:
+                log(f"[방향 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} 진입 · "
+                    f"같은 방향 최근 모의 평균 {avg:+.2f}% → '약한 방향' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 방향 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def side_weak_record(self, kind, p, pct):
+        """관찰 전용: 약한 방향 표시 거래 vs 보통 거래의 결과를 따로 누적"""
+        try:
+            if "sideWeak" not in p:
+                return
+            k = f"{kind}|{'weak' if p['sideWeak'] else 'ok'}|{p['side']}"
+            d = self.state.setdefault("sideWeakStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+        except Exception as e:
+            log(f"[안내] 방향 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def p_calib_record(self, p, pct, usdt):
+        """관찰 전용: 실주문 진입 때 '이익 확률(p)' 구간별 실제 결과와, 확률로 키운 금액이 고정 금액보다 나았는지 누적.
+        p 가 실제 결과를 잘 맞히는지(확률이 높을수록 성적이 좋은지) 보는 용도. 금액·주문·판정에는 전혀 안 씀"""
+        try:
+            pv = p.get("p")
+            if pv is None:
+                return
+            b = "lo" if pv < 0.6 else ("mid" if pv < 0.8 else "hi")
+            d = self.state.setdefault("pCalib", {}).setdefault(b, {"n": 0, "wins": 0, "sumPct": 0.0, "sumUsdt": 0.0,
+                                                                   "sumFlat": 0.0, "sumSize": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["sumUsdt"] = round(d["sumUsdt"] + usdt, 4)
+            d["sumFlat"] = round(d["sumFlat"] + self.order_usdt * pct / 100, 4)   # 같은 거래를 기본 금액 고정으로 했다면
+            d["sumSize"] = round(d["sumSize"] + float(p.get("usdt") or 0), 2)
+        except Exception as e:
+            log(f"[안내] 확률 구간 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def stop_gap_record(self, sym, p, pct, reason):
+        """관찰 전용: 실주문이 손절로 끝났을 때 '규칙 손절가대로 나갔다면' 대비 얼마나 더 잃었는지(손절 넘침) 누적.
+        누가 닫았는지(봇 손절 / 거래소 보호 손절)로 나눔. 급하게 튄 가격을 봇이 못 따라간 비용을 보는 용도. 매매엔 전혀 안 씀"""
+        try:
+            rs = str(reason or "")
+            if "손절" not in rs or "실패" in rs:
+                return
+            who = "exchange" if "거래소" in rs else "bot"
+            sl_pct = abs(p["sl"] / p["entry"] - 1) * 100
+            expect = -sl_pct - 2 * FEE * 100          # 규칙 손절가에 딱 나갔을 때의 결과(수수료 포함)
+            over = pct - expect                        # 마이너스일수록 손절가보다 더 밀려 나감
+            d = self.state.setdefault("stopGap", {}).setdefault(who, {"n": 0, "sumOver": 0.0, "worst": 0.0, "sumUsdt": 0.0})
+            d["n"] += 1
+            d["sumOver"] = round(d["sumOver"] + over, 4)
+            d["worst"] = round(min(d["worst"], over), 3)
+            d["sumUsdt"] = round(d["sumUsdt"] + float(p.get("usdt") or 0) * over / 100, 4)   # 넘친 만큼의 USDT
+            rec = self.state.setdefault("stopGapRecent", [])
+            rec.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"],
+                        "who": who, "sl": round(-sl_pct, 2), "pct": round(pct, 3), "over": round(over, 3)})
+            del rec[:-10]
+        except Exception as e:
+            log(f"[안내] 손절 넘침 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def stop_gap_view(self):
+        st = self.state.get("stopGap") or {}
+        rows = [{"who": k, "n": v["n"], "avgOver": round(v["sumOver"] / v["n"], 3), "worst": v["worst"],
+                 "usdt": round(v["sumUsdt"], 2)} for k, v in ((k, st.get(k)) for k in ("bot", "exchange")) if v and v.get("n")]
+        return {"rows": rows, "buffer": EXCHANGE_STOP_BUFFER, "recent": (self.state.get("stopGapRecent") or [])[-5:]}
+
+    def payoff_view(self):
+        """관찰 전용: 최근 청산(tradeLog 최대 100건)의 손익비와 손익분기 승률. 읽기만 함 — 매매·판정·주문에는 전혀 안 씀"""
+        try:
+            rows = []
+            log_all = self.state.get("tradeLog") or []
+            # 넘겨받은 포지션(봇이 직접 연 게 아닌 것)은 진입가 기준이 달라 %가 크게 튈 수 있어 손익비 집계에서 뺌
+            inh = lambda t: str(t.get("desc") or "").startswith("넘겨받은")
+            excluded = sum(1 for t in log_all if t.get("pct") is not None and inh(t))
+            for kind in ("live", "paper"):
+                for side in ("all", "long", "short"):
+                    xs = [t for t in log_all if t.get("pct") is not None and not inh(t)
+                          and bool(t.get("live")) == (kind == "live") and (side == "all" or t.get("side") == side)]
+                    if not xs:
+                        continue
+                    w = [t["pct"] for t in xs if t["pct"] > 0]
+                    l = [-t["pct"] for t in xs if t["pct"] <= 0]
+                    aw = sum(w) / len(w) if w else 0.0
+                    al = sum(l) / len(l) if l else 0.0
+                    row = {"kind": kind, "side": side, "n": len(xs), "wins": len(w),
+                           "avgWin": round(aw, 3), "avgLoss": round(al, 3),
+                           "ratio": round(aw / al, 2) if al > 0 else None,
+                           "beWin": round(al / (aw + al), 3) if (aw + al) > 0 else None,
+                           "winRate": round(len(w) / len(xs), 3),
+                           "worst": round(min(t["pct"] for t in xs), 2)}
+                    # 실주문은 진입 금액이 확률·판 크기로 달라지므로 실제 USDT 기준 손익비도 함께 (읽기 전용)
+                    us = [float(t["usdt"]) for t in xs if t.get("usdt") is not None]
+                    if kind == "live" and us:
+                        wu = [u for u in us if u > 0]
+                        lu = [-u for u in us if u <= 0]
+                        awu = sum(wu) / len(wu) if wu else 0.0
+                        alu = sum(lu) / len(lu) if lu else 0.0
+                        row.update({"avgWinU": round(awu, 3), "avgLossU": round(alu, 3),
+                                    "ratioU": round(awu / alu, 2) if alu > 0 else None,
+                                    "beWinU": round(alu / (awu + alu), 3) if (awu + alu) > 0 else None,
+                                    "sumU": round(sum(us), 2)})
+                    rows.append(row)
+            return {"rows": rows, "look": 100, "excluded": excluded}
+        except Exception:
+            return {"rows": [], "look": 100, "excluded": 0}
+
+    def hour_view(self):
+        """관찰 전용: 최근 청산(tradeLog 최대 100건)을 한국시간 4시간 구간별로 나눠 성적을 봄. 읽기만 함 — 매매·판정·주문에는 전혀 안 씀"""
+        try:
+            buckets = {}
+            for t in self.state.get("tradeLog") or []:
+                pct = t.get("pct")
+                ts = str(t.get("t") or "")
+                if pct is None or len(ts) < 8 or str(t.get("desc") or "").startswith("넘겨받은"):
+                    continue
+                try:
+                    h = int(ts[6:8])
+                except ValueError:
+                    continue
+                k = ("live" if t.get("live") else "paper", (h // 4) * 4)
+                d = buckets.setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "sumU": 0.0})
+                d["n"] += 1
+                d["wins"] += 1 if pct > 0 else 0
+                d["sumPct"] += float(pct)
+                d["sumU"] += float(t.get("usdt") or 0)
+            rows = [{"kind": k[0], "h": k[1], "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
+                     "usdt": round(v["sumU"], 2)} for k, v in sorted(buckets.items())]
+            now = datetime.now(KST).hour // 4 * 4
+            return {"rows": rows, "look": 100, "now": now, "weakNow": self.weak_hour_now(rows, now),
+                    "minN": WH_MIN_N, "liveOn": WEAK_HOUR_LIVE}
+        except Exception:
+            return {"rows": [], "look": 100, "now": None}
+
+    def symbol_view(self):
+        """관찰 전용: 최근 청산(tradeLog 최대 100건)의 실주문을 종목·방향별로 묶어 성적과 쏠림(한 종목 비중)을 봄.
+        읽기만 함 — 매매·판정·주문에는 전혀 안 씀"""
+        try:
+            g = {}
+            total = 0
+            for t in self.state.get("tradeLog") or []:
+                pct = t.get("pct")
+                if pct is None or not t.get("live") or str(t.get("desc") or "").startswith("넘겨받은"):
+                    continue
+                total += 1
+                k = (str(t.get("symbol") or ""), str(t.get("side") or ""))
+                d = g.setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "sumU": 0.0, "worst": 0.0})
+                d["n"] += 1
+                d["wins"] += 1 if pct > 0 else 0
+                d["sumPct"] += float(pct)
+                d["sumU"] += float(t.get("usdt") or 0)
+                d["worst"] = min(d["worst"], float(pct))
+            rows = [{"symbol": k[0], "side": k[1], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3), "usdt": round(v["sumU"], 2), "worst": round(v["worst"], 2)}
+                    for k, v in g.items()]
+            rows.sort(key=lambda r: r["usdt"])
+            top = max(rows, key=lambda r: r["n"]) if rows else None
+            return {"look": 100, "total": total, "symbols": len(rows),
+                    "worst": rows[:3], "best": rows[::-1][:3] if len(rows) > 3 else [],
+                    "top": top, "topShare": round(top["n"] / total, 3) if top and total else None}
+        except Exception:
+            return {"look": 100, "total": 0, "symbols": 0, "worst": [], "best": [], "top": None, "topShare": None}
+
+    def weak_hour_now(self, rows=None, now=None):
+        """지금 한국시간 4시간 구간이 '약한 시간대'인지: 최근 청산 100건 중 그 구간 실주문 WH_MIN_N회 이상·평균 마이너스·USDT 합계 마이너스.
+        계산 실패하면 False(기존 동작). 설정 BINANCE_WEAK_HOUR=on 일 때만 live_ok 에서 쓰고, 꺼져 있으면 대시보드 표시만 함"""
+        try:
+            if rows is None:
+                rows = self.hour_view().get("rows") or []
+            if now is None:
+                now = datetime.now(KST).hour // 4 * 4
+            for r in rows:
+                if r.get("kind") == "live" and r.get("h") == now:
+                    return bool(r["n"] >= WH_MIN_N and r["avgPct"] < 0 and r["usdt"] < 0)
+            return False
+        except Exception:
+            return False
+
+    def p_calib_view(self):
+        st = self.state.get("pCalib") or {}
+        rows = [{"band": k, "n": v["n"], "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3),
+                 "usdt": round(v["sumUsdt"], 2), "flat": round(v["sumFlat"], 2), "avgSize": round(v["sumSize"] / v["n"], 1)}
+                for k, v in ((k, st.get(k)) for k in ("lo", "mid", "hi")) if v and v.get("n")]
+        return {"rows": rows, "base": self.order_usdt,
+                "open": sum(1 for q in self.state["positions"].values() if q.get("live") and q.get("p") is not None)}
+
+    def side_weak_view(self):
+        rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                 "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None}
+                for k, v in sorted((self.state.get("sideWeakStats") or {}).items())]
+        return {"look": SW_LOOK, "now": {"long": self.side_weak("long"), "short": self.side_weak("short")},
+                "rows": rows, "open": sum(1 for q in self.state["positions"].values() if q.get("sideWeak"))}
+
+    def funding_track(self):
+        """관찰 전용 펀딩비: 보유 포지션마다 정산 시각(nextFundingTime)이 지나면 직전에 읽은 예상 펀딩비를 누적.
+        롱은 비율만큼 내고(-), 숏은 받음(+). 진입가 기준 금액에 대한 % — 손익·규칙 판정·실주문 판단에는 전혀 안 씀"""
+        pos = self.state["positions"]
+        if not pos or time.time() - getattr(self, "_fund_at", 0) < FUNDING_CHECK_SEC:
+            return
+        self._fund_at = time.time()
+        try:
+            data = get("/fapi/v1/premiumIndex")
+        except Exception as e:
+            log(f"[안내] 펀딩비 확인 실패 (매매는 그대로): {str(e)[:100]}")
+            return
+        now_ms = int(time.time() * 1000)
+        info = {d["symbol"]: d for d in data if isinstance(d, dict) and "symbol" in d}
+        paid = []
+        for sym, p in pos.items():
+            d = info.get(sym)
+            if not d:
+                continue
+            nft, rate = p.get("fundNext"), p.get("fundRate")
+            if nft and rate is not None and now_ms >= nft:          # 정산이 지나감 → 직전 예상치로 정산된 것으로 봄
+                f = rate * 100 * (-1 if p["side"] == "long" else 1)
+                p["fundPct"] = round(p.get("fundPct", 0.0) + f, 4)
+                p["fundN"] = p.get("fundN", 0) + 1
+                paid.append(f"{sym.replace('USDT', '')} {'롱' if p['side'] == 'long' else '숏'} {f:+.3f}%")
+            try:
+                p["fundRate"] = float(d.get("lastFundingRate") or 0)
+                p["fundNext"] = int(d.get("nextFundingTime") or 0) or None
+            except (TypeError, ValueError):
+                pass
+            self.fund_hot_mark(sym, p)
+        if paid:
+            log("[펀딩비 관찰] 정산 반영(손익 계산엔 안 넣음): " + ", ".join(paid[:12]) + (" 외" if len(paid) > 12 else ""))
+
+    def giveback_watch(self, sym, p, price, fav):
+        """관찰 전용: 익절 쪽으로 GB_ARM 이상 갔다가 진입가까지 되밀린 첫 순간의 손익(수수료·밀림 포함)을 표시만 해 둠.
+        청산·손익·판정·주문에는 전혀 쓰지 않음. 실패해도 매매는 그대로."""
+        try:
+            if p.get("gbPct") is not None:
+                return
+            tpm = abs(p["tp"] / p["entry"] - 1) * 100
+            if tpm <= 0 or p.get("maxFav", 0.0) < GB_ARM * tpm or fav > GB_FLOOR:
+                return
+            long_ = p["side"] == "long"
+            ex = price * (1 - SLIP) if long_ else price * (1 + SLIP)
+            gross = (ex / p["entry"] - 1) if long_ else (p["entry"] / ex - 1)
+            p["gbPct"] = round((gross - 2 * FEE) * 100, 4)
+            log(f"[청산 관찰] {sym} {'롱' if long_ else '숏'}{' 실주문' if p.get('live') else ''} 익절까지 "
+                f"{p['maxFav'] / tpm * 100:.0f}% 갔다가 진입가로 되밀림 → 여기서 본전 정리했다면 {p['gbPct']:+.2f}% "
+                f"(관찰만, 실제 청산은 그대로)")
+        except Exception as e:
+            log(f"[안내] 되밀림 관찰 기록 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def deepcut_watch(self, sym, p, price):
+        """관찰 전용: 손절폭이 DC_SL% 이상인 거래가 순손익(수수료·밀림 포함) -DC_CUT% 이하로 처음 빠진 순간을 표시만 해 둠.
+        청산·손익·판정·주문에는 전혀 쓰지 않음. 실패해도 매매는 그대로."""
+        try:
+            if p.get("dcPct") is not None:
+                return
+            if abs(p["sl"] / p["entry"] - 1) * 100 < DC_SL:
+                return
+            long_ = p["side"] == "long"
+            ex = price * (1 - SLIP) if long_ else price * (1 + SLIP)
+            net = ((ex / p["entry"] - 1) if long_ else (p["entry"] / ex - 1)) - 2 * FEE
+            if net * 100 > -DC_CUT:
+                return
+            p["dcPct"] = round(net * 100, 4)
+            log(f"[청산 관찰] {sym} {'롱' if long_ else '숏'}{' 실주문' if p.get('live') else ''} 넓은 손절 거래가 "
+                f"{p['dcPct']:+.2f}%까지 빠짐 → 여기서 일찍 끊었다면 {p['dcPct']:+.2f}% (관찰만, 실제 청산은 그대로)")
+        except Exception as e:
+            log(f"[안내] 넓은 손절 관찰 기록 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def deepcut_record(self, kind, sym, p, pct):
+        """관찰 전용: 넓은 손절 표시가 붙은 거래가 끝나면 '일찍 끊었다면' vs 실제 손익 차이를 누적"""
+        try:
+            dc = p.get("dcPct")
+            if dc is None:
+                return
+            d = self.state.setdefault("dcStats", {}).setdefault(kind, {"n": 0, "sumDiff": 0.0, "better": 0,
+                                                                        "sumActual": 0.0, "sumDc": 0.0})
+            diff = dc - pct
+            d["n"] += 1
+            d["sumDiff"] = round(d["sumDiff"] + diff, 4)
+            d["better"] += 1 if diff > 0 else 0
+            d["sumActual"] = round(d["sumActual"] + pct, 4)
+            d["sumDc"] = round(d["sumDc"] + dc, 4)
+            self.state["dcRecent"] = (self.state.get("dcRecent") or [])[-9:] + [
+                {"symbol": sym, "side": p["side"], "kind": kind, "dc": round(dc, 3), "actual": round(pct, 3)}]
+        except Exception as e:
+            log(f"[안내] 넓은 손절 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def deepcut_view(self):
+        rows = [{"kind": k, "n": v["n"], "better": v["better"],
+                 "avgDiff": round(v["sumDiff"] / v["n"], 3) if v["n"] else None,
+                 "avgActual": round(v["sumActual"] / v["n"], 3) if v["n"] else None,
+                 "avgDc": round(v["sumDc"] / v["n"], 3) if v["n"] else None}
+                for k, v in sorted((self.state.get("dcStats") or {}).items())]
+        return {"sl": DC_SL, "cut": DC_CUT, "liveOn": DEEP_CUT_LIVE, "rows": rows, "recent": (self.state.get("dcRecent") or [])[-5:],
+                "open": sum(1 for q in self.state["positions"].values() if q.get("dcPct") is not None)}
+
+    def giveback_record(self, kind, sym, p, pct):
+        """관찰 전용: 되밀림 표시가 붙은 거래가 끝나면 '본전 정리했다면' vs 실제 손익 차이를 누적"""
+        try:
+            gb = p.get("gbPct")
+            if gb is None:
+                return
+            d = self.state.setdefault("gbStats", {}).setdefault(kind, {"n": 0, "sumDiff": 0.0, "better": 0,
+                                                                        "sumActual": 0.0, "sumGb": 0.0})
+            diff = gb - pct
+            d["n"] += 1
+            d["sumDiff"] = round(d["sumDiff"] + diff, 4)
+            d["better"] += 1 if diff > 0 else 0
+            d["sumActual"] = round(d["sumActual"] + pct, 4)
+            d["sumGb"] = round(d["sumGb"] + gb, 4)
+            self.state["gbRecent"] = (self.state.get("gbRecent") or [])[-9:] + [
+                {"symbol": sym, "side": p["side"], "kind": kind, "gb": round(gb, 3), "actual": round(pct, 3)}]
+        except Exception as e:
+            log(f"[안내] 되밀림 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def giveback_view(self):
+        rows = [{"kind": k, "n": v["n"], "better": v["better"],
+                 "avgDiff": round(v["sumDiff"] / v["n"], 3) if v["n"] else None,
+                 "avgActual": round(v["sumActual"] / v["n"], 3) if v["n"] else None,
+                 "avgGb": round(v["sumGb"] / v["n"], 3) if v["n"] else None}
+                for k, v in sorted((self.state.get("gbStats") or {}).items())]
+        return {"arm": GB_ARM, "rows": rows, "recent": (self.state.get("gbRecent") or [])[-5:],
+                "open": sum(1 for q in self.state["positions"].values() if q.get("gbPct") is not None)}
+
+    def tp_run_start(self, kind, sym, p, price):
+        """관찰 전용: 익절로 끝난 거래의 청산 가격을 기억해 두고 TR_HOURS 동안 같은 방향으로 더 간 폭을 잼.
+        청산·손익·판정·주문에는 전혀 쓰지 않음. 실패해도 매매는 그대로."""
+        try:
+            tpm = abs(p["tp"] / p["entry"] - 1) * 100
+            tr = self.state.setdefault("tpRun", {"open": [], "stats": {}, "recent": []})
+            tr["open"] = (tr.get("open") or [])[-(TR_MAX_OPEN - 1):] + [
+                {"symbol": sym, "side": p["side"], "kind": kind, "px": price, "tpm": round(tpm, 3),
+                 "at": int(time.time() * 1000), "until": int(time.time()) + TR_HOURS * 3600, "up": 0.0, "dn": 0.0}]
+        except Exception as e:
+            log(f"[안내] 익절 뒤 추적 시작 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def tp_run_track(self):
+        """관찰 전용: 추적 중인 익절 건의 '그 뒤 더 간 폭(up)'·'되돌아간 폭(dn)'을 갱신하고, 끝나면 집계"""
+        tr = self.state.get("tpRun")
+        if not tr or not tr.get("open"):
+            return
+        try:
+            px = prices(list({o["symbol"] for o in tr["open"]}))
+        except Exception as e:
+            log(f"[안내] 익절 뒤 추적 가격 확인 실패(매매엔 영향 없음): {str(e)[:100]}")
+            return
+        now, keep = int(time.time()), []
+        for o in tr["open"]:
+            price = px.get(o["symbol"])
+            if price:
+                mv = (price / o["px"] - 1) * 100 * (1 if o["side"] == "long" else -1)
+                o["up"] = round(max(o.get("up", 0.0), mv), 3)
+                o["dn"] = round(min(o.get("dn", 0.0), mv), 3)
+                o["end"] = round(mv, 3)
+            if now < o["until"]:
+                keep.append(o)
+                continue
+            d = tr.setdefault("stats", {}).setdefault(o["kind"], {"n": 0, "sumUp": 0.0, "sumEnd": 0.0, "sumDn": 0.0,
+                                                                  "half": 0, "full": 0})
+            d["n"] += 1
+            d["sumUp"] = round(d["sumUp"] + o["up"], 4)
+            d["sumDn"] = round(d["sumDn"] + o["dn"], 4)
+            d["sumEnd"] = round(d["sumEnd"] + o.get("end", 0.0), 4)
+            d["half"] += 1 if o["up"] >= 0.5 * o["tpm"] else 0       # 익절폭의 절반 이상 더 감
+            d["full"] += 1 if o["up"] >= o["tpm"] else 0             # 익절폭만큼 한 번 더 감
+            tr["recent"] = (tr.get("recent") or [])[-9:] + [
+                {"symbol": o["symbol"], "side": o["side"], "kind": o["kind"], "tpm": o["tpm"], "up": o["up"],
+                 "dn": o["dn"], "end": o.get("end", 0.0)}]
+            log(f"[청산 관찰] {o['symbol']} {'롱' if o['side'] == 'long' else '숏'}{' 실주문' if o['kind'] == 'live' else ''} "
+                f"익절 뒤 {TR_HOURS}시간: 최대 {o['up']:+.2f}% 더 감 · 최저 {o['dn']:+.2f}% · 끝 {o.get('end', 0.0):+.2f}% "
+                f"(익절폭 {o['tpm']:.1f}%, 관찰만)")
+        tr["open"] = keep
+
+    def tp_run_view(self):
+        tr = self.state.get("tpRun") or {}
+        rows = [{"kind": k, "n": v["n"], "avgUp": round(v["sumUp"] / v["n"], 3) if v["n"] else None,
+                 "avgDn": round(v["sumDn"] / v["n"], 3) if v["n"] else None,
+                 "avgEnd": round(v["sumEnd"] / v["n"], 3) if v["n"] else None, "half": v["half"], "full": v["full"]}
+                for k, v in sorted((tr.get("stats") or {}).items())]
+        return {"hours": TR_HOURS, "rows": rows, "recent": (tr.get("recent") or [])[-5:], "open": len(tr.get("open") or [])}
+
+    def fund_hot_mark(self, sym, p):
+        """관찰 전용: 다음 정산 예상 펀딩비가 내 방향에 FUND_HOT_PCT% 이상 불리하면(롱은 +펀딩, 숏은 -펀딩) 포지션에
+        '펀딩 과열' 표시(fundHot)를 남기고 정산마다 한 번 로그로 알림. 청산·손익·판정·실주문에는 전혀 안 씀"""
+        try:
+            rate = p.get("fundRate")
+            if rate is None:
+                return
+            f = rate * 100 * (-1 if p["side"] == "long" else 1)     # 내 쪽에서 본 다음 정산 예상(%) — 음수면 냄
+            if f > -FUND_HOT_PCT:
+                return
+            p["fundHot"] = True
+            p["fundWorst"] = round(min(p.get("fundWorst", 0.0), f), 4)
+            nft = p.get("fundNext")
+            if nft and p.get("fundHotWarned") != nft:
+                p["fundHotWarned"] = nft
+                tpm = abs(p["tp"] / p["entry"] - 1) * 100 if p.get("entry") else 0
+                left = max(0, int((nft - time.time() * 1000) / 60000))
+                share = f" (익절폭 {tpm:.1f}%의 {abs(f) / tpm * 100:.0f}%)" if tpm > 0 else ""
+                log(f"[펀딩비 경고] {sym.replace('USDT', '')} {'롱' if p['side'] == 'long' else '숏'}"
+                    f"{' 실주문' if p.get('live') else ''} · 다음 정산 예상 {f:+.3f}%{share} · 정산까지 약 {left}분 "
+                    f"→ '펀딩 과열' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 펀딩 과열 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def funding_record(self, kind, p, pct):
+        """청산 1건의 누적 펀딩비를 방향별 표에 더함 (관찰 전용)"""
+        k = f"{kind}|{p['side']}"
+        d = self.state.setdefault("fundStats", {}).setdefault(k, {"n": 0, "sumPct": 0.0, "sumFund": 0.0, "paidN": 0})
+        d["n"] += 1
+        d["sumPct"] = round(d["sumPct"] + pct, 4)
+        d["sumFund"] = round(d["sumFund"] + p.get("fundPct", 0.0), 4)
+        d["paidN"] += p.get("fundN", 0)
+        try:                                              # 펀딩 과열(fundHot) / 보통 결과를 따로 (관찰 전용)
+            h = self.state.setdefault("fundHotStats", {}).setdefault(
+                f"{kind}|{'hot' if p.get('fundHot') else 'ok'}|{p['side']}",
+                {"n": 0, "wins": 0, "sumPct": 0.0, "sumFund": 0.0})
+            h["n"] += 1
+            h["wins"] += 1 if pct > 0 else 0
+            h["sumPct"] = round(h["sumPct"] + pct, 4)
+            h["sumFund"] = round(h["sumFund"] + p.get("fundPct", 0.0), 4)
+        except Exception as e:
+            log(f"[안내] 펀딩 과열 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def events(self):
+        """경제 일정표(bot/events.json, 업비트 봇과 같은 파일)를 30분마다 다시 받음. 실패하면 이전 값 (관찰 전용)"""
+        if time.time() - getattr(self, "_events_at", 0) >= cb.EVENTS_REFRESH:
+            self._events_at = time.time()
+            try:
+                res = requests.get(cb.EVENTS_URL, params={"t": int(time.time())}, timeout=10)
+                if res.status_code == 200:
+                    ev = res.json().get("events", [])
+                    if isinstance(ev, list):
+                        self.state["eventsCache"] = ev
+            except Exception:
+                pass
+        return self.state.get("eventsCache") or []
+
+    def event_now(self, ts=None):
+        """관찰 전용: ts(기본 지금)가 일정(FOMC·CPI 등) 앞뒤 구간이면 (이름, 발표시각), 아니면 (None, None).
+        진입·청산·금액·실주문 판단에는 전혀 쓰지 않음"""
+        now = time.time() if ts is None else ts
+        for e in self.events():
+            try:
+                at = datetime.fromisoformat(e["at"]).timestamp()
+                if at - float(e.get("before_h", 2)) * 3600 <= now <= at + float(e.get("after_h", 2)) * 3600:
+                    return e.get("name", "일정"), at
+            except Exception:
+                continue
+        return None, None
+
+    def event_mark(self, sym, name):
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or "evt" in p:
+                return
+            p["evt"] = "in" if name else "out"
+            if name:
+                log(f"[일정 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} 진입 · "
+                    f"{name} 앞뒤 구간 → '일정 구간 진입' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 일정 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def event_pass(self):
+        """관찰 전용: 발표 시각을 들고 넘긴 포지션에 '일정 넘김' 표시 (일정 구간 진입이 아닌 것만)"""
+        try:
+            now = time.time()
+            ats = []
+            for e in self.events():
+                try:
+                    ats.append(datetime.fromisoformat(e["at"]).timestamp())
+                except Exception:
+                    continue
+            for sym, p in self.state["positions"].items():
+                t0 = (p.get("at") or 0) / 1000
+                if t0 <= 0:
+                    continue
+                if "evt" not in p:                       # 이 기능 전에 연 포지션: 진입 시각으로 표시를 채움
+                    p["evt"] = "in" if self.event_now(t0)[0] else "out"
+                if p.get("evt") == "in" or p.get("evtThru"):
+                    continue
+                if any(t0 < at <= now for at in ats):
+                    p["evtThru"] = True
+                    log(f"[일정 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} "
+                        f"발표 시각을 보유한 채 넘김 → '일정 넘김' 표시 (관찰만)")
+        except Exception as e:
+            log(f"[안내] 일정 넘김 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def event_record(self, kind, p, pct):
+        """관찰 전용: 일정 구간 진입 / 발표 넘김 / 보통 거래 결과를 따로 누적 (표시가 없는 옛 포지션은 건너뜀)"""
+        try:
+            if "evt" not in p:
+                return
+            flag = "in" if p["evt"] == "in" else ("thru" if p.get("evtThru") else "out")
+            k = f"{kind}|{flag}|{p['side']}"
+            d = self.state.setdefault("eventStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+        except Exception as e:
+            log(f"[안내] 일정 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def event_view(self):
+        try:
+            name, at = self.event_now()
+            nxt = None
+            now = time.time()
+            for e in self.events():
+                try:
+                    t = datetime.fromisoformat(e["at"]).timestamp()
+                except Exception:
+                    continue
+                if t > now and (nxt is None or t < nxt[0]):
+                    nxt = (t, e.get("name", "일정"))
+            rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None}
+                    for k, v in sorted((self.state.get("eventStats") or {}).items())]
+            pos = self.state["positions"].values()
+            return {"now": name, "nowAt": int(at * 1000) if at else None,
+                    "next": {"name": nxt[1], "at": int(nxt[0] * 1000)} if nxt else None, "rows": rows,
+                    "openIn": sum(1 for q in pos if q.get("evt") == "in"), "openThru": sum(1 for q in pos if q.get("evtThru"))}
+        except Exception:
+            return None
+
+    # --- 손절 직후 재진입 관찰 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
+    REENTRY_H = 6                                        # 같은 종목·같은 방향이 손절된 뒤 이 시간 안에 다시 들어가면 '재진입'
+
+    def reentry_recent(self, sym, side, ts=None):
+        """관찰 전용: sym·side 가 ts(기본 지금) 전 REENTRY_H 시간 안에 손절됐으면 그 손절 시각(초), 아니면 None"""
+        try:
+            now = time.time() if ts is None else ts
+            ls = self.state.get("lastStop")
+            if ls is None:                               # 처음 켤 때: 최근 거래 기록의 손절로 채움
+                ls = {}
+                for x in self.state.get("tradeLog") or []:
+                    if "손절" in str(x.get("exit", "")):
+                        try:
+                            t = datetime.strptime(f"{datetime.now(KST).year}-{x['t']}", "%Y-%m-%d %H:%M").replace(tzinfo=KST).timestamp()
+                        except Exception:
+                            continue
+                        k = f"{x['symbol']}|{x['side']}"
+                        ls[k] = max(ls.get(k, 0), t)
+                self.state["lastStop"] = ls
+            t = ls.get(f"{sym}|{side}")
+            return t if t and 0 <= now - t <= self.REENTRY_H * 3600 else None
+        except Exception:
+            return None
+
+    def reentry_mark(self, sym):
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or "reEnt" in p:
+                return
+            t = self.reentry_recent(sym, p["side"], (p.get("at") or 0) / 1000 or None)
+            p["reEnt"] = bool(t)
+            if t:
+                log(f"[재진입 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} 진입 · "
+                    f"같은 방향 손절 {round((time.time() - t) / 60)}분 뒤 다시 들어감 → '손절 후 재진입' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 재진입 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def reentry_record(self, kind, sym, p, pct, reason):
+        """관찰 전용: 손절 후 재진입 / 보통 거래 결과를 따로 누적하고, 이번 청산이 손절이면 손절 시각을 남김"""
+        try:
+            if "손절" in str(reason or ""):
+                self.reentry_recent(sym, p["side"])      # lastStop 초기화 보장
+                self.state.setdefault("lastStop", {})[f"{sym}|{p['side']}"] = time.time()
+            if "reEnt" not in p:                          # 이 기능 전에 연 포지션은 건너뜀
+                return
+            k = f"{kind}|{'re' if p['reEnt'] else 'normal'}|{p['side']}"
+            d = self.state.setdefault("reentryStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["worst"] = round(min(d["worst"], pct), 3)
+        except Exception as e:
+            log(f"[안내] 재진입 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    CROWD_HI = 5                                         # 진입 때 같은 방향 실보유가 이 개수 이상이면 '몰림'
+
+    def crowd_mark(self, sym):
+        """관찰 전용: 진입 때 같은 방향으로 이미 들고 있던 다른 포지션 수(실주문은 실보유끼리, 모의는 모의끼리)를 표시.
+        한쪽으로 몰렸을 때 성적이 나빠지는지(함께 손절되는지) 보는 용도. 진입·청산·금액·실주문 판단에는 전혀 안 씀"""
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or "crowd" in p:
+                return
+            live = bool(p.get("live"))
+            n = sum(1 for k, q in self.state["positions"].items()
+                    if k != sym and q.get("side") == p["side"] and bool(q.get("live")) == live)
+            p["crowd"] = n
+            if n >= self.CROWD_HI:
+                log(f"[몰림 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if live else ''} 진입 · "
+                    f"같은 방향 {'실보유' if live else '모의 보유'} 이미 {n}개 → '한쪽 몰림' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 몰림 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def crowd_record(self, kind, p, pct):
+        """관찰 전용: 몰림(같은 방향 CROWD_HI개 이상) / 보통 진입의 결과를 따로 누적"""
+        try:
+            if "crowd" not in p:                          # 이 기능 전에 연 포지션은 건너뜀
+                return
+            k = f"{kind}|{'hi' if p['crowd'] >= self.CROWD_HI else 'lo'}|{p['side']}"
+            d = self.state.setdefault("crowdStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["worst"] = round(min(d["worst"], pct), 3)
+        except Exception as e:
+            log(f"[안내] 몰림 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def crowd_view(self):
+        try:
+            rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None, "worst": v.get("worst")}
+                    for k, v in sorted((self.state.get("crowdStats") or {}).items())]
+            pos = self.state["positions"].values()
+            now = {s: sum(1 for q in pos if q.get("live") and q.get("side") == s) for s in ("long", "short")}
+            return {"hi": self.CROWD_HI, "rows": rows, "liveNow": now}
+        except Exception:
+            return None
+
+    # --- BTC 단기 흐름 역행 관찰 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
+    def btcflow_mark(self, sym):
+        """관찰 전용: 진입 때 BTC 최근 2시간 변화를 표시. 숏인데 BTC가 BF_HI% 이상 오르는 중이거나
+        롱인데 BF_HI% 이상 빠지는 중이면 '역행', 같은 쪽으로 BF_HI% 이상이면 '순행', 나머지는 '잔잔'.
+        급락 뒤 반등 때 숏이 줄줄이 손절되는지(또는 반대) 보는 용도"""
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or "btc2h" in p:
+                return
+            self.regime()                                # 봉마다 한 번만 BTC 시세를 받음(이미 받았으면 재사용)
+            v = getattr(self, "_btc2h", None)
+            if v is None:
+                return
+            p["btc2h"] = v
+            up = v if p["side"] == "long" else -v        # 내 방향 기준으로 BTC가 도와주는 정도
+            if up <= -BF_HI:
+                log(f"[BTC 흐름 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} 진입 · "
+                    f"BTC 2시간 {v:+.2f}% (내 방향과 반대) → '역행' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] BTC 흐름 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    @staticmethod
+    def _btcflow_flag(p):
+        v = p.get("btc2h")
+        if v is None:
+            return None
+        up = v if p["side"] == "long" else -v
+        return "against" if up <= -BF_HI else ("with" if up >= BF_HI else "flat")
+
+    def btcflow_record(self, kind, p, pct):
+        """관찰 전용: 역행 / 순행 / 잔잔 진입의 결과를 따로 누적"""
+        try:
+            f = self._btcflow_flag(p)
+            if f is None:                                # 이 기능 전에 연 포지션은 건너뜀
+                return
+            k = f"{kind}|{f}|{p['side']}"
+            d = self.state.setdefault("btcFlowStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["worst"] = round(min(d["worst"], pct), 3)
+        except Exception as e:
+            log(f"[안내] BTC 흐름 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def btcflow_view(self):
+        try:
+            rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None, "worst": v.get("worst")}
+                    for k, v in sorted((self.state.get("btcFlowStats") or {}).items())]
+            opn = sum(1 for q in self.state["positions"].values() if self._btcflow_flag(q) == "against")
+            return {"hi": BF_HI, "now": getattr(self, "_btc2h", None), "rows": rows, "openAgainst": opn}
+        except Exception:
+            return None
+
+    # --- 손절폭/익절폭 비대칭 관찰 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
+    ASYM_HI = 2.5                                        # 손절폭이 익절폭의 이 배 이상이면 '비대칭' (예: 익절+1.5%/손절-5%)
+
+    @staticmethod
+    def _asym_ratio_desc(desc):
+        m = re.search(r"익절\+([\d.]+)% / 손절-([\d.]+)%", desc or "")
+        if not m or float(m.group(1)) <= 0:
+            return None
+        return float(m.group(2)) / float(m.group(1))
+
+    def _asym_ratio_pos(self, p):
+        try:
+            e, tp, sl = float(p["entry"]), float(p["tp"]), float(p["sl"])
+            if abs(tp - e) > 0:
+                return abs(sl - e) / abs(tp - e)
+        except Exception:
+            pass
+        return self._asym_ratio_desc(p.get("desc"))
+
+    def _asym_add(self, kind, ratio, side, pct):
+        k = f"{kind}|{'hi' if ratio >= self.ASYM_HI else 'lo'}|{side}"
+        d = self.state["asymStats"].setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0, "sumR": 0.0})
+        d["n"] += 1
+        d["wins"] += 1 if pct > 0 else 0
+        d["sumPct"] = round(d["sumPct"] + pct, 4)
+        d["worst"] = round(min(d["worst"], pct), 3)
+        d["sumR"] = round(d["sumR"] + ratio, 3)
+
+    def _asym_seed(self):
+        """처음 한 번: 이미 끝난 거래 기록(tradeLog)으로 집계를 채워 바로 비교할 수 있게 함"""
+        if "asymStats" in self.state:
+            return
+        self.state["asymStats"] = {}
+        for t in self.state.get("tradeLog") or []:
+            r = self._asym_ratio_desc(t.get("desc"))
+            if r is None or t.get("pct") is None:
+                continue
+            self._asym_add("live" if t.get("live") else "paper", r, t.get("side") or "long", float(t["pct"]))
+
+    def asym_record(self, kind, p, pct):
+        """관찰 전용: 손절폭/익절폭 비율이 큰(비대칭) 규칙과 보통 규칙의 결과를 따로 누적"""
+        try:
+            self._asym_seed()
+            r = self._asym_ratio_pos(p)
+            if r is None:
+                return
+            self._asym_add(kind, r, p["side"], pct)
+        except Exception as e:
+            log(f"[안내] 비대칭 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def asym_view(self):
+        try:
+            self._asym_seed()
+            rows = []
+            for k, v in sorted((self.state.get("asymStats") or {}).items()):
+                kind, flag, side = k.split("|")
+                n = v["n"]
+                rows.append({"kind": kind, "flag": flag, "side": side, "n": n, "wins": v["wins"],
+                             "avgPct": round(v["sumPct"] / n, 3) if n else None, "worst": v.get("worst"),
+                             # 이 비율로 본전이 되려면 필요한 승률 ≈ R/(1+R) (수수료 제외)
+                             "beWin": round((v["sumR"] / n) / (1 + v["sumR"] / n), 3) if n else None})
+            op = [q for q in self.state["positions"].values() if (self._asym_ratio_pos(q) or 0) >= self.ASYM_HI]
+            return {"hi": self.ASYM_HI, "rows": rows, "open": len(op), "openLive": sum(1 for q in op if q.get("live"))}
+        except Exception:
+            return None
+
+    # --- 실주문 건너뛴 신호의 결과 관찰 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
+    def skip_mark(self, sym):
+        """관찰 전용: 실주문 대신 모의로 간 신호에 그 이유를 표시 — 건너뛴 게 잘한 일이었는지 나중에 이유별로 확인"""
+        try:
+            p = self.state["positions"].get(sym)
+            why = getattr(self, "_skip_why", None)
+            if p is None or p.get("live") or "skipWhy" in p or not why:
+                return
+            p["skipWhy"] = str(why)[:40]
+        except Exception as e:
+            log(f"[안내] 건너뜀 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def skip_record(self, p, pct):
+        """관찰 전용: 건너뛴 이유별로 그 신호의 모의 결과를 누적(n·승·평균·최악)"""
+        try:
+            why = p.get("skipWhy")
+            if not why:                                   # 이 기능 전에 연 포지션·이유 없는 모의는 건너뜀
+                return
+            k = f"{why}|{p['side']}"
+            d = self.state.setdefault("skipOutStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["worst"] = round(min(d["worst"], pct), 3)
+        except Exception as e:
+            log(f"[안내] 건너뜀 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def skip_view(self):
+        try:
+            rows = [{"why": k.rsplit("|", 1)[0], "side": k.rsplit("|", 1)[1], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None, "worst": v.get("worst")}
+                    for k, v in sorted((self.state.get("skipOutStats") or {}).items())]
+            return {"rows": rows, "open": sum(1 for q in self.state["positions"].values() if q.get("skipWhy"))}
+        except Exception:
+            return None
+
+    def reentry_view(self):
+        try:
+            rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None, "worst": v.get("worst")}
+                    for k, v in sorted((self.state.get("reentryStats") or {}).items())]
+            return {"hours": self.REENTRY_H, "rows": rows,
+                    "open": sum(1 for q in self.state["positions"].values() if q.get("reEnt"))}
+        except Exception:
+            return None
+
     def scan(self):
         st = self.state
         bar = int(time.time() // (TF * 60))
         if st.get("scannedBar") == bar or time.time() % (TF * 60) < 20:   # 새 봉이 닫힌 뒤 한 번만 확인
             return
         st["scannedBar"] = bar
+        self.regime()                                    # 관찰 전용: 신호가 없어도 봉마다 국면을 계산해 대시보드에 지금 국면 표시 (매매 영향 없음)
+        self.event_pass()                                # 관찰 전용: 발표 시각을 들고 넘긴 포지션 표시 (매매 영향 없음)
         n_paper = lambda: sum(1 for p in st["positions"].values() if not p.get("live"))
         n_live = lambda: sum(1 for p in st["positions"].values() if p.get("live"))
         # 모의 칸(10)과 실주문 칸(BINANCE_MAX_LIVE)을 따로 셈 — 모의가 칸을 다 채워도 실주문 신호는 계속 확인
-        if n_paper() >= self.max_open and (not self.live or n_live() >= self.max_live):
+        if n_paper() >= self.max_open and (not self.live_on() or n_live() >= self.max_live):
             return
         for sym, strat in list(st["strategies"].items()):
             if sym in st["positions"]:
                 continue
-            if n_paper() >= self.max_open and (not self.live or n_live() >= self.max_live):
+            if n_paper() >= self.max_open and (not self.live_on() or n_live() >= self.max_live):
                 break
             cl = klines(sym, 300)
             if len(cl) < 100:
@@ -693,11 +1618,30 @@ class Engine:
             px = prices([sym]).get(sym)
             if not px:
                 continue
-            usdt = self.live_ok(strat)
+            reg = self.regime()                          # 관찰 전용 기록 (진입 판단에는 안 씀)
+            sw = self.side_weak(strat["side"])           # 관찰 전용: 약한 방향 표시 (진입 판단에는 안 씀)
+            evn, _ = self.event_now()                    # 관찰 전용: 경제 일정 구간 표시 (진입 판단에는 안 씀)
+            self._skip_why = None
+            usdt = self.live_ok(strat, sym)
             if usdt and self.open_live(sym, strat, px, usdt):
+                if sym in st["positions"] and reg:
+                    st["positions"][sym].setdefault("regime", reg)
+                self.side_weak_mark(sym, sw)
+                self.event_mark(sym, evn)
+                self.reentry_mark(sym)
+                self.crowd_mark(sym)
+                self.btcflow_mark(sym)
                 continue
             if n_paper() < self.max_open:
                 self.open_paper(sym, strat, px)
+                if sym in st["positions"] and reg:
+                    st["positions"][sym].setdefault("regime", reg)
+                self.side_weak_mark(sym, sw)
+                self.event_mark(sym, evn)
+                self.reentry_mark(sym)
+                self.crowd_mark(sym)
+                self.btcflow_mark(sym)
+                self.skip_mark(sym)
         save_state(st)
 
     # --- 실주문 ---
@@ -732,15 +1676,20 @@ class Engine:
         sk["counts"][why] = sk["counts"].get(why, 0) + 1
         sk["last"] = why
         sk["lastAt"] = int(time.time() * 1000)
+        self._skip_why = why                             # 관찰 전용: 이 신호가 모의로 갈 때 이유를 표시하려고 남김
         return 0.0
 
-    def live_ok(self, strat):
+    def live_on(self):
+        """새 실주문을 내도 되는 상태(설정 live + 계좌 연결 정상)"""
+        return bool(self.live and getattr(self, "live_new", True))
+
+    def live_ok(self, strat, sym=None):
         """실주문 해도 되면 금액(USDT), 아니면 0 — 돈 지키기 조건을 모두 통과해야 함"""
-        if not self.live:
+        if not self.live_on():
             return self.live_skip("실주문 꺼짐(설정 paper·키 확인 실패)")
         rb = self.state["ruleBook"].get(strat["rid"]) or {}
         if rb.get("status") != "proven" and not self.side_ok(strat["side"], rb):
-            return self.live_skip("통과 전 규칙(모의 검증 중)")
+            return self.live_skip(self.skip_why(rb))
         g, now = self.state["guard"], time.time()
         if g.get("blockUntil", 0) > now:
             return self.live_skip("보호 손절 주문 실패 후 쉬는 중")
@@ -753,6 +1702,12 @@ class Engine:
             return self.live_skip("하루 손실 한도 도달")
         if sum(1 for p in self.state["positions"].values() if p.get("live")) >= self.max_live:
             return self.live_skip("동시 실보유 최대")
+        if WEAK_HOUR_LIVE and self.weak_hour_now():
+            return self.live_skip("약한 시간대(설정)")
+        if REENTRY_SKIP_LIVE and sym and strat["side"] in REENTRY_SKIP_SIDES and self.reentry_recent(sym, strat["side"]):
+            return self.live_skip("손절 직후 재진입(설정)")
+        if REGIME_FOCUS_LIVE and self.regime_weak(strat["side"]):
+            return self.live_skip("지금 국면에서 약한 방향(설정)")
         usdt, p = self.size_for(rb)
         if not usdt:
             return self.live_skip("이익 확률 낮은 규칙(40% 미만)")
@@ -783,7 +1738,8 @@ class Engine:
             avg, filled = self.live.market(sym, "BUY" if long_ else "SELL", qty)
         except Exception as e:
             log(f"[실주문 실패] {sym}: {e} → 모의로 처리")
-            self.live_skip("주문 오류")
+            # 바이낸스 -2019(증거금 부족)은 '주문 오류'와 따로 세어 둠 — 동시 실보유·금액이 잔고를 넘는지 대시보드에서 바로 보이게(판단에는 안 씀)
+            self.live_skip("증거금 부족(가용 잔고 모자람)" if "-2019" in str(e) else "주문 오류")
             return False
         if filled <= 0 or avg <= 0:
             log(f"[실주문 확인 실패] {sym} 체결 수량 0 → 모의로 처리")
@@ -796,7 +1752,8 @@ class Engine:
         sl = avg * (1 + sp["sl"] / 100) if long_ else avg * (1 - sp["sl"] / 100)
         p = {"side": side, "entry": avg, "tp": tp, "sl": sl, "usdt": filled * avg, "qty": filled,
              "live": True, "at": int(time.time() * 1000), "deadline": int(time.time()) + sp["hold"] * TF * 60,
-             "rid": strat["rid"], "desc": strat["desc"], "maxFav": 0.0, "p": round(strat.get("_p", 0.5), 3)}
+             "rid": strat["rid"], "desc": strat["desc"], "maxFav": 0.0, "p": round(strat.get("_p", 0.5), 3),
+             "sigPx": px}
         self.state["positions"][sym] = p
         save_state(self.state)
         log(f"★[실주문 진입] {sym} {'롱' if long_ else '숏'} {filled} ({filled * avg:.1f} USDT · 이익 확률 {p['p'] * 100:.0f}%) "
@@ -809,7 +1766,7 @@ class Engine:
         return True
 
     def arm_stop(self, sym, p):
-        """거래소에 보호 손절 걸기 (봇 손절가보다 0.5%p 바깥). PC·봇이 멈춰도 거래소가 손실을 끊어 줌"""
+        """거래소에 보호 손절 걸기 (봇 손절가보다 EXCHANGE_STOP_BUFFER%p 바깥, 기본 0.5). PC·봇이 멈춰도 거래소가 손실을 끊어 줌"""
         long_ = p["side"] == "long"
         move = abs((p["sl"] / p["entry"] - 1) * 100) + EXCHANGE_STOP_BUFFER
         trig = p["entry"] * (1 - move / 100) if long_ else p["entry"] * (1 + move / 100)
@@ -818,15 +1775,74 @@ class Engine:
             p["stopId"] = self.live.stop_order(sym, "SELL" if long_ else "BUY", trig)
             p["stopPx"] = trig
             save_state(self.state)
-            log(f"[돈 지키기] {sym} 거래소 보호 손절 걸림 @ {trig:.6g} (-{move:.1f}%)")
+            log(f"[돈 지키기] {sym} 거래소 보호 손절 걸림 @ {trig:.6g} (-{move:.2f}%, 여유 {EXCHANGE_STOP_BUFFER:g}%p)")
             return True
         except Exception as e:
             log(f"[경고] {sym} 거래소 보호 손절 실패: {str(e)[:160]}")
             return False
 
+    def slip_record(self, sym, p, exit_px):
+        """관찰 전용: 실주문 체결가가 신호 가격보다 얼마나 불리했는지(+면 불리) 누적.
+        모의는 한쪽 SLIP(0.02%)만 가정하므로, 실제 밀림이 더 크면 모의 성적이 실주문보다 좋게 보임.
+        손익·판정·주문에는 전혀 쓰지 않음. 실패해도 매매는 그대로."""
+        try:
+            long_ = p["side"] == "long"
+            st = self.state.setdefault("liveSlip", {"entryN": 0, "entrySum": 0.0, "entryWorse": 0,
+                                                    "exitN": 0, "exitSum": 0.0, "exitWorse": 0, "recent": []})
+            ent = ext = None
+            sig, avg = p.get("sigPx"), p.get("entry")
+            if sig and avg:
+                ent = ((avg / sig - 1) if long_ else (sig / avg - 1)) * 100
+                st["entryN"] += 1; st["entrySum"] += ent; st["entryWorse"] += 1 if ent > 0 else 0
+            xs = p.pop("exitSigPx", None)
+            if xs and exit_px:
+                ext = ((xs / exit_px - 1) if long_ else (exit_px / xs - 1)) * 100
+                st["exitN"] += 1; st["exitSum"] += ext; st["exitWorse"] += 1 if ext > 0 else 0
+            if ent is not None or ext is not None:
+                st["recent"] = (st.get("recent") or [])[-9:] + [{"symbol": sym, "side": p["side"],
+                                "entry": None if ent is None else round(ent, 3), "exit": None if ext is None else round(ext, 3)}]
+        except Exception as e:
+            log(f"[안내] 체결 밀림 기록 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def curve_record(self, usdt):
+        """관찰 전용: 실주문 1건마다 [시각, 손익 USDT(수수료 뺀 값), 그때 총자산]을 기록 → 대시보드 '거래 수익률(이체 제외)' 그래프.
+        입금·출금은 거래 손익이 아니므로 이 곡선에 안 들어감. 매매·판정·주문에는 전혀 안 씀. 실패해도 매매는 그대로."""
+        try:
+            ex = getattr(self, "_exsnap", None) or {}
+            eq = (ex.get("balance") or 0) + (ex.get("upnl") or 0)
+            cv = self.state.setdefault("liveCurve", [])
+            cv.append([int(time.time() * 1000), round(usdt, 4), round(eq, 2)])
+            del cv[:-1500]
+        except Exception as e:
+            log(f"[안내] 거래 수익률 기록 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def curve_backfill(self):
+        """처음 한 번만: 기록 기능이 생기기 전 실주문(tradeLog 최근 100건 안의 것)으로 곡선을 채움. 매매엔 영향 없음."""
+        try:
+            if "liveCurve" in self.state:
+                return
+            now = datetime.now(KST)
+            hist = self.state.get("balHist") or []
+            out = []
+            for t in self.state.get("tradeLog") or []:
+                if not t.get("live") or not t.get("t"):
+                    continue
+                d = datetime.strptime(f"{now.year}-{t['t']}", "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+                if d > now:
+                    d = d.replace(year=now.year - 1)
+                ts = int(d.timestamp() * 1000)
+                eq = next((h[1] for h in reversed(hist) if h[0] <= ts), hist[0][1] if hist else 0)
+                out.append([ts, round(float(t.get("usdt") or 0), 4), round(eq, 2)])
+            self.state["liveCurve"] = out[-1500:]
+            log(f"[안내] 거래 수익률 곡선 준비: 지난 실주문 {len(out)}건으로 채움")
+        except Exception as e:
+            self.state["liveCurve"] = []
+            log(f"[안내] 거래 수익률 곡선 준비 실패(매매엔 영향 없음): {str(e)[:120]}")
+
     def book_live(self, sym, p, exit_px, reason, record=True):
         """실주문 1건 정리 결과를 장부에 반영 (봇이 닫았든 거래소 보호 손절이 닫았든)"""
         long_ = p["side"] == "long"
+        self.slip_record(sym, p, exit_px)
         gross = (exit_px / p["entry"] - 1) if long_ else (p["entry"] / exit_px - 1)
         pct = (gross - 2 * FEE) * 100
         usdt = p["usdt"] * pct / 100
@@ -839,9 +1855,24 @@ class Engine:
         ll["monthPnl"] = round(ll["monthPnl"] + usdt, 4)
         ll["monthTrades"] += 1
         ll["peak"] = max(ll.get("peak", 0.0), ll["pnlUsdt"])
+        self.curve_record(usdt)
         self.state["positions"].pop(sym, None)
         if record:
-            self.rule_record(p["rid"], pct)
+            self.rule_record(p["rid"], pct, "live")
+        self.regime_record("live", p, pct)
+        self.funding_record("live", p, pct)
+        self.giveback_record("live", sym, p, pct)
+        self.deepcut_record("live", sym, p, pct)
+        self.side_weak_record("live", p, pct)
+        self.event_record("live", p, pct)
+        self.reentry_record("live", sym, p, pct, reason)
+        self.crowd_record("live", p, pct)
+        self.btcflow_record("live", p, pct)
+        self.asym_record("live", p, pct)
+        self.p_calib_record(p, pct, usdt)
+        self.stop_gap_record(sym, p, pct, reason)
+        if reason == "익절":
+            self.tp_run_start("live", sym, p, exit_px)
         g = self.state["guard"]
         g["streak"] = g.get("streak", 0) + 1 if pct <= 0 else 0
         rest = ""
@@ -852,8 +1883,9 @@ class Engine:
             rest = f" · 연속 {LOSS_STREAK_MAX}번 손실 → {LOSS_STREAK_REST_HOURS}시간 실주문 쉼 (대시보드에서 승인하면 바로 재개)"
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
-                   "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "live": True,
-                   "heldMin": round((time.time() * 1000 - p["at"]) / 60000), "maxFav": round(p.get("maxFav", 0), 2)})
+                   "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "live": True, "regime": p.get("regime"),
+                   "heldMin": round((time.time() * 1000 - p["at"]) / 60000), "maxFav": round(p.get("maxFav", 0), 2),
+                   "fund": round(p.get("fundPct", 0.0), 4), "p": p.get("p"), "size": round(p.get("usdt", 0.0), 2)})
         del tl[:-100]
         save_state(self.state)
         log(f"★[실주문 청산] {sym} {'롱' if long_ else '숏'} {pct:+.2f}% ({usdt:+.2f} USDT, {reason}) · "
@@ -867,9 +1899,22 @@ class Engine:
         try:
             avg, filled = self.live.market(sym, "SELL" if long_ else "BUY", p["qty"], reduce=True)
         except Exception as e:
+            if "-2022" in str(e):
+                # 코드 -2022(ReduceOnly 거절) = 대부분 거래소 보호 손절이 이미 체결돼 포지션이 없는 경우.
+                # 예전엔 20초마다 같은 실패를 되풀이하다 1분 간격 확인 2번(약 80초) 뒤에야 장부에 반영했음.
+                # 이제 거절을 '없어진 것 같음' 1번으로 세고 바로 거래소 포지션을 확인 → 거기서도 없으면 즉시 반영.
+                # 거래소에 포지션이 남아 있으면 지금처럼 다음 확인 때 다시 청산 시도(보호 손절은 그대로).
+                if not p.get("rejN"):
+                    log(f"[실주문 청산 실패] {sym}: {e} — 거래소 보호 손절이 먼저 체결됐을 수 있어 바로 포지션 확인")
+                p["rejN"] = p.get("rejN", 0) + 1
+                p["missing"] = max(p.get("missing", 0), 1)
+                self.check_exchange(force=True)
+                return
             log(f"[실주문 청산 실패] {sym}: {e} — 다음 확인 때 다시 시도 (거래소 보호 손절은 그대로 걸려 있음)")
             return
         self.live.cancel_stops(sym)
+        if avg:
+            p["exitSigPx"] = price                                  # 관찰용: 청산 판단 때 가격(체결 밀림 비교)
         self.book_live(sym, p, avg or price, reason, record)
 
     def dash_fields(self):
@@ -952,7 +1997,7 @@ class Engine:
 
         if time.time() - at / 1000 > TEST_MAX_AGE_SEC:
             return done("expired", f"누른 지 {TEST_MAX_AGE_SEC // 60}분이 지난 요청이라 실행하지 않음 · 다시 눌러 주세요")
-        if not self.live:
+        if not self.live_on():
             return done("skipped", "실주문이 꺼져 있어 실행하지 않음 (bot_config.env BINANCE_TRADE_MODE=live·키 확인)")
         g, now = self.state["guard"], time.time()
         ll = self.live_day()
@@ -1012,11 +2057,24 @@ class Engine:
             p["missing"] = p.get("missing", 0) + 1
             if p["missing"] < 2:
                 continue
-            exit_px = p.get("stopPx") or p["sl"]
-            log(f"[돈 지키기] {sym} 실보유가 거래소에서 정리됨(보호 손절 체결 또는 직접 정리) → 손절가 기준으로 장부 반영")
+            exit_px, why = self.exchange_exit_px(sym, p)
+            log(f"[돈 지키기] {sym} 실보유가 거래소에서 정리됨(보호 손절 체결 또는 직접 정리) → "
+                + ("실제 체결가" if why == "실제 체결가" else "손절가") + f" 기준으로 장부 반영 ({exit_px:.6g})")
             self.live.cancel_stops(sym)
-            self.book_live(sym, p, exit_px, "거래소 보호 손절(추정가)")
+            self.book_live(sym, p, exit_px, f"거래소 보호 손절({why})")
         save_state(self.state)
+
+    def exchange_exit_px(self, sym, p):
+        """거래소에서 이미 닫힌 실보유의 청산가: 실제 체결 내역을 먼저 보고, 못 찾으면 예전처럼 거래소 보호 손절가로 추정.
+        조회 실패해도 장부 반영은 그대로 진행(손절가 추정)"""
+        est = p.get("stopPx") or p["sl"]
+        try:
+            real = self.live.close_fill(sym, p["side"] == "long", p.get("at"), float(p.get("qty") or 0))
+            if real and real > 0:
+                return real, "실제 체결가"
+        except Exception as e:
+            log(f"[안내] {sym} 실제 청산 체결가 조회 실패 → 손절가로 추정 반영: {str(e)[:120]}")
+        return est, "추정가"
 
     def reconcile(self):
         """시작할 때: 장부의 실보유와 거래소 실제 포지션 맞춰 보기 (모르는 포지션은 건드리지 않음) + 보호 손절 확인"""
@@ -1034,7 +2092,8 @@ class Engine:
             if p.get("live") and sym not in ex:
                 log(f"[경고] {sym} 실보유가 거래소에 없음(꺼져 있는 동안 보호 손절 체결 또는 직접 정리) → 손절가 기준으로 장부 반영")
                 self.live.cancel_stops(sym)
-                self.book_live(sym, p, p.get("stopPx") or p["sl"], "꺼져 있는 동안 정리됨(추정가)")
+                exit_px, why = self.exchange_exit_px(sym, p)
+                self.book_live(sym, p, exit_px, f"꺼져 있는 동안 정리됨({why})")
             elif p.get("live") and not p.get("stopId"):
                 self.arm_stop(sym, p)                           # 이번 버전 전에 들어간 실보유에도 보호 손절을 걸어 둠
         mine = {s for s, p in self.state["positions"].items() if p.get("live")}
@@ -1049,6 +2108,10 @@ class Engine:
         basis = {"side": f"통과 규칙 + 방향별 모의 {SIDE_GATE_MIN_N}회·거래당 +{SIDE_GATE_MIN_AVG:.2f}% 이상인 쪽",
                  "all": "롱·숏 모두 (퇴출·평균 마이너스 규칙 제외)"}.get(self.live_basis, "통과 규칙만")
         basis += " · 업비트 봇과 별개 운용"
+        if not self.live_on():
+            n = sum(1 for p in self.state["positions"].values() if p.get("live"))
+            log(f"바이낸스 실계좌 연결됨 · 설정이 모의라 새 실주문은 안 함 · 남은 실보유 {n}개만 평소대로 정리(거래소 보호 손절 유지)")
+            return
         log(f"바이낸스 실계좌 연결됨 · 실주문 켜짐({basis}) · 기본 {self.order_usdt:.0f} USDT(확률·판 크기로 "
             f"{SIZE_MIN_X * 0.5:g}~{SIZE_MAX_X:g}배) · 하루 손실 한도 {self.daily_loss:.0f} · 월 {self.month_loss:.0f} USDT · "
             f"동시 실보유 최대 {self.max_live} · 거래소 보호 손절 켜짐")
@@ -1077,14 +2140,20 @@ class Engine:
         px = prices(list(pos.keys()))
         for sym, p in list(pos.items()):
             price = px.get(sym)
-            if not price:
+            if not price or sym not in pos:                  # 같은 순회 중 거래소 확인으로 이미 장부 반영된 종목은 건너뜀
                 continue
             long_ = p["side"] == "long"
             fav = (price / p["entry"] - 1) * 100 * (1 if long_ else -1)
             p["maxFav"] = max(p.get("maxFav", 0.0), fav)
+            self.giveback_watch(sym, p, price, fav)
+            self.deepcut_watch(sym, p, price)
             hit_tp = price >= p["tp"] if long_ else price <= p["tp"]
             hit_sl = price <= p["sl"] if long_ else price >= p["sl"]
             reason = "익절" if hit_tp else ("손절" if hit_sl else ("보유시간 초과" if time.time() >= p["deadline"] else None))
+            if not reason and DEEP_CUT_LIVE and p.get("live") and p.get("dcPct") is not None:
+                # 설정 BINANCE_DEEP_CUT=on: 손절폭 4%↑ 실주문이 순손익 -2.5% 이하로 빠지면 끝까지 기다리지 않고 정리
+                # (사유에 '손절'을 넣지 않음 → 손절 넘침·재진입 관찰에 섞이지 않게)
+                reason = "깊은 손실 조기 정리"
             if reason:
                 if p.get("live"):
                     if self.live:
@@ -1110,18 +2179,40 @@ class Engine:
         lg[p["side"]]["n"] += 1
         lg[p["side"]]["sumPct"] = round(lg[p["side"]]["sumPct"] + pct, 4)
         self.rule_record(p["rid"], pct)
+        self.regime_record("paper", p, pct)
+        self.funding_record("paper", p, pct)
+        self.giveback_record("paper", sym, p, pct)
+        self.deepcut_record("paper", sym, p, pct)
+        self.side_weak_record("paper", p, pct)
+        self.event_record("paper", p, pct)
+        self.reentry_record("paper", sym, p, pct, reason)
+        self.crowd_record("paper", p, pct)
+        self.btcflow_record("paper", p, pct)
+        self.asym_record("paper", p, pct)
+        self.skip_record(p, pct)
+        if reason == "익절":
+            self.tp_run_start("paper", sym, p, price)
         tl = self.state["tradeLog"]
         tl.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"], "pct": round(pct, 3),
-                   "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"],
-                   "heldMin": round((time.time() * 1000 - p["at"]) / 60000), "maxFav": round(p.get("maxFav", 0), 2)})
+                   "usdt": round(usdt, 3), "exit": reason, "desc": p["desc"], "regime": p.get("regime"),
+                   "heldMin": round((time.time() * 1000 - p["at"]) / 60000), "maxFav": round(p.get("maxFav", 0), 2),
+                   "fund": round(p.get("fundPct", 0.0), 4)})
         del tl[:-100]
         log(f"[모의 청산] {sym} {'롱' if long_ else '숏'} {pct:+.2f}% ({usdt:+.2f} USDT, {reason}) · "
             f"누적 {lg['trades']}회 거래당 {lg['sumPct'] / lg['trades']:+.3f}%")
 
-    def rule_record(self, rid, pct):
+    def rule_record(self, rid, pct, kind="paper"):
         rb = self.state["ruleBook"].get(rid)
         if not rb:
             return
+        # 통과 '이후' 성적(관찰 전용): 이 거래 직전 규칙 상태(통과/검증 중)별로 실주문·모의를 따로 쌓음 — 매매에는 안 씀
+        st0 = "proven" if rb.get("status") == "proven" else ("testing" if rb.get("status") == "testing" else None)
+        if st0:
+            pa = self.state.setdefault("passAfter", {})
+            c = pa.setdefault(f"{kind}:{st0}", {"n": 0, "wins": 0, "sumPct": 0.0})
+            c["n"] += 1
+            c["wins"] += 1 if pct > 0 else 0
+            c["sumPct"] = round(c["sumPct"] + pct, 4)
         rb["n"] += 1
         rb["wins"] += 1 if pct > 0 else 0
         rb["sumPct"] = round(rb["sumPct"] + pct, 4)
@@ -1155,7 +2246,7 @@ class Engine:
                 pct = round((g - 2 * FEE - SLIP) * 100, 2)
             pos.append({"symbol": sym, "side": p["side"], "live": bool(p.get("live")), "entry": p["entry"], "tp": p["tp"], "sl": p["sl"], "price": cur,
                         "pnlPct": pct, "at": p["at"], "deadline": p["deadline"] * 1000, "desc": p["desc"],
-                        "stopPx": p.get("stopPx"), "p": p.get("p")})
+                        "stopPx": p.get("stopPx"), "p": p.get("p"), "fundPct": p.get("fundPct")})
         g, evo, now = self.state["guard"], self.state["evo"], time.time()
         ll = self.live_day()
         rest = max(g.get("restUntil", 0), g.get("blockUntil", 0))
@@ -1177,7 +2268,7 @@ class Engine:
                     "top": [{"symbol": x["symbol"], "side": x["side"], "fit": x["fit"], "p": x["p"], "n": x["n"], "gen": x["gen"]}
                             for x in self.state["genePool"][:5]]}
         return {
-            "mode": "live" if self.live else "paper", "updatedAt": int(time.time() * 1000), "tf": TF,
+            "mode": "live" if self.live_on() else "paper", "updatedAt": int(time.time() * 1000), "tf": TF,
             "liveLedger": self.state["liveLedger"], "liveOrderUsdt": self.order_usdt, "liveDailyLoss": self.daily_loss,
             "trades": n, "wins": lg["wins"], "pnlUsdt": round(lg["pnlUsdt"], 2),
             "avgPct": round(lg["sumPct"] / n, 3) if n else None,
@@ -1186,22 +2277,73 @@ class Engine:
             "rules": {"testing": sum(1 for r in rb if r["status"] == "testing"), "proven": sum(1 for r in rb if r["status"] == "proven"),
                       "retired": sum(1 for r in rb if r["status"] == "retired")},
             "liveSkip": self.state.get("liveSkip") or {},
+            "liveSlip": self.slip_view(),
+            "giveback": self.giveback_view(),
+            "deepCut": self.deepcut_view(),
+            "sideWeak": self.side_weak_view(),
+            "eventWatch": self.event_view(),
+            "reentry": self.reentry_view(),
+            "crowd": self.crowd_view(),
+            "btcFlow": self.btcflow_view(),
+            "asym": self.asym_view(),
+            "skipOut": self.skip_view(),
+            "pCalib": self.p_calib_view(),
+            "stopGap": self.stop_gap_view(),
+            "payoff": self.payoff_view(),
+            "hourView": self.hour_view(),
+            "symbolView": self.symbol_view(),
+            "tpRun": self.tp_run_view(),
             "nearProven": sorted(({"symbol": r.get("symbol", ""), "side": r.get("side", ""), "n": r.get("n", 0),
                                    "avgPct": round(r.get("sumPct", 0) / r["n"], 3) if r.get("n") else None}
                                   for r in rb if r.get("status") == "testing"),
                                  key=lambda x: (-(x["n"] or 0), -(x["avgPct"] or -99)))[:3],
+            "passAfter": [{"kind": k.split(":")[0], "status": k.split(":")[1], "n": v["n"], "wins": v["wins"],
+                           "avgPct": round(v["sumPct"] / v["n"], 3)}
+                          for k, v in sorted(self.state.get("passAfter", {}).items()) if v.get("n")],
             "ruleEval": RULE_EVAL, "rulePromote": RULE_PROMOTE_MIN_AVG, "liveBasis": self.live_basis, "style": STYLE,
             "guard": guard, "evo": evo_view,
             "settings": cb.settings_view(self.cfg, binance=True),
             "strategies": [{"symbol": k, "desc": v["desc"], "btEdge": v["btEdge"], "origin": v.get("origin", "rand"),
                             "gen": v.get("gen", 0)} for k, v in self.state["strategies"].items()],
             "testOrder": self.state.get("testOrder") or {},
+            "regime": {"now": getattr(self, "_regime", None), "btc24h": getattr(self, "_regime_chg", None),
+                       "focusOn": REGIME_FOCUS_LIVE, "focusMinN": RF_MIN_N,
+                       "weakNow": [sd for sd in ("long", "short") if getattr(self, "_regime", None) and self.regime_weak(sd)],
+                       "rows": [{"kind": k.split("|")[0], "regime": k.split("|")[1], "side": k.split("|")[2], "n": v["n"],
+                                 "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None}
+                                for k, v in sorted(self.state.get("regimeStats", {}).items())],
+                       "flipRows": [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"],
+                                     "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None}
+                                    for k, v in sorted(self.state.get("regimeFlipStats", {}).items())],
+                       "openFlip": [{"symbol": k, "side": v["side"], "live": bool(v.get("live")), "from": v.get("regime")}
+                                    for k, v in self.state.get("positions", {}).items()
+                                    if getattr(self, "_regime", None) and v.get("regime") and v.get("regime") != self._regime]},
+            "funding": {"rows": [{"kind": k.split("|")[0], "side": k.split("|")[1], "n": v["n"], "paidN": v.get("paidN", 0),
+                                  "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None,
+                                  "avgFund": round(v["sumFund"] / v["n"], 4) if v["n"] else None,
+                                  "avgWithFund": round((v["sumPct"] + v["sumFund"]) / v["n"], 3) if v["n"] else None}
+                                 for k, v in sorted(self.state.get("fundStats", {}).items())],
+                        "openFund": round(sum(q.get("fundPct", 0.0) for q in self.state["positions"].values()), 4),
+                        "hotPct": FUND_HOT_PCT,
+                        "hotNow": [{"symbol": k, "side": q["side"], "live": bool(q.get("live")), "worst": q.get("fundWorst")}
+                                   for k, q in self.state["positions"].items() if q.get("fundHot")],
+                        "hotRows": [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"],
+                                     "wins": v["wins"], "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None,
+                                     "avgWithFund": round((v["sumPct"] + v["sumFund"]) / v["n"], 3) if v["n"] else None}
+                                    for k, v in sorted(self.state.get("fundHotStats", {}).items())]},
             "foreign": self.state.get("foreign") or {},
             "readLimitedUntil": self.state.get("readLimitedUntil") or 0,
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],
             "exchange": self.exchange_view(),
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),
         }
+
+    def slip_view(self):
+        st = self.state.get("liveSlip") or {}
+        en, xn = st.get("entryN", 0), st.get("exitN", 0)
+        return {"entryN": en, "entryAvg": round(st["entrySum"] / en, 3) if en else None, "entryWorse": st.get("entryWorse", 0),
+                "exitN": xn, "exitAvg": round(st["exitSum"] / xn, 3) if xn else None, "exitWorse": st.get("exitWorse", 0),
+                "assumed": round(SLIP * 100, 3), "recent": (st.get("recent") or [])[-5:]}
 
     def adopt_orphans(self):
         """거래소에 실제로 있는데 봇 장부에 없는 포지션을 넘겨받아 관리(익절·손절·보유시간·거래소 보호 손절).
@@ -1255,7 +2397,10 @@ class Engine:
         mine = {s for s, p in self.state["positions"].items() if p.get("live")}
         ps = [dict(x, managed=x["symbol"] in mine) for x in ex.get("positions", [])]
         out = dict(ex, positions=ps, unmanaged=sum(1 for x in ps if not x["managed"]),
-                   missing=sorted(mine - {x["symbol"] for x in ps}))
+                   missing=sorted(mine - {x["symbol"] for x in ps}),
+                   hist=(self.state.get("balHist") or [])[-336:],
+                   liveRecent=[t for t in self.state["tradeLog"] if t.get("live")][-20:],
+                   curve=(self.state.get("liveCurve") or [])[-1500:])
         return out
 
     def push_phase(self, phase):
@@ -1270,6 +2415,11 @@ class Engine:
             try:
                 self._exsnap = self.live.snapshot()
                 self._exsnap.pop("err", None)
+                hist = self.state.setdefault("balHist", [])              # 총자산(지갑+미실현) 30분마다 기록, 7일치
+                eq = round((self._exsnap.get("balance") or 0) + (self._exsnap.get("upnl") or 0), 3)
+                if not hist or time.time() * 1000 - hist[-1][0] >= 30 * 60 * 1000:
+                    hist.append([int(time.time() * 1000), eq])
+                    del hist[:-336]
                 self.adopt_orphans()
             except Exception as e:
                 self._exsnap = dict(getattr(self, "_exsnap", None) or {}, err=str(e)[:120])
@@ -1298,7 +2448,7 @@ class Engine:
         bn = {k: v for k, v in self.cfg.get("_appSettings", {}).items() if k.startswith("BINANCE_")}
         if bn:
             log("[설정] 대시보드에서 정한 값 적용: " + ", ".join(f"{k}={v}" for k, v in bn.items()))
-        log(f"시작 · {'실주문 켜짐' if self.live else '모의매매 전용(실제 주문 없음)'} · "
+        log(f"시작 · {'실주문 켜짐' if self.live_on() else ('모의매매 · 남은 실보유만 정리' if self.live else '모의매매 전용(실제 주문 없음)')} · "
             f"{TF}분봉 · 모의 1회 {PAPER_USDT:.0f} USDT · 계정 {uid[:6]}…")
         self.reconcile()
         last_update = time.time()
@@ -1326,6 +2476,14 @@ class Engine:
                         or self.state.get("style", "swing") != STYLE):
                     self.reselect()
                 self.manage()
+                try:
+                    self.tp_run_track()                  # 관찰 전용 (실패해도 매매 영향 없음)
+                except Exception as e:
+                    log(f"[안내] 익절 뒤 추적 건너뜀: {type(e).__name__}: {str(e)[:80]}")
+                try:
+                    self.funding_track()                 # 관찰 전용 (실패해도 매매 영향 없음)
+                except Exception as e:
+                    log(f"[안내] 펀딩비 기록 건너뜀: {type(e).__name__}: {str(e)[:80]}")
                 self.check_exchange()
                 self.check_resume()
                 self.check_test_order()
@@ -1337,27 +2495,58 @@ class Engine:
             time.sleep(20)
 
 
-def check_update():
-    me = os.path.abspath(__file__)
+CB_UPDATE_URL = UPDATE_URL.replace("binance_bot.py", "chamdom_bot.py")
+HERE = os.path.dirname(os.path.abspath(__file__))
+CB_NEEDS = ("load_config", "Cloud", "settings_view", "sync_app_settings", "disable_quick_edit", "random_spec", "CONDITION_POOL")
+
+
+def standalone():
+    """바이낸스 전용 폴더(업비트 봇 start_bot.bat 이 없는 폴더, 예: 지인 PC C:\\chamdom_binance)인지.
+    전용 폴더에서는 아무도 chamdom_bot.py 를 실행하지 않으므로 바이낸스 엔진이 그 공용 파일도 최신(main)으로 맞춤.
+    업비트 봇과 같은 폴더(성민님 PC)에서는 업비트 봇이 직접 갱신하므로 건드리지 않음"""
+    return not os.path.exists(os.path.join(HERE, "start_bot.bat"))
+
+
+def _update_file(url, path, marker, name):
     try:
-        r = requests.get(UPDATE_URL, params={"t": int(time.time())}, timeout=15)
+        r = requests.get(url, params={"t": int(time.time())}, timeout=15)
         if r.status_code != 200:
             return False
         new = r.content.decode("utf-8").replace("\r\n", "\n")
-        with open(me, encoding="utf-8") as f:
-            cur = f.read().replace("\r\n", "\n")
-        if new == cur or "바이낸스 선물 엔진" not in new:
+        cur = ""
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                cur = f.read().replace("\r\n", "\n")
+        if new == cur or marker not in new:
             return False
-        compile(new, "binance_bot.py", "exec")
-        with open(me + ".new", "w", encoding="utf-8", newline="\n") as f:
+        compile(new, name, "exec")
+        with open(path + ".new", "w", encoding="utf-8", newline="\n") as f:
             f.write(new)
-        os.replace(me + ".new", me)
+        os.replace(path + ".new", path)
         return True
     except Exception:
         return False
 
 
+def check_update():
+    changed = _update_file(UPDATE_URL, os.path.abspath(__file__), "바이낸스 선물 엔진", "binance_bot.py")
+    if standalone():
+        changed = _update_file(CB_UPDATE_URL, os.path.join(HERE, "chamdom_bot.py"), "def load_config", "chamdom_bot.py") or changed
+    return changed
+
+
 if __name__ == "__main__":
+    missing = [n for n in CB_NEEDS if not hasattr(cb, n)]
+    if missing:                                         # 공용 파일(chamdom_bot.py)이 옛 버전 — 예: 지인용 업비트 봇(stable) 폴더에 넣은 경우
+        if standalone() and check_update():
+            print("공용 파일(chamdom_bot.py)을 최신으로 받았습니다. 다시 시작합니다.")
+            sys.exit(RESTART_CODE)
+        print("[설치 위치 확인 필요] 이 폴더의 chamdom_bot.py 가 옛 버전이라 바이낸스 엔진을 시작할 수 없습니다.\n"
+              "  → 업비트 봇 폴더가 아니라 별도 폴더(예: C:\\chamdom_binance)에 바이낸스 설치 파일을 풀어서 실행하세요.\n"
+              "  → 없는 항목: " + ", ".join(missing) + "\n10분 뒤 다시 확인합니다. (이 창은 닫아도 됩니다)", flush=True)
+        time.sleep(600)
+        sys.exit(RESTART_CODE)
+    cb.disable_quick_edit()
     if check_update():
         sys.exit(RESTART_CODE)
     try:
