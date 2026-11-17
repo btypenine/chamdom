@@ -52,6 +52,7 @@ APP_SETTINGS = {
     "MONTH_LOSS_LIMIT": ("num", (0, 10000000)),
     "RULE_IDLE_RELEASE_H": ("num", (0, 720)),
     "UPBIT_EVO_SHARE": ("num", (0, 75)),
+    "UPBIT_MODE": ("choice", ("normal", "standby")),
     "BINANCE_TRADE_MODE": ("choice", ("paper", "live")),
     "BINANCE_ORDER_USDT": ("num", (5, 200)),
     "BINANCE_DAILY_LOSS_USDT": ("num", (1, 500)),
@@ -199,6 +200,15 @@ CLOUD_CMD_EVERY = 15             # 대시보드 명령(일시정지·승인 등)
 CLOUD_INBOX_EVERY = 60           # 요청함·승인함 확인 간격(초) — 읽기 한도(하루 5만) 아끼려고 1분
 CLOUD_INBOX_FALLBACK_EVERY = 5   # 예비 요청함(사용자 문서 inbox 필드)은 5번에 1번만 같이 읽음(대시보드가 status/inbox 저장에 실패했을 때만 쓰는 곳)
 CLOUD_SUG_EVERY = 10 * 60        # 친구 제안함 확인 간격(초)
+# 업비트 대기 모드(UPBIT_MODE=standby, 2026-11-17 대표님 지시 '업비트는 뒤로, 바이낸스 몰입')
+# - 신규 매수(모의 검증 포함)만 멈추고, 보유 종목은 기존 익절·손절·보유시간 규칙대로 계속 정리(강제 매도 없음)
+# - 웹페이지(Firebase) 읽기를 아끼려고 명령·요청함·친구 제안함 확인과 AI 정기 분석 주기를 늘림
+# - 설정 확인(APP_SETTINGS_EVERY 10분)·상태 올리기(STATUS_EVERY 30초)는 그대로 → 대시보드에서 normal 로 바로 되돌릴 수 있음
+# - 기본값 normal = 기존 동작 그대로
+STANDBY_CMD_EVERY = 120          # 명령(일시정지·비상 정리·승인) 확인 15초 → 2분 (비상 정리도 2분 안에 처리, 10분 지난 명령 거절 기준보다 충분히 짧게)
+STANDBY_INBOX_EVERY = 10 * 60    # 요청함·승인함 1분 → 10분
+STANDBY_SUG_EVERY = 60 * 60      # 친구 제안함 10분 → 1시간
+STANDBY_AI_HOURS = [9]           # AI 정기 분석 하루 4번 → 1번(09시). 손실 누적 분석(보유분 정리 중 손실)은 그대로
 
 # AI 분석가 (bot_config.env 에 ANTHROPIC_API_KEY 가 있을 때만 동작)
 AI_MODEL_DEFAULT = "claude-sonnet-5-5"
@@ -293,6 +303,8 @@ def load_config():
     cfg["MONTH_LOSS_LIMIT"] = int(num("MONTH_LOSS_LIMIT", 0))            # 월(09시 기준) 손실 한도 · 0이면 제한 없음(기본)
     cfg["RULE_IDLE_RELEASE_H"] = int(num("RULE_IDLE_RELEASE_H", 0))      # 검증 중 규칙이 이 시간 넘게 신호 없으면 교체 · 0이면 끔(기본 = 기존 동작)
     cfg["UPBIT_EVO_SHARE"] = int(num("UPBIT_EVO_SHARE", 0))              # 새 전략 시도 중 진화(변이·교배) 출신 비율 % · 0이면 끔(기본 = 기존 동작, 모두 무작위)
+    mode = str(cfg.get("UPBIT_MODE") or "normal").strip().lower()
+    cfg["UPBIT_MODE"] = mode if mode in APP_SETTINGS["UPBIT_MODE"][1] else "normal"   # 대기 모드 · 모르는 값이면 normal(기본 = 기존 동작)
     cfg["TRADE_MODE"] = cfg.get("TRADE_MODE", "paper").lower()
     cfg["DEVICE_NAME"] = cfg.get("DEVICE_NAME") or "PC"
     key = cfg.get("ANTHROPIC_API_KEY", "")
@@ -1531,6 +1543,18 @@ class Bot:
     def in_use(self):
         return sum(p["cost"] for p in self.state["positions"].values() if not p.get("paper"))
 
+    @property
+    def standby(self):
+        """업비트 대기 모드: 신규 매수 멈춤 + 웹페이지 읽기 절약 (보유분은 평소대로 정리)"""
+        return self.cfg.get("UPBIT_MODE", "normal") == "standby"
+
+    def cloud_every(self, kind):
+        """명령·요청함·친구 제안함 확인 간격(초) — normal 은 기존 값 그대로"""
+        normal = {"cmd": CLOUD_CMD_EVERY, "inbox": CLOUD_INBOX_EVERY, "sug": CLOUD_SUG_EVERY}
+        if not self.standby:
+            return normal[kind]
+        return {"cmd": STANDBY_CMD_EVERY, "inbox": STANDBY_INBOX_EVERY, "sug": STANDBY_SUG_EVERY}[kind]
+
     def is_shadow(self, market, spec):
         """실매매 중이라도 아직 실전 통과 못 한 규칙이면 모의 체결로만 시험"""
         if not (self.live and PROVEN_ONLY_LIVE):
@@ -2021,6 +2045,8 @@ class Bot:
         lg = self.ledger
         if self.state["paused"]:
             return False, "일시정지"
+        if self.standby:
+            return False, "업비트 대기 모드(신규 매수 멈춤 · 보유분은 규칙대로 정리)"
         if time.time() < lg["cooldownUntil"]:
             return False, "손실 후 대기"
         if self.month_blocked():
@@ -3126,19 +3152,22 @@ class Bot:
 
     # ---------- AI 분석가 ----------
     @staticmethod
-    def ai_slot(now=None):
-        """가장 최근에 지난 정기 분석 시각 (예: '2026-10-27 15시')"""
+    def ai_slot(now=None, hours=None):
+        """가장 최근에 지난 정기 분석 시각 (예: '2026-10-27 15시') · hours 를 안 주면 기존 AI_SCHEDULE_HOURS"""
         now = now or datetime.now(KST)
-        past = [h for h in AI_SCHEDULE_HOURS if h <= now.hour]
+        hours = hours or AI_SCHEDULE_HOURS
+        past = [h for h in hours if h <= now.hour]
         if past:
             return f"{now.strftime('%Y-%m-%d')} {max(past)}시"
         prev = now - timedelta(days=1)
-        return f"{prev.strftime('%Y-%m-%d')} {max(AI_SCHEDULE_HOURS)}시"
+        return f"{prev.strftime('%Y-%m-%d')} {max(hours)}시"
 
     def ai_should_run(self):
         if not self.cfg["ANTHROPIC_API_KEY"] or getattr(self, "_ai_busy", False):
             return False
-        slot = self.ai_slot()
+        slot = self.ai_slot(hours=STANDBY_AI_HOURS if self.standby else None)
+        if self.standby and self.state.get("aiSlotDone") == self.ai_slot():
+            self.state["aiSlotDone"] = slot              # 대기 모드로 바꾼 직후: 이미 그 뒤 시각 정기 분석을 했으면 다시 안 함
         if self.state.get("aiSlotDone") != slot:          # 정기 분석 (하루 4번)
             if not self.state.get("tradeLog"):
                 self.state["aiSlotDone"] = slot
@@ -3260,7 +3289,8 @@ class Bot:
         cw = self.cond_weights()
         data.update({"phase": "", "activity": list(ACTIVITY)[-40:], "positions": self.positions_detail(),
                      "cooldownUntil": lg["cooldownUntil"] * 1000, "nextOrder": round(self.order_size()),
-                     "canEnter": self.can_enter()[1] or "가능", "lastOptimize": self.state["lastOptimize"] * 1000})
+                     "canEnter": self.can_enter()[1] or "가능", "lastOptimize": self.state["lastOptimize"] * 1000,
+                     "upbitMode": self.cfg.get("UPBIT_MODE", "normal")})
         data.update({"botState": state, "message": msg, "updatedAt": int(time.time() * 1000),
                      "ledger": {"seed": round(lg["seed"]), "locked": round(lg["locked"]),
                                 "realizedTotal": round(lg["realizedTotal"]), "dayPnl": round(lg["dayPnl"]),
@@ -3375,7 +3405,7 @@ class Bot:
         return "done", "매도: " + ", ".join(done) + " · 봇은 일시정지됨"
 
     def handle_inbox(self):
-        if time.time() - getattr(self, "_inbox_at", 0) < CLOUD_INBOX_EVERY:
+        if time.time() - getattr(self, "_inbox_at", 0) < self.cloud_every("inbox"):
             return
         self._inbox_at = time.time()
         seen = self.state.setdefault("inboxSeen", [])
@@ -3402,7 +3432,7 @@ class Bot:
 
     def handle_suggestions(self):
         """운영자 봇만: 친구 제안을 요청 장부(userRequests)에 합쳐 AI 점검이 함께 처리하게 함"""
-        if self.cfg.get("ROLE", "owner") != "owner" or time.time() - getattr(self, "_sug_at", 0) < CLOUD_SUG_EVERY:
+        if self.cfg.get("ROLE", "owner") != "owner" or time.time() - getattr(self, "_sug_at", 0) < self.cloud_every("sug"):
             return
         self._sug_at = time.time()
         try:
@@ -3437,7 +3467,7 @@ class Bot:
 
     def handle_commands(self):
         # 웹페이지(Firebase) 무료 읽기 한도(하루 5만) 아끼기: 루프(보유 중 5초)마다 묻던 것을 15초마다로
-        if time.time() - getattr(self, "_cmd_at", 0) < CLOUD_CMD_EVERY:
+        if time.time() - getattr(self, "_cmd_at", 0) < self.cloud_every("cmd"):
             return
         self._cmd_at = time.time()
         for c in self.cloud.pending_commands():
@@ -3490,6 +3520,10 @@ class Bot:
         log(f"기본 주문 {self.cfg['ORDER_KRW']:,}원 · 익절/손절은 전략별 백테스트로 결정 · 손실 후 {LOSS_COOLDOWN_MIN}분 대기 · "
             f"마틴게일 최대 {self.cfg['MARTINGALE_MAX_LEVEL']}단계 · 하루 손실 한도 {self.cfg['DAILY_LOSS_LIMIT']:,}원 · "
             f"월 손실 한도 {self.cfg.get('MONTH_LOSS_LIMIT', 0):,}원" + (" (제한 없음)" if not self.cfg.get("MONTH_LOSS_LIMIT") else ""))
+        if self.standby:
+            log(f"★ 업비트 대기 모드(UPBIT_MODE=standby): 신규 매수 멈춤 · 보유 {len(self.state['positions'])}종목은 익절·손절·보유시간 규칙대로 계속 정리 · "
+                f"명령 확인 {STANDBY_CMD_EVERY}초·요청함 {STANDBY_INBOX_EVERY // 60}분·친구 제안 {STANDBY_SUG_EVERY // 60}분마다 · "
+                f"AI 정기 분석 매일 {'/'.join(str(h) for h in STANDBY_AI_HOURS)}시 (대시보드 ⚙ 설정에서 normal 로 되돌리면 10분 안에 재시작해 원래대로)")
         if EXPLORE_MODE:
             log(f"탐험 모드: 상위 {TOP_N}종목 · 1회 {EXPLORE_ORDER_KRW:,}원 고정 · 마틴게일 끔 · 동시 보유 최대 {MAX_OPEN_POSITIONS} · "
                 f"손실 난 종목만 {LOSS_COOLDOWN_MIN}분 정지 · 규칙은 5회마다 판정·{RULE_OUT_LIMIT}아웃 퇴출")
