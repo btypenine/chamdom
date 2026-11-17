@@ -265,7 +265,7 @@ body.compact #appView > section.card:not(#sumCard):not(#apprCard) { display: non
 .tile .ex-tag { font-size: 10px; padding: 1px 6px; margin-right: 4px; vertical-align: 1px; }
 body.ex-up #appView > [data-ex="bn"], body.ex-bn #appView > [data-ex="up"] { display: none !important; }
 body.ex-up .ex-head, body.ex-bn .ex-head, body.compact .ex-head { display: none !important; }
-body:not(.ex-bn) #bnEmpty { display: none !important; }
+body:not(.ex-bn):not(.up-off) #bnEmpty { display: none !important; }
 body.compact #sumCard { display: flex !important; }
 
 /* ---------- 최상단 종합 현황 (업비트 | 바이낸스 나란히) ---------- */
@@ -307,6 +307,21 @@ body { word-break: keep-all; overflow-wrap: break-word; }
 .fold-sum b { font-weight: 650; }
 body.up-folded:not(.ex-up) #appView > section[data-ex="up"]:not(#upFold) { display: none !important; }
 body.ex-up #upFold { display: none !important; }
+/* 업비트 꺼짐(봇 upbitMode 'off', 대표님 지시 #3 '업비트는 아예 접자') — 카드 HTML·기록은 그대로 두고 화면에서만 숨김. ⚙ 설정 탭 업비트 칸은 그대로(다시 켜기용) */
+body.up-off #appView > [data-ex="up"], body.up-off #ovUp, body.up-off #exSeg [data-ex="up"], body.up-off #exSeg2 [data-ex="up"] { display: none !important; }
+body.up-off .ov-grid { grid-template-columns: minmax(0, 1fr); }
+body.up-off #exSeg.seg3, body.up-off #exSeg2.seg3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* 종료 중(off인데 보유가 남음): 요약 줄 대신 '종료 중 · 보유 N종목 규칙대로 정리 중 · [비상 정리]' */
+.fold-end { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 0 16px 14px; font-size: 13px; }
+.fold-end > span { white-space: nowrap; }
+.fold-end .end-tag { font-weight: 700; color: var(--stop); }
+.fold-end .btn-close { margin-left: auto; min-height: 34px; padding: 4px 14px; font-size: 13px; }
+.fold-end .sub { flex-basis: 100%; white-space: normal; }
+body.up-ending #upFoldSum { display: none; }
+/* 업비트 필터를 고른 상태(카드가 다 펼쳐짐)에서도 종료 중 줄은 맨 위에 보이게 — 접기 버튼만 숨김 */
+body.ex-up.up-ending #upFold { display: block !important; }
+body.ex-up #upFoldBtn { display: none; }
+body.ex-up .fold-end { padding-top: 14px; }
 
 /* ---------- PC 화면(넓은 창): 카드를 여러 단으로 배치 ---------- */
 @media (min-width: 900px) {
@@ -471,6 +486,12 @@ body.ex-up #upFold { display: none !important; }
         <span class="fold-h"><span class="ex-tag up">업비트</span><b>현물 자동매매</b><span class="sub">원화(KRW) 마켓</span><span class="fold-act" id="upFoldAct">펼치기 ▾</span></span>
         <span class="fold-sum" id="upFoldSum"><span><span class="k">상태</span> <b id="upFoldState">-</b></span><span><span class="k">오늘</span> <b id="upFoldPnl" class="num">-</b></span><span><span class="k">보유</span> <b id="upFoldHold" class="num">-</b></span></span>
       </button>
+      <!-- 업비트 꺼짐(off)인데 봇 보유가 남았을 때만 보임. 비상 정리 = 비상 제어 카드의 '봇이 산 코인 모두 매도'와 같은 명령(두 번 눌러 실행) -->
+      <div class="fold-end" id="upEnd" hidden>
+        <span class="end-tag">종료 중</span><span>보유 <b id="upEndN" class="num">0종목</b> 규칙대로 정리 중</span>
+        <button class="btn-close" type="button" data-cmd="close_bot_positions">비상 정리</button>
+        <span class="sub">비상 정리는 한 번 더 눌러야 실행 · 봇이 산 코인만 바로 매도하고 봇은 일시정지(보호 코인 제외)</span>
+      </div>
     </section>
 
     <section class="card" data-ex="up" id="stateCard" aria-live="polite">
@@ -792,7 +813,7 @@ onAuthStateChanged(auth, async (user) => {
   catch (e) { toast("계정 정보 저장 실패: " + (e.code || e.message)); }
 
   unsubs.push(onSnapshot(doc(db, "users", user.uid, "status", "current"),
-    (snap) => { lastStatus = snap.exists() ? snap.data() : null; $("reqOpen").hidden = !auth.currentUser; renderStatus(); renderSettings(); },
+    (snap) => { lastStatus = snap.exists() ? snap.data() : null; $("reqOpen").hidden = !auth.currentUser; renderStatus(); renderSettings(); try { renderUpFold(); } catch (e) {} },
     (e) => toast("상태 불러오기 실패: " + e.code)));
 
   unsubs.push(onSnapshot(doc(db, "users", user.uid, "status", "binance"),
@@ -952,7 +973,28 @@ function loadUpFold(uid) {
 }
 setUpFold(true, false);
 $("upFoldBtn").addEventListener("click", () => setUpFold(!upFolded));
+// ---------- 업비트 꺼짐(off): 봇이 상태에 올린 upbitMode 가 'off'일 때 ----------
+// 보유 0 → 업비트 카드·요약·종합 현황 업비트 칸·상단 업비트 필터 숨김(body.up-off)
+// 보유 남음 → 요약 줄 대신 '종료 중 · 보유 N종목 규칙대로 정리 중 · [비상 정리]'(body.up-ending)
+// upbitMode 가 없거나 normal/standby, 또는 지인(friend) 계정이면 아무것도 안 바뀜. 저장값(거래소 필터·접힘)은 건드리지 않음
+let upOffHeldEx = null;   // 업비트 필터를 골라 둔 채 꺼졌을 때: 화면만 '모두'로, 저장값은 'up' 그대로 두고 다시 켜지면 되돌림
+function upOffState() {
+  const s = lastStatus;
+  if (!s || s.role === "friend" || s.upbitMode !== "off") return "";
+  const n = Array.isArray(s.positions) ? s.positions.length : 0;
+  return n > 0 ? "ending" : "off";
+}
+function applyUpOff() {
+  const st = upOffState(), off = st === "off";
+  document.body.classList.toggle("up-off", off);
+  document.body.classList.toggle("up-ending", st === "ending");
+  $("upEnd").hidden = st !== "ending";
+  if (st === "ending") $("upEndN").textContent = lastStatus.positions.length + "종목";
+  if (off && curEx === "up") { upOffHeldEx = "up"; setEx("all", false); }
+  else if (!off && upOffHeldEx) { const x = upOffHeldEx; upOffHeldEx = null; setEx(x, false); }
+}
 function renderUpFold() {
+  try { applyUpOff(); } catch (e) {}
   const s = lastStatus, pnl = $("upFoldPnl");
   pnl.classList.remove("up", "down");
   if (!s) { $("upFoldState").textContent = "봇 정보 없음"; pnl.textContent = "-"; $("upFoldHold").textContent = "-"; return; }
@@ -967,7 +1009,7 @@ window.addEventListener("scroll", () => document.querySelector(".topbar").classL
 function goCard(id) {
   const ex = ($(id) && $(id).dataset.ex) || "all";
   if (curEx !== "all" && ex !== "all" && ex !== curEx) setEx(ex);
-  if (ex === "up" && upFolded) setUpFold(false, false);  // 요약 칸에서 업비트 항목을 누르면 이번만 펼침(기억은 안 바꿈)
+  if (ex === "up" && upFolded && id !== "upFold") setUpFold(false, false);  // 요약 칸에서 업비트 항목을 누르면 이번만 펼침(기억은 안 바꿈) · 종료 중 칸은 접힌 채 요약 줄로 이동
   setView("full");
   requestAnimationFrame(() => {
     const el = $(id); if (!el || el.hidden) return;
@@ -1002,13 +1044,15 @@ function renderTiles() {
     { k: "최근 매도", v: sell ? signed(sell.pnl) : "-", s: sell ? `${(sell.market || "").split("-")[1] || ""} · ${sell.reason || ""}` : "", go: "tradeCard", cls: sell && sell.pnl > 0 ? "up" : sell && sell.pnl < 0 ? "down" : "" },
     { k: "비상 제어", v: "열기", s: "일시정지 · 재개 · 모두 매도", go: "ctrlCard" },
   ].map((t) => ({ ...t, ex: t.go === "apprCard" ? "all" : "up" }));
+  if (upOffState() === "ending") Object.assign(tiles[0], { v: "종료 중", s: `보유 ${ps.length}종목 규칙대로 정리 중`, go: "upFold", alert: true });
   const bn = lastBinance;
   if (bn) {
     const bnStale = !bn.updatedAt || Date.now() - bn.updatedAt > 3 * 60 * 1000;
     const bp = bn.pnlUsdt == null ? "-" : (bn.pnlUsdt > 0 ? "+" : "") + bn.pnlUsdt.toFixed(2) + " USDT";
     tiles.unshift({ k: "선물 " + (bn.mode === "live" ? "손익" : "모의 손익"), v: bnStale ? "응답 없음" : bp, s: `${bn.trades || 0}회 · 익절 ${bn.wins || 0} · 보유 ${(bn.positions || []).length}`, go: "bnCard", ex: "bn", alert: bnStale, cls: !bnStale && bn.pnlUsdt > 0 ? "up" : !bnStale && bn.pnlUsdt < 0 ? "down" : "" });
   }
-  const shown = tiles.filter((t) => curEx === "all" || t.ex === "all" || t.ex === curEx);
+  const upOff = document.body.classList.contains("up-off");   // 업비트 꺼짐·보유 0: 업비트 칸은 빼고 승인 대기·바이낸스만
+  const shown = tiles.filter((t) => (curEx === "all" || t.ex === "all" || t.ex === curEx) && !(upOff && t.ex === "up"));
   box.textContent = "";
   for (const t of shown) {
     const b = document.createElement("button"); b.type = "button"; b.className = "tile" + (t.alert ? " alert" : "");
@@ -1042,6 +1086,7 @@ function renderOverview() {
     const stale = !s.updatedAt || Date.now() - s.updatedAt > OFFLINE_MS;
     $("ovUpDot").className = "dot " + (stale || s.botState === "error" ? "off" : s.botState === "running" ? "on" : "");
     $("ovUpMode").textContent = stale ? "연결 끊김" : ({ running: "실행 중", paused: "일시정지", error: "오류" }[s.botState] || "");
+    if (upOffState() === "ending") $("ovUpMode").textContent = "종료 중";
     setBig("ovUpBig", won(s.totalValue));
     $("ovUpBigS").textContent = "총자산 (원화+코인)";
     const ps = Array.isArray(s.positions) ? s.positions : [];
