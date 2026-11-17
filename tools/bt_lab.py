@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""bt-lab 실험 6: 업비트 1분봉 — 검증 구간 늘린 재측정(걸어가며 검증, walk-forward)
-배경: 실험 5에서 1분봉 선정 66회 거래당 -0.10%(무작위 -0.88%)였지만 검증이 1일뿐이라 우연일 수 있음.
-- 봇처럼 '학습 3일(4320봉) → 다음 1일(1440봉) 적용'을 하루씩 밀어가며 5번 반복(총 8일 데이터, 검증 5일)
-- 매 구간 무작위 스펙 20개 기준선도 같은 검증 구간에서 측정, 구간별 BTC 변화 함께 표시
-- 비용: 봇과 같은 수수료 0.05%x2 + 종목별 미끄러짐. 롱만(현물)
+"""bt-lab 실험 7: 업비트 5분봉 걸어가며 검증 — 봉을 키우면 비용 부담이 줄어 선정이 플러스가 되는가
+배경: 실험 6(1분봉, 학습 3일→다음 1일 x5)에서 선정 131회 거래당 -0.29%(무작위 -0.88%), 플러스 구간 1/5.
+  선정이 무작위보다 +0.59%p 낫지만 왕복 비용(약 0.2~0.4%)을 못 넘김 → 한 번에 더 크게 움직이는 5분봉에서 재측정.
+- A: 5분봉 학습 3일(864봉)→다음 1일(288봉) x5 / B: 5분봉 학습 7일(2016봉)→다음 1일 x5
+- 보유시간(분)은 5분봉 개수로 환산(hold/5), 지표 기간은 봉 단위 그대로(=5배 긴 시간)
+- 비용: 봇과 같은 수수료 0.05%x2 + 종목별 미끄러짐. 롱만(현물). 무작위 스펙 20개 기준선 동시 측정
 분석 전용 — 봇 동작에는 영향 없음
 """
 import json, sys, time, random, os
@@ -14,7 +15,8 @@ import chamdom_bot as cb
 
 UP = "https://api.upbit.com/v1"
 N_COINS = 30
-CFG = {"1m": {"unit": 1, "train": 4320, "test": 1440}}
+CFG = {"A 5분봉 학습3일": {"unit": 5, "train": 864, "test": 288},
+       "B 5분봉 학습7일": {"unit": 5, "train": 2016, "test": 288}}
 WINDOWS = 5
 
 
@@ -60,12 +62,21 @@ def candles(market, unit, total):
     return out[-total:]
 
 
+UNIT = 1
+
+
+def conv(sp):
+    sp = dict(sp)
+    sp["hold"] = max(1, int(round(sp["hold"] / UNIT)))
+    return sp
+
+
 def pick(train, rng):
     ser = cb.Series(train)
     split = int(ser.n * (1 - cb.BT_HOLDOUT))
     best = None
     for _ in range(cb.BT_TRIALS):
-        sp = cb.random_spec(rng)
+        sp = conv(cb.random_spec(rng))
         tr = cb.stats(cb.backtest(ser, sp, end=split))
         if tr["n"] < cb.EXPLORE_MIN_TRADES or tr["edge"] < cb.EXPLORE_MIN_EDGE:
             continue
@@ -78,8 +89,7 @@ def pick(train, rng):
     return best and best[1]
 
 
-def run_window(data, off):
-    c = CFG["1m"]
+def run_window(data, off, c):
     sel = {"n": 0, "sum": 0.0, "wins": 0, "picked": 0, "coins": 0, "tp": {}}
     base = {"n": 0, "sum": 0.0, "wins": 0}
     for mk, cl in data.items():
@@ -97,7 +107,7 @@ def run_window(data, off):
                 b = sel["tp"].setdefault(str(sp.get("tp")), [0, 0.0]); b[0] += 1; b[1] += pct
         rng = random.Random(11 + off)
         for _ in range(20):
-            for pct in cb.backtest(tser, cb.random_spec(rng)):
+            for pct in cb.backtest(tser, conv(cb.random_spec(rng))):
                 base["n"] += 1; base["sum"] += pct; base["wins"] += pct > 0
     return sel, base
 
@@ -107,28 +117,36 @@ def fmt(r):
 
 
 def main():
+    global UNIT
     t0 = time.time()
     mks = top_markets(N_COINS)
-    c = CFG["1m"]
-    total = c["train"] + c["test"] * WINDOWS
-    print(f"업비트 원화마켓 거래대금 상위 {len(mks)}종목(XRP 제외) · 1분봉 학습 3일→다음 1일 x {WINDOWS}구간 · 수수료 {cb.FEE_RATE * 100:.2f}%x2 + 미끄러짐 · 조합 {cb.BT_TRIALS}개", flush=True)
-    data = {m: candles(m, 1, total) for m in mks}
-    btc = candles("KRW-BTC", 1, total)
-    out, S, B = [], {"n": 0, "sum": 0.0, "wins": 0}, {"n": 0, "sum": 0.0, "wins": 0}
-    for w in range(WINDOWS):
-        off = w * c["test"]
-        a, b = off + c["train"], off + c["train"] + c["test"] - 1
-        chg = (btc[b]["trade_price"] / btc[a]["trade_price"] - 1) * 100 if len(btc) > b else 0
-        sel, base = run_window(data, off)
-        print(f"[구간 {w + 1}] BTC {chg:+.2f}% · 채택 {sel['picked']}/{sel['coins']} · 선정 {fmt(sel)} · 무작위 {fmt(base)}", flush=True)
-        for k in ("n", "sum", "wins"):
-            S[k] += sel[k]; B[k] += base[k]
-        out.append({"btcChg": chg, "sel": sel, "base": base})
-    print(f"[합계 {WINDOWS}일] 선정 {fmt(S)} · 하루 {S['n'] / WINDOWS:.1f}회 · 무작위 {fmt(B)}", flush=True)
-    pos = sum(1 for o in out if o["sel"]["n"] and o["sel"]["sum"] > 0)
-    print(f"선정 전략이 플러스였던 구간: {pos}/{WINDOWS}", flush=True)
+    print(f"업비트 원화마켓 거래대금 상위 {len(mks)}종목(XRP 제외) · 5분봉 걸어가며 검증(다음 1일 x {WINDOWS}구간) · 수수료 {cb.FEE_RATE * 100:.2f}%x2 + 미끄러짐 · 조합 {cb.BT_TRIALS}개", flush=True)
+    need = max(c["train"] + c["test"] * WINDOWS for c in CFG.values())
+    data = {m: candles(m, 5, need) for m in mks}
+    btc = candles("KRW-BTC", 5, need)
+    summ = {}
+    for name, c in CFG.items():
+        UNIT = c["unit"]
+        lead = need - (c["train"] + c["test"] * WINDOWS)  # 두 실험의 검증 구간을 같은 날짜로 맞춤
+        dd = {m: cl[lead:] for m, cl in data.items() if len(cl) >= need}
+        bt = btc[lead:]
+        print(f"== {name} (학습 {c['train']}봉 → 다음 {c['test']}봉) · 종목 {len(dd)}", flush=True)
+        out, S, B = [], {"n": 0, "sum": 0.0, "wins": 0}, {"n": 0, "sum": 0.0, "wins": 0}
+        for w in range(WINDOWS):
+            off = w * c["test"]
+            a, b = off + c["train"], off + c["train"] + c["test"] - 1
+            chg = (bt[b]["trade_price"] / bt[a]["trade_price"] - 1) * 100 if len(bt) > b else 0
+            sel, base = run_window(dd, off, c)
+            print(f"[구간 {w + 1}] BTC {chg:+.2f}% · 채택 {sel['picked']}/{sel['coins']} · 선정 {fmt(sel)} · 무작위 {fmt(base)}", flush=True)
+            for k in ("n", "sum", "wins"):
+                S[k] += sel[k]; B[k] += base[k]
+            out.append({"btcChg": chg, "sel": sel, "base": base})
+        pos = sum(1 for o in out if o["sel"]["n"] and o["sel"]["sum"] > 0)
+        print(f"[합계 {WINDOWS}일] 선정 {fmt(S)} · 하루 {S['n'] / WINDOWS:.1f}회 · 무작위 {fmt(B)} · 플러스 구간 {pos}/{WINDOWS}", flush=True)
+        summ[name] = {"windows": out, "sel": S, "base": B}
+    print("참고: 실험 6(1분봉 학습3일) 선정 131회 거래당 -0.288% · 무작위 -0.880% · 플러스 구간 1/5")
     print(f"소요 {time.time() - t0:.0f}초")
-    json.dump({"windows": out, "sel": S, "base": B}, open("bt_summary.json", "w"), ensure_ascii=False, indent=1)
+    json.dump(summ, open("bt_summary.json", "w"), ensure_ascii=False, indent=1)
 
 
 if __name__ == "__main__":
