@@ -1398,6 +1398,19 @@ function renderBinance(b) {
       const w = [];
       if (ex.unmanaged) w.push(`⚠ 봇이 관리하지 않는 실제 포지션 ${ex.unmanaged}개 — 봇이 1분 안에 넘겨받아 관리 시작`);
       if ((ex.missing || []).length) w.push(`⚠ 봇 장부에는 실보유인데 거래소에 없음: ${ex.missing.map((x) => x.replace("USDT", "")).join(", ")}`);
+      {  // 증거금 여유 (표시 전용): 주문 가능 잔고가 1회 최대 금액보다 적으면, 실보유 자리가 남아도 실주문이 '증거금 부족'으로 모의 처리될 수 있음
+        const g = b.guard || {}, maxSz = Number((g.sizeRange || [])[1] || 0);
+        const maxLive = Number(((b.settings || {}).BINANCE_MAX_LIVE || {}).value || 0);
+        const open = Number(g.liveOpen || 0), av = Number(ex.available || 0);
+        const mf = Number((((b.liveSkip || {}).counts) || {})["증거금 부족(가용 잔고 모자람)"] || 0);
+        if (!ex.err && ex.available != null && maxSz > 0 && av < maxSz && (!maxLive || open < maxLive)) {
+          const used = ex.balance ? Math.round((1 - av / ex.balance) * 100) : null;
+          w.push(`⚠ 증거금 여유 부족: 주문 가능 ${av.toFixed(2)} USDT < 1회 최대 ${maxSz.toFixed(0)} USDT` +
+            (used != null ? ` (증거금 ${used}% 사용 중)` : "") +
+            (maxLive ? ` · 실보유 ${open}/${maxLive}` : "") +
+            ` → 남은 자리가 있어도 큰 신호는 모의로 처리될 수 있음` + (mf ? ` · 오늘 증거금 부족 ${mf}회` : ""));
+        }
+      }
       $("bnExWarn").hidden = !w.length; $("bnExWarn").textContent = w.join(" · ");
       const box = $("bnExPos"); box.textContent = "";
       for (const p of (ex.positions || [])) {
