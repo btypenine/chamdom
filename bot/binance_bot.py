@@ -1577,6 +1577,54 @@ class Engine:
         except Exception:
             return None
 
+    # --- 종목 자체 24시간 역방향 큰 움직임 관찰 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
+    COINRUN_HI = 8.0                                     # 진입 때 그 종목 최근 24시간이 내 방향과 이만큼(%) 이상 반대로 움직였으면 '역주행'(예: +8% 급등 중 숏)
+
+    def coinrun_mark(self, sym, cl):
+        """관찰 전용: 진입 직전 그 종목 15분봉 96개(24시간) 변화율을 포지션에 표시. 숏은 상승, 롱은 하락이 '역주행'"""
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or "run24" in p or not cl or len(cl) < 97:
+                return
+            a, b = float(cl[-97]["trade_price"]), float(cl[-1]["trade_price"])
+            if a <= 0:
+                return
+            ch = round((b / a - 1) * 100, 2)
+            p["run24"] = ch
+            against = ch if p["side"] == "short" else -ch
+            if against >= self.COINRUN_HI:
+                log(f"[역주행 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} 진입 · "
+                    f"이 종목 24시간 {'+' if ch > 0 else ''}{ch}% (내 방향과 반대 {self.COINRUN_HI}% 이상) → '역주행 진입' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 역주행 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def coinrun_record(self, kind, p, pct):
+        try:
+            if "run24" not in p:                          # 이 기능 전에 연 포지션은 건너뜀
+                return
+            against = p["run24"] if p["side"] == "short" else -p["run24"]
+            k = f"{kind}|{'against' if against >= self.COINRUN_HI else 'normal'}|{p['side']}"
+            d = self.state.setdefault("coinRunStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["worst"] = round(min(d["worst"], pct), 3)
+        except Exception as e:
+            log(f"[안내] 역주행 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def coinrun_view(self):
+        try:
+            rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None, "worst": v.get("worst")}
+                    for k, v in sorted((self.state.get("coinRunStats") or {}).items())]
+            op = 0
+            for q in self.state["positions"].values():
+                if "run24" in q and (q["run24"] if q.get("side") == "short" else -q["run24"]) >= self.COINRUN_HI:
+                    op += 1
+            return {"hi": self.COINRUN_HI, "rows": rows, "open": op}
+        except Exception:
+            return None
+
     def reentry_view(self):
         try:
             rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
@@ -1631,6 +1679,7 @@ class Engine:
                 self.reentry_mark(sym)
                 self.crowd_mark(sym)
                 self.btcflow_mark(sym)
+                self.coinrun_mark(sym, cl)
                 continue
             if n_paper() < self.max_open:
                 self.open_paper(sym, strat, px)
@@ -1641,6 +1690,7 @@ class Engine:
                 self.reentry_mark(sym)
                 self.crowd_mark(sym)
                 self.btcflow_mark(sym)
+                self.coinrun_mark(sym, cl)
                 self.skip_mark(sym)
         save_state(st)
 
@@ -1868,6 +1918,7 @@ class Engine:
         self.reentry_record("live", sym, p, pct, reason)
         self.crowd_record("live", p, pct)
         self.btcflow_record("live", p, pct)
+        self.coinrun_record("live", p, pct)
         self.asym_record("live", p, pct)
         self.p_calib_record(p, pct, usdt)
         self.stop_gap_record(sym, p, pct, reason)
@@ -2188,6 +2239,7 @@ class Engine:
         self.reentry_record("paper", sym, p, pct, reason)
         self.crowd_record("paper", p, pct)
         self.btcflow_record("paper", p, pct)
+        self.coinrun_record("paper", p, pct)
         self.asym_record("paper", p, pct)
         self.skip_record(p, pct)
         if reason == "익절":
@@ -2285,6 +2337,7 @@ class Engine:
             "reentry": self.reentry_view(),
             "crowd": self.crowd_view(),
             "btcFlow": self.btcflow_view(),
+            "coinRun": self.coinrun_view(),
             "asym": self.asym_view(),
             "skipOut": self.skip_view(),
             "pCalib": self.p_calib_view(),
