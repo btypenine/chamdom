@@ -52,7 +52,7 @@ APP_SETTINGS = {
     "MONTH_LOSS_LIMIT": ("num", (0, 10000000)),
     "RULE_IDLE_RELEASE_H": ("num", (0, 720)),
     "UPBIT_EVO_SHARE": ("num", (0, 75)),
-    "UPBIT_MODE": ("choice", ("normal", "standby")),
+    "UPBIT_MODE": ("choice", ("normal", "standby", "off")),
     "BINANCE_TRADE_MODE": ("choice", ("paper", "live")),
     "BINANCE_ORDER_USDT": ("num", (5, 200)),
     "BINANCE_DAILY_LOSS_USDT": ("num", (1, 500)),
@@ -205,6 +205,8 @@ CLOUD_SUG_EVERY = 10 * 60        # 친구 제안함 확인 간격(초)
 # - 웹페이지(Firebase) 읽기를 아끼려고 명령·요청함·친구 제안함 확인과 AI 정기 분석 주기를 늘림
 # - 설정 확인(APP_SETTINGS_EVERY 10분)·상태 올리기(STATUS_EVERY 30초)는 그대로 → 대시보드에서 normal 로 바로 되돌릴 수 있음
 # - 기본값 normal = 기존 동작 그대로
+# 업비트 꺼짐(UPBIT_MODE=off, 2026-11-18 대표님 요청 '업비트는 이제 안할거야'): 봇 동작은 대기(standby)와 똑같음
+#   (새 매수 멈춤 · 보유분은 규칙대로 정리 · 강제 매도 없음) + 상태에 upbitMode 'off' 를 올려 대시보드가 업비트 화면을 숨김
 STANDBY_CMD_EVERY = 120          # 명령(일시정지·비상 정리·승인) 확인 15초 → 2분 (비상 정리도 2분 안에 처리, 10분 지난 명령 거절 기준보다 충분히 짧게)
 STANDBY_INBOX_EVERY = 10 * 60    # 요청함·승인함 1분 → 10분
 STANDBY_SUG_EVERY = 60 * 60      # 친구 제안함 10분 → 1시간
@@ -1546,7 +1548,7 @@ class Bot:
     @property
     def standby(self):
         """업비트 대기 모드: 신규 매수 멈춤 + 웹페이지 읽기 절약 (보유분은 평소대로 정리)"""
-        return self.cfg.get("UPBIT_MODE", "normal") == "standby"
+        return self.cfg.get("UPBIT_MODE", "normal") in ("standby", "off")   # off(꺼짐) = 대기와 같은 동작 + 화면 숨김
 
     def cloud_every(self, kind):
         """명령·요청함·친구 제안함 확인 간격(초) — normal 은 기존 값 그대로"""
@@ -3521,7 +3523,7 @@ class Bot:
             f"마틴게일 최대 {self.cfg['MARTINGALE_MAX_LEVEL']}단계 · 하루 손실 한도 {self.cfg['DAILY_LOSS_LIMIT']:,}원 · "
             f"월 손실 한도 {self.cfg.get('MONTH_LOSS_LIMIT', 0):,}원" + (" (제한 없음)" if not self.cfg.get("MONTH_LOSS_LIMIT") else ""))
         if self.standby:
-            log(f"★ 업비트 대기 모드(UPBIT_MODE=standby): 신규 매수 멈춤 · 보유 {len(self.state['positions'])}종목은 익절·손절·보유시간 규칙대로 계속 정리 · "
+            log(f"★ 업비트 {'꺼짐' if self.cfg.get('UPBIT_MODE') == 'off' else '대기'} 모드(UPBIT_MODE={self.cfg.get('UPBIT_MODE')}): 신규 매수 멈춤 · 보유 {len(self.state['positions'])}종목은 익절·손절·보유시간 규칙대로 계속 정리 · "
                 f"명령 확인 {STANDBY_CMD_EVERY}초·요청함 {STANDBY_INBOX_EVERY // 60}분·친구 제안 {STANDBY_SUG_EVERY // 60}분마다 · "
                 f"AI 정기 분석 매일 {'/'.join(str(h) for h in STANDBY_AI_HOURS)}시 (대시보드 ⚙ 설정에서 normal 로 되돌리면 10분 안에 재시작해 원래대로)")
         if EXPLORE_MODE:
