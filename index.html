@@ -424,6 +424,7 @@ body.ex-up .fold-end { padding-top: 14px; }
       <div class="msg" id="bnEvent" hidden></div>
       <div class="msg" id="bnReentry" hidden></div>
       <div class="msg" id="bnCrowd" hidden></div>
+      <div class="msg" id="bnCoinRun" hidden></div>
       <div class="msg" id="bnBtcFlow" hidden></div>
       <div class="msg" id="bnAsym" hidden></div>
       <div class="msg" id="bnSkipOut" hidden></div>
@@ -1663,6 +1664,21 @@ function renderBinance(b) {
       else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
       t += " · 몰림이 계속 더 나쁘면 그때 '같은 방향 실보유 상한'을 제안할 근거가 됨";
       $("bnCrowd").textContent = t;
+    }
+  }
+  {  // 종목 24시간 역주행 관찰 (진입·청산·금액·실주문 판단에는 안 씀)
+    const cr = b.coinRun;
+    $("bnCoinRun").hidden = !cr;
+    if (cr) {
+      const hi = cr.hi || 8;
+      let t = `🚧 역주행 진입(관찰) · 진입 때 그 종목이 최근 24시간 내 방향과 ${hi}% 이상 반대로 움직였던 거래(예: 급등 중 숏, 급락 중 롱)를 따로 봄`;
+      if (cr.open) t += ` · 보유 중 역주행 ${cr.open}개`;
+      const nm = { against: "역주행", normal: "보통" };
+      const rows = (cr.rows || []).filter((x) => x.n);
+      if (rows.length) for (const r of rows) t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${r.side === "long" ? "롱" : "숏"} ${nm[r.flag] || r.flag} ${r.n}회 ${pct(r.avgPct)}`;
+      else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
+      t += " · 역주행이 계속 더 나쁘면 그때 '급등 종목 숏은 모의로만'을 제안할 근거가 됨";
+      $("bnCoinRun").textContent = t;
     }
   }
   {  // BTC 단기 흐름 역행 관찰 (진입·청산·금액·실주문 판단에는 안 씀)
