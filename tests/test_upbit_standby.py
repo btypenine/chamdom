@@ -156,10 +156,29 @@ class StandbyTest(unittest.TestCase):
         self.assertEqual(bot.can_enter(), (True, ""))
 
     def test_unknown_value_falls_back_to_normal(self):
-        for v in ("", "STANDBY ", "pause", "off"):
+        for v in ("", "STANDBY ", "pause", "stop", " OFF"):
             bot = self.make_bot(mode=v)
-            want = "standby" if v.strip().lower() == "standby" else "normal"
+            want = v.strip().lower() if v.strip().lower() in ("standby", "off") else "normal"
             self.assertEqual(bot.cfg["UPBIT_MODE"], want, v)
+
+    # ---------- 1-B. off(꺼짐) = 대기와 같은 동작 + 상태에 'off' 표시 ----------
+    def test_off_behaves_like_standby(self):
+        bot = self.make_bot(mode="off")
+        self.assertEqual(bot.cfg["UPBIT_MODE"], "off")
+        self.assertTrue(bot.standby)
+        ok, why = bot.can_enter()
+        self.assertFalse(ok)
+        self.assertIn("대기 모드", why)
+        self.assertEqual(bot.cloud_every("cmd"), cb.STANDBY_CMD_EVERY)
+        self.assertEqual(bot.cloud_every("inbox"), cb.STANDBY_INBOX_EVERY)
+        self.assertIn("off", cb.APP_SETTINGS["UPBIT_MODE"][1])
+
+    def test_off_scan_makes_no_buys(self):
+        bot = self.make_bot(mode="off")
+        bot.state["strategies"] = {f"KRW-T{i}": {"hold": 10, "sl": -1} for i in range(5)}
+        with mock.patch.object(bot, "enter", side_effect=AssertionError("꺼짐 모드에서 매수가 생김")):
+            for _ in range(20):
+                bot.scan_entries()
 
     def test_normal_intervals_unchanged(self):
         bot = self.make_bot(mode="normal")
