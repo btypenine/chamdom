@@ -425,6 +425,7 @@ body.ex-up .fold-end { padding-top: 14px; }
       <div class="msg" id="bnReentry" hidden></div>
       <div class="msg" id="bnCrowd" hidden></div>
       <div class="msg" id="bnCoinRun" hidden></div>
+      <div class="msg" id="bnSlipSym" hidden></div>
       <div class="msg" id="bnBtcFlow" hidden></div>
       <div class="msg" id="bnAsym" hidden></div>
       <div class="msg" id="bnSkipOut" hidden></div>
@@ -1679,6 +1680,23 @@ function renderBinance(b) {
       else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
       t += " · 역주행이 계속 더 나쁘면 그때 '급등 종목 숏은 모의로만'을 제안할 근거가 됨";
       $("bnCoinRun").textContent = t;
+    }
+  }
+  {  // 미끄러운 종목 관찰: 예전에 거래소 보호 손절이 크게 넘친 종목 (진입·청산·금액·실주문 판단에는 안 씀)
+    const ss = b.slipSym;
+    $("bnSlipSym").hidden = !ss;
+    if (ss) {
+      const hi = ss.hi || 1;
+      let t = `🧊 미끄러운 종목(관찰) · 예전에 거래소 보호 손절이 규칙보다 ${hi}%p 이상 더 밀려 나간 종목에 다시 들어간 거래를 따로 봄`;
+      const sy = ss.symbols || [];
+      if (sy.length) t += ` · 해당 종목 ${sy.map((x) => `${x.symbol.replace("USDT", "")} ${pct(x.worst)}`).join(", ")}`;
+      if (ss.open) t += ` · 보유 중 ${ss.open}개`;
+      const nm = { slip: "미끄러운", normal: "보통" };
+      const rows = (ss.rows || []).filter((x) => x.n);
+      if (rows.length) for (const r of rows) t += ` · ${r.kind === "live" ? "실주문" : "모의"} ${r.side === "long" ? "롱" : "숏"} ${nm[r.flag] || r.flag} ${r.n}회 ${pct(r.avgPct)}`;
+      else t += " · 아직 끝난 거래 없음(지금부터 쌓임)";
+      t += " · 미끄러운 종목이 계속 더 나쁘면 그때 '그 종목은 모의로만'을 제안할 근거가 됨";
+      $("bnSlipSym").textContent = t;
     }
   }
   {  // BTC 단기 흐름 역행 관찰 (진입·청산·금액·실주문 판단에는 안 씀)
