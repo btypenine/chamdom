@@ -1338,6 +1338,18 @@
    "status": "merged",
    "requestId": "req-wm4ahqr9dmxp",
    "mergedAt": "2026-11-19T14:33:00+09:00"
+  },
+  {
+   "id": "ai-20261119-appr-corner",
+   "title": "대시보드: 승인 대기를 화면 맨 오른쪽 위 '승인 N' 버튼으로",
+   "summary": "상단 고정 줄 맨 오른쪽에 '승인 N' 버튼(대기 건 있을 때만). 누르면 승인 대기 칸으로 이동. 폰에선 버튼이 보일 때만 '설정' 글자·닉네임을 숨겨 자리 확보.",
+   "why": "사용자 요청: 승인 요청은 화면 가장 우상단에 띄워줘",
+   "risk": "화면(index.html)만 바뀜. 매매 영향 없음. 390·360·1200px 밝은·어두운 화면 확인",
+   "pr": "https://github.com/btypenine/chamdom/pull/116",
+   "branch": "ai/20261119-appr-corner",
+   "createdAt": "2026-11-19T14:55:00+09:00",
+   "status": "pending",
+   "requestId": "req-wn350s3jcx19"
   }
  ]
 }
