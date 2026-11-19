@@ -1323,7 +1323,8 @@
    "pr": "https://github.com/btypenine/chamdom/pull/114",
    "branch": "ai/20261118-bn-slip-sym",
    "createdAt": "2026-11-18T20:58:00+09:00",
-   "status": "pending"
+   "status": "merged",
+   "mergedAt": "2026-11-19T14:33:00+09:00"
   },
   {
    "id": "ai-20261118-up-off",
