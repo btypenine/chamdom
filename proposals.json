@@ -1335,8 +1335,9 @@
    "pr": "https://github.com/btypenine/chamdom/pull/115",
    "branch": "ai/20261118-up-off",
    "createdAt": "2026-11-18T23:58:00+09:00",
-   "status": "pending",
-   "requestId": "req-wm4ahqr9dmxp"
+   "status": "merged",
+   "requestId": "req-wm4ahqr9dmxp",
+   "mergedAt": "2026-11-19T14:33:00+09:00"
   }
  ]
 }
