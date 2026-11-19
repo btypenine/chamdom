@@ -57,6 +57,12 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 .mark svg { width: 18px; height: 18px; fill: var(--brand-ink); }
 .hdr-r { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .req-btn { min-height: 34px; padding: 6px 12px; font-size: 13px; border-radius: 99px; background: var(--brand); color: var(--brand-ink); border-color: var(--brand); white-space: nowrap; flex: none; }
+.appr-btn { min-height: 34px; padding: 6px 12px; font-size: 13px; border-radius: 99px; background: var(--warn); color: var(--surface); border-color: var(--warn); white-space: nowrap; flex: none; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; animation: apprPulse 2.4s ease-in-out 3; }
+.appr-btn b { background: var(--surface); color: var(--warn); border-radius: 99px; min-width: 18px; padding: 0 5px; font-size: 12px; line-height: 18px; text-align: center; }
+@keyframes apprPulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--warn) 30%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .appr-btn { animation: none; } }
+@media (max-width: 480px) { body.has-appr .set-btn span { display: none; } body.has-appr .who { display: none; } }   /* 폰: 승인 버튼 자리를 위해 설정 글자·닉네임 숨김(설정 톱니는 그대로) */
+@media (max-width: 380px) { body.has-appr .req-btn, .appr-btn { padding-inline: 9px; } }
 .who { font-size: 13px; color: var(--muted); text-align: right; min-width: 0; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: none; border: 1px dashed transparent; border-radius: 8px; padding: 4px 8px; min-height: 0; font-weight: 600; }
 .who:hover { border-color: var(--line); }
 .who::after { content: " ✎"; font-size: 11px; opacity: .6; }
@@ -358,6 +364,7 @@ body.ex-up .fold-end { padding-top: 14px; }
       <button type="button" class="set-btn" id="setOpen" hidden aria-label="설정" title="설정"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3.5h-4l-.3 2.5a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.4 7.4 0 0 0 1.7 1l.3 2.5h4l.3-2.5a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.4zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg><span>설정</span></button>
       <button type="button" class="req-btn" id="reqOpen" hidden>요청하기</button>
       <button type="button" class="who" id="who" hidden aria-label="닉네임 바꾸기" title="눌러서 닉네임 바꾸기"></button>
+      <button type="button" class="appr-btn" id="apprTop" hidden title="승인 대기로 이동"><span>승인</span><b id="apprTopN">0</b></button>
     </div>
   </header>
   <div class="seg" id="viewSeg" role="group" aria-label="보기 방식" hidden>
@@ -1932,6 +1939,8 @@ function renderApprovals() {
   if (!isFriend) for (const p of aiProps) if (p.status === "pending" && !dec[p.id]) items.push({ src: "AI 개선안", id: p.id, title: p.title, body: p.summary, why: p.why, risk: p.risk, pr: p.pr, extra: "승인하면 다음 AI 점검(3시간 이내) 때 반영됨" });
   $("apprCard").hidden = !items.length;
   $("apprCount").textContent = items.length ? items.length + "건" : "";
+  const waiting = items.filter((it) => !sentDecisions[it.id]).length;   // 화면 맨 오른쪽 위 '승인 N' 버튼: 아직 결정 안 보낸 건만 셈
+  $("apprTop").hidden = !waiting; document.body.classList.toggle("has-appr", !!waiting); $("apprTopN").textContent = waiting; $("apprTop").setAttribute("aria-label", `승인 대기 ${waiting}건 보기`);
   const box = $("apprList"); box.textContent = "";
   for (const it of items) {
     const el = document.createElement("div"); el.className = "appr";
@@ -1963,6 +1972,7 @@ function renderApprovals() {
     box.append(el);
   }
 }
+$("apprTop").addEventListener("click", () => goCard("apprCard"));
 loadAiProposals(); setInterval(loadAiProposals, 5 * 60 * 1000);
 
 function renderStatus() {
