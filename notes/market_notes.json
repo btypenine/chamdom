@@ -54,6 +54,17 @@
     "https://whale-alert.io/stories/a364dec2f2f4/Bitcoin-falls-over-20-in-November-recovery-targets-92K101K-as-market-stabilizes"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-21T00:33:00+09:00",
+   "btcMove": "업비트 봇 BTC 30분 -1.58%(00:32), 60분 고저폭 2.36%, 24시간 -3.25%. 바이낸스 엔진 BTC 24시간 -4.72%, 흐름 -1.8. 업비트 대상 34종목 중 94% 하락(30분 평균 -1.9%)",
+   "summary": "[사실] 봇 기록상 00:00~00:32 사이 BTC 약 1.5% 추가 하락, 알트 대부분 동반 하락. 보도상 11/20 BTC가 6.2만→6.1만 달러대로 밀리며 약 7.8억 달러 청산 발생, 11월 누적 -17~23% 약세. [추정] 이 시각 하락의 직접 원인 기사는 확인 못함 — 이어지는 약세장 속 롱 청산 연쇄로 추정.",
+   "sources": [
+    "https://www.archyde.com/bitcoin-dropped-below-62000-on-november-20-losing-more-than-2-over-24-hours/",
+    "https://finway.com.ua/en/bitcoin-falls-61000-amid-781/",
+    "https://cryptobriefing.com/bitcoin-falls-23-november-2026-bear-market/"
+   ],
+   "confirmed": false
   }
  ]
 }
