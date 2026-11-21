@@ -65,6 +65,17 @@
     "https://cryptobriefing.com/bitcoin-falls-23-november-2026-bear-market/"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-21T12:33:00+09:00",
+   "btcMove": "업비트 봇 기록: BTC 30분 -1.49%, 120분 -2.39%, 60분 고저폭 2.13%, 24시간 -5.32%. 바이낸스 엔진 BTC 24시간 -6.19%. 업비트 대상 33종목 중 94% 하락(30분 평균 -2.4%)",
+   "summary": "[사실] 봇 기록상 12:00~12:32 사이 BTC 약 1.5% 급락, 알트 대부분 동반 하락. 보도상 11/21 BTC가 6만 달러 아래로 내려가 2024년 9월 이후 최저, ETF 대량 유출·나스닥 AI주 매도 영향 언급. [추정] 이 시각 하락은 6만 달러 지지선 붕괴에 따른 청산 연쇄로 보이나 정확한 시각의 직접 원인 기사는 확인 못함.",
+   "sources": [
+    "https://startupfortune.com/bitcoin-falls-below-60000-as-the-nasdaqs-ai-selloff-drags-crypto-down/",
+    "https://cryptonews.net/news/bitcoin/33785383/",
+    "https://github.com/elixirevo/agentic-blog/releases/tag/post-2026-11-21-crypto-briefing"
+   ],
+   "confirmed": false
   }
  ]
 }
