@@ -76,6 +76,17 @@
     "https://github.com/elixirevo/agentic-blog/releases/tag/post-2026-11-21-crypto-briefing"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-21T13:33:00+09:00",
+   "btcMove": "BTC 120분 -4.87%(13:09 업비트 로그), 바이낸스 BTC 24h -6.2%→-9.54%(1시간 새 약 -3%p 추가)",
+   "summary": "사실: Reuters 보도 BTC 3.57% 하락 5만6,814달러, 6만 달러 아래(2024년 9월 이후 최저). 보도상 원인은 기술주(AI) 밸류에이션 우려·나스닥 매도·ETF 대규모 유출. 이 시각 직접 원인은 미확인(추정).",
+   "sources": [
+    "https://au.investing.com/news/forex-news/bitcoin-falls-357-to-56814-4787891",
+    "https://startupfortune.com/bitcoin-falls-below-60000-as-the-nasdaqs-ai-selloff-drags-crypto-down/",
+    "https://www.coingabbar.com/en/crypto-news-nov-21-bitcoin-ethereum-price-drops-nvidia-selloff"
+   ],
+   "confirmed": false
   }
  ]
 }
