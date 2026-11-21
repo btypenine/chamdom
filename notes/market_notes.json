@@ -87,6 +87,13 @@
     "https://www.coingabbar.com/en/crypto-news-nov-21-bitcoin-ethereum-price-drops-nvidia-selloff"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-21T15:38:00+09:00",
+   "btcMove": "+2.3% (60분 저점 대비, 2시간 +3.6%)",
+   "summary": "사실: 24시간 -9% 하락 뒤 15시대 저점에서 급반등(봇 로그). 같은 날 원인 뉴스는 검색으로 확인 못 함. 추정: 과매도 뒤 숏 청산 반등. 바이낸스 숏 실주문 3건 연속 손절(SENT·IRYS·ETH) → 2시간 실주문 쉼.",
+   "sources": [],
+   "confirmed": false
   }
  ]
 }
