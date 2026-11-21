@@ -1518,6 +1518,11 @@ function renderBinance(b) {
     t += ` · 1회 금액 ${g.sizeRange?.[0]}~${g.sizeRange?.[1]} USDT(이익 확률·판 크기 ${g.bankX}배로 자동)`;
     if (g.restUntil) t += ` · ⏸ ${g.restWhy} → ${new Date(g.restUntil).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}까지 실주문 쉼`;
     if (g.monthPnl <= -g.monthLoss) t += " · ⏸ 월 손실 한도 도달 → 다음 달까지 실주문 멈춤";
+    const sr = g.stopRisk;
+    if (sr && sr.n) {
+      t += ` · 실보유 ${sr.n}개(롱 ${sr.long}·숏 ${sr.short}) 지금 ${usd(sr.nowUsdt)} · 모두 보호 손절 걸리면 ${usd(sr.allStop)} USDT (오늘 남은 한도 ${Number(sr.dayLeft).toFixed(2)}${sr.fits ? " 안" : " 넘음 ⚠"})`;
+      if (sr.n >= 4 && (sr.long === 0 || sr.short === 0)) t += " · 한 방향에 몰림";
+    }
     $("bnGuard").textContent = t;
   }
   // 연속 손실 쉼만 승인으로 해제 가능 (보호 손절 실패 쉼·하루·월 한도는 안 됨)
