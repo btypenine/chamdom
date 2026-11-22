@@ -2343,6 +2343,31 @@ class Engine:
         self.refresh_pool()
 
     # --- 대시보드·보고서 ---
+    def stop_risk(self, px):
+        """보고용(매매엔 안 씀): 지금 실보유가 모두 보호 손절에 걸리면 얼마를 잃는지, 오늘 손실 한도 안에 드는지.
+        손절가는 거래소 보호 손절(stopPx)이 있으면 그것, 없으면 봇 손절가. 수수료·밀림 가정 포함"""
+        try:
+            rows, all_stop, now_usdt, same = [], 0.0, 0.0, {"long": 0, "short": 0}
+            for sym, p in self.state["positions"].items():
+                if not p.get("live"):
+                    continue
+                usdt, e, sl = float(p.get("usdt") or 0), float(p["entry"]), float(p.get("stopPx") or p["sl"])
+                lose = lambda x: ((x / e - 1) if p["side"] == "long" else (e / x - 1)) - 2 * FEE - SLIP
+                at_stop = usdt * lose(sl)
+                all_stop += at_stop
+                same[p["side"]] += 1
+                cur = px.get(sym)
+                if cur:
+                    now_usdt += usdt * lose(cur)
+                rows.append({"symbol": sym, "side": p["side"], "usdt": round(usdt, 1), "atStop": round(at_stop, 2)})
+            ll = self.live_day()
+            left = self.daily_loss + ll["dayPnl"]
+            return {"n": len(rows), "allStop": round(all_stop, 2), "nowUsdt": round(now_usdt, 2), "dayLeft": round(left, 2),
+                    "fits": (left + all_stop) > 0, "long": same["long"], "short": same["short"],
+                    "rows": sorted(rows, key=lambda r: r["atStop"])[:10]}
+        except Exception:
+            return None
+
     def view(self):
         lg = self.state["ledger"]
         n = lg["trades"]
@@ -2373,7 +2398,8 @@ class Engine:
                  "armed": sum(1 for q in self.state["positions"].values() if q.get("live") and q.get("stopId")),
                  "liveOpen": sum(1 for q in self.state["positions"].values() if q.get("live")),
                  "sizeRange": [round(self.order_usdt * SIZE_MIN_X * 0.5, 1), round(self.order_usdt * SIZE_MAX_X, 1)],
-                 "bankX": round(min(2.0, max(0.5, 1 + ll["pnlUsdt"] / (self.order_usdt * BANK_X))), 2)}
+                 "bankX": round(min(2.0, max(0.5, 1 + ll["pnlUsdt"] / (self.order_usdt * BANK_X))), 2),
+                 "stopRisk": self.stop_risk(px)}
         avg_of = lambda d: round(d["sumPct"] / d["n"], 3) if d["n"] else None
         evo_view = {"share": evo["share"], "pool": len(self.state["genePool"]), "maxGen": evo["maxGen"], "born": evo["born"],
                     "evoN": evo["evo"]["n"], "evoAvg": avg_of(evo["evo"]), "randN": evo["rand"]["n"], "randAvg": avg_of(evo["rand"]),
