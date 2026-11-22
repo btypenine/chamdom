@@ -101,6 +101,16 @@
    "summary": "24시간 -3~5% 하락 뒤 22시 무렵 BTC 2시간 +2.86% 반등. 숏 쏠림 상태에서의 되돌림으로 보임(추정). 원인 뉴스는 검색에서 확인 못함.",
    "sources": [],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-22T18:56:00+09:00",
+   "btcMove": "+2.5% (60분 저점 대비, 업비트 봇) · 2시간 +3.31% (바이낸스 엔진) · 24시간 +4.8%",
+   "summary": "사실: 주말 동안 BTC가 2년 만의 저점(약 5.5만 달러) 뒤 6만 달러 위로 반등 중(기사). 18:50대 추가 급등으로 바이낸스 숏 실주문 3건(ASTER·INJ·BTC) 연속 손절 → 2시간 실주문 쉼. 이 시각 급등의 직접 원인 뉴스는 확인 못 함(추정: 과매도 뒤 숏 청산 반등).",
+   "sources": [
+    "https://letrasbonitashub.com.mx/2026/11/22/bitcoin-rebounds-above-60000-two-year-low-55100/",
+    "https://crypto.news/bitcoin-price-pi-network-vvv-weekend-recovery/"
+   ],
+   "confirmed": false
   }
  ]
 }
