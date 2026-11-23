@@ -65,6 +65,7 @@ APP_SETTINGS = {
     "BINANCE_REGIME_FOCUS": ("choice", ("off", "on")),
     "BINANCE_MONTH_LOSS_USDT": ("num", (5, 2000)),
     "BINANCE_STOP_BUFFER": ("choice", ("0.5", "0.3", "0.2")),
+    "BINANCE_SIDE_CAP": ("num", (0, 10)),
 }
 APP_SETTINGS_EVERY = 600                                       # 대시보드 설정 확인 주기(초) — 읽기 한도(429) 아끼려고 10분
 
@@ -207,6 +208,12 @@ CLOUD_SUG_EVERY = 10 * 60        # 친구 제안함 확인 간격(초)
 # - 기본값 normal = 기존 동작 그대로
 # 업비트 꺼짐(UPBIT_MODE=off, 2026-11-18 대표님 요청 '업비트는 이제 안할거야'): 봇 동작은 대기(standby)와 똑같음
 #   (새 매수 멈춤 · 보유분은 규칙대로 정리 · 강제 매도 없음) + 상태에 upbitMode 'off' 를 올려 대시보드가 업비트 화면을 숨김
+# 업비트 종료(2026-11-23 대표님 지시 "이제 업비트는 안할거니까 중지"): 운영자(ROLE=owner) PC 의 업비트 봇은 거래를 끝냄
+# - 봇이 실제로 산 코인이 남아 있으면 '꺼짐(off)'과 똑같이 기존 규칙대로 정리만 하고(새 매수 없음), 다 정리되면 종료 대기로 넘어감
+# - 종료 대기: 업비트·웹페이지에 아무 요청도 보내지 않고 10분마다 새 버전만 확인 (창을 닫아도 되고 시작 프로그램에서 빼도 됨)
+# - 승인함·요청함·친구 제안 확인과 보고서 기록은 바이낸스 엔진(binance_bot.py)이 넘겨받음
+# - 친구용(ROLE=friend)은 영향 없음. 다시 켜려면 이 값을 False 로(코드 변경 = 승인 대상)
+UPBIT_RETIRED_OWNER = True
 STANDBY_CMD_EVERY = 120          # 명령(일시정지·비상 정리·승인) 확인 15초 → 2분 (비상 정리도 2분 안에 처리, 10분 지난 명령 거절 기준보다 충분히 짧게)
 STANDBY_INBOX_EVERY = 10 * 60    # 요청함·승인함 1분 → 10분
 STANDBY_SUG_EVERY = 60 * 60      # 친구 제안함 10분 → 1시간
@@ -3539,6 +3546,9 @@ class Bot:
         self.upload_status()
         last_update_check = time.time()
         while True:
+            if self.cfg.get("_retiring") and not any(not p.get("paper") for p in self.state["positions"].values()):
+                log("업비트 종료: 봇이 산 코인이 모두 정리됨 → 종료 대기로 전환")
+                raise RestartForUpdate()
             if time.time() - last_update_check >= UPDATE_EVERY:
                 last_update_check = time.time()
                 if check_update():
@@ -3644,12 +3654,55 @@ def disable_quick_edit():
         pass
 
 
+def upbit_retired(cfg):
+    """운영자 PC 의 업비트 봇 종료 여부 (친구용은 항상 False)"""
+    return bool(UPBIT_RETIRED_OWNER and cfg.get("ROLE", "owner") == "owner")
+
+
+def bot_holdings():
+    """봇 장부에 남은 '실제로 산' 코인 수 (모의 체결 제외). 장부를 못 읽으면 0"""
+    try:
+        with open(STATE_FILE, encoding="utf-8") as f:
+            pos = json.load(f).get("positions") or {}
+        return sum(1 for p in pos.values() if not p.get("paper"))
+    except Exception:
+        return 0
+
+
+def retired_idle(cfg):
+    """업비트 종료 대기: 거래·시세 조회·웹페이지 읽기를 모두 하지 않음. 새 버전만 10분마다 확인(다시 켤 일이 생길 때를 위해)"""
+    print("=" * 64, flush=True)
+    print("업비트 자동매매는 종료되었습니다 (2026-11-23 대표님 지시).", flush=True)
+    print(" - 이 창은 닫아도 됩니다. 바이낸스 엔진(Chamdom Binance 창)은 그대로 두세요.", flush=True)
+    print(" - 승인·요청 확인은 바이낸스 엔진이 이어서 합니다.", flush=True)
+    print(" - 윈도우 시작 프로그램에 start_bot.bat 바로가기가 있으면 지워도 됩니다.", flush=True)
+    print("=" * 64, flush=True)
+    try:                                # 화면에 한 번만 '종료'로 표시 (실패해도 그만)
+        cloud = Cloud(cfg["FIREBASE_LINK_CODE"])
+        cloud.connect()
+        cloud.put_status({"botState": "paused", "message": "업비트 자동매매 종료 (2026-11-23) · 바이낸스만 운영",
+                          "upbitMode": "off", "retired": True, "positions": [],
+                          "updatedAt": int(time.time() * 1000)}, partial=True)
+    except Exception:
+        pass
+    while True:
+        time.sleep(UPDATE_EVERY)
+        if check_update():
+            print("새 버전을 받았습니다. 다시 시작합니다.", flush=True)
+            sys.exit(RESTART_CODE)
+
+
 def main():
     disable_quick_edit()
     cfg = load_config()                 # 업데이트 채널(main/stable)을 알기 위해 설정부터 읽음
     if check_update():
         print("새 버전을 받았습니다. 다시 시작합니다.", flush=True)
         sys.exit(RESTART_CODE)
+    if upbit_retired(cfg):
+        if not bot_holdings():
+            retired_idle(cfg)           # 돌아오지 않음 (새 버전을 받으면 다시 시작)
+        cfg["UPBIT_MODE"] = "off"       # 실제로 산 코인이 남아 있으면: 새 매수 없이 기존 규칙대로 정리만
+        cfg["_retiring"] = True
     bot = Bot(cfg)
     log("참돔 트레이드 봇 v2 시작 (종료: Ctrl+C)")
     up = {k: v for k, v in cfg["_appSettings"].items() if not k.startswith("BINANCE_")}

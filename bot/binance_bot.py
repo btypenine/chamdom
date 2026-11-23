@@ -59,6 +59,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 import chamdom_bot as cb          # 전략 생성·백테스트·지표·Firebase 연결을 그대로 씀
 
+# 이 엔진이 새로 쓰는 대시보드 설정 — 같은 폴더의 공용 파일(chamdom_bot.py)이 아직 옛 버전이어도 받아들이게 여기서도 등록
+cb.APP_SETTINGS.setdefault("BINANCE_SIDE_CAP", ("num", (0, 10)))
+
 FAPI = "https://fapi.binance.com"
 KST = timezone(timedelta(hours=9))
 STATE_FILE = os.path.join(BASE_DIR, "binance_state.json")
@@ -93,6 +96,9 @@ WH_MIN_N = 8                      #   약한 구간 판단: 최근 청산 100건
 TR_HOURS = 4                      # 관찰 전용: 익절로 끝난 거래가 그 뒤 4시간 동안 같은 방향으로 더 갔는지 기록 (익절폭·트레일링 판단 근거)
 TR_MAX_OPEN = 40                  #   동시에 추적하는 익절 건 최대 수 (넘으면 오래된 것부터 버림)
 SW_LOOK, SW_MIN = 20, 10          # 관찰 전용 '약한 방향': 같은 방향 최근 모의 20회(최소 10회) 평균이 0 미만이면 진입에 표시만 함
+SIDE_CAP_LIVE = 0                 # 대시보드 설정 BINANCE_SIDE_CAP: 같은 방향(롱끼리·숏끼리) 실보유를 이 개수까지만. 0 = 제한 없음(기본 = 기존 동작)
+                                  #   bt-lab 실험 8(11-24, 실제 선물 15분봉 125일·40종목): 제한 없음 대비 3개 제한은 거래당 성적은 같고(-0.007% → -0.017%, 차이는 오차 범위)
+                                  #   최대 낙폭 -115 → -57 USDT, 최악의 하루 -29 → -13 USDT (1회 50 USDT 기준). 넘는 신호는 모의로만 기록
 MAX_OPEN = 10                     # 동시 모의 보유 최대
 # 확장형(wide): 대상 종목 2배 → 거래 기회 2배. 대시보드 설정 BINANCE_STYLE=wide 일 때만 (기본 swing = 기존 동작)
 # bt-lab 11-07: 보지 않은 다음 10일 — 20종목 134회 거래당 +0.206% / 40종목 284회 +0.284% (회전형 작은 익절은 -0.12~-0.20%로 탈락)
@@ -123,6 +129,19 @@ DASH_READ_BACKOFF_SEC = 600       # 읽기 한도 초과(429)면 버튼 확인�
 TEST_MAX_AGE_SEC = 600            # 누른 지 이보다 오래된 요청은 실행하지 않음(봇이 꺼져 있다 나중에 켜져도 뒤늦게 주문 안 나가게)
 TEST_TP, TEST_SL = 1.0, -1.0      # 익절 +1%(순익 기준) · 손절 -1%
 TEST_HOLD_BARS = 16               # 최대 보유 16봉(15분봉 → 4시간), 넘으면 정리
+
+# 대시보드 대응 명령 (11-23 대표님 지시 "필요한 순간에 대응할 수 있게"): 화면에서 직접 누른 것만, 한 명령은 한 번만 실행
+CMD_POLL_SEC = 10                 # 명령 확인 주기(초) — status/settings 문서 1개만 읽음(하루 약 8천 회, 한도 5만)
+CMD_MAX_AGE_SEC = 180             # 누른 지 3분 넘은 명령은 실행하지 않음 (PC가 꺼져 있다 켜져도 뒤늦게 정리 주문이 나가지 않게)
+CMD_NAMES = {"pause": "새 진입 멈춤", "resume": "거래 재개", "close": "종목 정리", "closeSide": "한쪽 방향 정리",
+             "closeAll": "전부 정리", "breakeven": "본전 손절 올리기"}
+MANUAL_CLOSE = "수동 정리(대시보드)"
+BE_MIN_PCT = 0.3                  # 본전 손절 올리기: 지금 순손익이 이만큼(%) 이상인 실보유만
+BE_LOCK_PCT = 0.05                # 올린 손절에 걸려도 수수료 빼고 이만큼(%)은 남게
+# 승인·요청 연결 (11-23: 업비트 봇 종료로 넘겨받음 · 운영자 PC만)
+BRIDGE_INBOX_SEC = 60             # 대시보드 승인·요청함 확인 주기(초)
+BRIDGE_SUG_SEC = 30 * 60          # 친구 제안함 확인 주기(초)
+BRIDGE_STALE_SEC = 10 * 60        # 업비트 봇 보고서(report.json)가 이만큼 그대로면 엔진이 승인·요청 장부를 그 파일에도 적어 둠
 
 # 성적 기반 실주문 금액 (확률이 높은 규칙에 더, 약한 규칙엔 덜 — 사람이 정하지 않고 결과로 정함)
 PRIOR_N = 5                       # 아직 거래가 적은 규칙은 '평균 0' 쪽으로 당겨 봄 (5회분 무게)
@@ -541,6 +560,12 @@ class Engine:
         global STYLE
         STYLE = "wide" if str(c.get("BINANCE_STYLE", "swing")).strip().lower() == "wide" else "swing"
         self.max_open = WIDE_MAX_OPEN if STYLE == "wide" else MAX_OPEN
+        global SIDE_CAP_LIVE
+        c.setdefault("BINANCE_SIDE_CAP", "0")                                   # 대시보드에 '0 = 제한 없음(기존) · 기본값'으로 보이게
+        try:
+            SIDE_CAP_LIVE = max(0, min(10, int(float(str(c.get("BINANCE_SIDE_CAP", "0")).replace(",", "").strip() or 0))))
+        except ValueError:
+            SIDE_CAP_LIVE = 0
         global DEEP_CUT_LIVE
         c.setdefault("BINANCE_DEEP_CUT", "off")                                  # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
         DEEP_CUT_LIVE = str(c.get("BINANCE_DEEP_CUT", "off")).strip().lower() == "on"   # 기본 꺼짐 = 기존 동작
@@ -1801,6 +1826,8 @@ class Engine:
         if rb.get("status") != "proven" and not self.side_ok(strat["side"], rb):
             return self.live_skip(self.skip_why(rb))
         g, now = self.state["guard"], time.time()
+        if g.get("paused"):
+            return self.live_skip("일시정지(대시보드)")
         if g.get("blockUntil", 0) > now:
             return self.live_skip("보호 손절 주문 실패 후 쉬는 중")
         if g.get("restUntil", 0) > now:
@@ -1812,6 +1839,9 @@ class Engine:
             return self.live_skip("하루 손실 한도 도달")
         if sum(1 for p in self.state["positions"].values() if p.get("live")) >= self.max_live:
             return self.live_skip("동시 실보유 최대")
+        if SIDE_CAP_LIVE and sum(1 for p in self.state["positions"].values()
+                                 if p.get("live") and p["side"] == strat["side"]) >= SIDE_CAP_LIVE:
+            return self.live_skip("같은 방향 실보유 최대(설정)")
         if WEAK_HOUR_LIVE and self.weak_hour_now():
             return self.live_skip("약한 시간대(설정)")
         if REENTRY_SKIP_LIVE and sym and strat["side"] in REENTRY_SKIP_SIDES and self.reentry_recent(sym, strat["side"]):
@@ -1986,9 +2016,10 @@ class Engine:
         if reason == "익절":
             self.tp_run_start("live", sym, p, exit_px)
         g = self.state["guard"]
-        g["streak"] = g.get("streak", 0) + 1 if pct <= 0 else 0
+        if reason != MANUAL_CLOSE:                               # 사람이 대시보드에서 끊은 거래는 '연속 손실 쉼' 계산에서 뺌
+            g["streak"] = g.get("streak", 0) + 1 if pct <= 0 else 0
         rest = ""
-        if g["streak"] >= LOSS_STREAK_MAX:
+        if g.get("streak", 0) >= LOSS_STREAK_MAX:
             g["restUntil"] = time.time() + LOSS_STREAK_REST_HOURS * 3600
             g["restStart"] = int(time.time() * 1000)
             g["streak"] = 0
@@ -2030,10 +2061,10 @@ class Engine:
         self.book_live(sym, p, avg or price, reason, record)
 
     def dash_fields(self):
-        """대시보드 버튼 값(binanceTestOrderAt·binanceResumeAt) 읽기. 쉼 해제·테스트 주문 확인이 같은 문서를 같이 씀(1분 안엔 다시 안 읽음).
-        예전엔 30초마다 두 문서를 읽어 하루 5,700회 넘게 읽기 한도를 씀 → status/settings 1개만, 예비 문서는 가끔만"""
+        """대시보드 버튼 값(binanceTestOrderAt·binanceResumeAt·binanceCmds) 읽기. 쉼 해제·테스트 주문·대응 명령 확인이
+        같은 문서를 같이 씀(CMD_POLL_SEC 안엔 다시 안 읽음). status/settings 1개만, 예비 문서는 가끔만"""
         now = time.time()
-        if now - getattr(self, "_dash_at", 0) < 50 and getattr(self, "_dash_cache", None) is not None:
+        if now - getattr(self, "_dash_at", 0) < CMD_POLL_SEC - 2 and getattr(self, "_dash_cache", None) is not None:
             return self._dash_cache
         if now < getattr(self, "_dash_backoff", 0):
             return None
@@ -2053,10 +2084,19 @@ class Engine:
                 return None
             if r.status_code != 200:
                 continue
+            fields = r.json().get("fields", {})
             for k in ("binanceTestOrderAt", "binanceResumeAt"):
-                v = r.json().get("fields", {}).get(k)
+                v = fields.get(k)
                 if v:
                     out[k] = max(out.get(k, 0), int(float(cb.from_fs(v) or 0)))
+            v = fields.get("binanceCmds")                       # 대응 명령: {명령번호: {type, arg, at}}
+            if v:
+                try:
+                    cmds = cb.from_fs(v)
+                    if isinstance(cmds, dict):
+                        out.setdefault("cmds", {}).update({str(k): c for k, c in cmds.items() if isinstance(c, dict)})
+                except Exception:
+                    pass
         self.state.pop("readLimitedUntil", None)
         self._dash_at, self._dash_cache = now, out
         return out
@@ -2150,6 +2190,285 @@ class Engine:
                  + (f" · 거래소 보호 손절 {p['stopPx']:.6g}" if p.get("stopPx") else "") + note)
         else:
             done("failed", f"{sym} 주문이 체결되지 않음 · 마지막 기록: {ACT[-1][15:] if ACT else '-'}")
+
+    # ---------- 대시보드 대응 명령 (사용자가 화면에서 직접 누른 것만 실행) ----------
+    def server_now(self):
+        """명령이 얼마나 오래됐는지 볼 때 쓰는 시각(초): 실계좌가 연결돼 있으면 바이낸스 서버 시각 기준(PC 시계가 틀려도 됨)"""
+        return time.time() + (getattr(self.live, "offset", 0) if self.live else 0) / 1000
+
+    def check_commands(self):
+        """대시보드 대응 버튼(status/settings 문서의 binanceCmds): 새 진입 멈춤·재개, 종목/방향/전체 정리, 본전 손절 올리기.
+        한 명령은 한 번만 · 누른 지 CMD_MAX_AGE_SEC 넘은 것은 실행하지 않음 · 결과는 대시보드(cmd·cmdLog)로 돌려줌"""
+        try:
+            f = self.dash_fields()
+        except Exception as e:
+            if not getattr(self, "_cmd_warned", False):
+                self._cmd_warned = True
+                log(f"[경고] 대시보드 명령 확인 실패(다음에 다시): {str(e)[:100]}")
+            return
+        self._cmd_warned = False
+        if not f:
+            return
+        seen = self.state.setdefault("cmdSeen", [])
+        todo = sorted(((cid, c) for cid, c in (f.get("cmds") or {}).items() if cid not in seen),
+                      key=lambda x: self._num(x[1].get("at")))
+        if not todo:
+            return
+        for cid, c in todo:
+            seen.append(cid)
+            del seen[:-200]
+            save_state(self.state)                              # 실행 전에 '봤음'부터 저장 → 중간에 꺼져도 같은 명령을 두 번 실행하지 않음
+            try:
+                status, msg = self.run_command(c)
+            except Exception as e:
+                status, msg = "failed", f"실행 중 오류: {type(e).__name__}: {str(e)[:100]}"
+            typ, arg = str(c.get("type") or ""), str(c.get("arg") or "")
+            rec = {"id": cid, "type": typ, "arg": arg, "status": status, "msg": msg,
+                   "at": int(self._num(c.get("at"))), "doneAt": int(time.time() * 1000)}
+            self.state["cmd"] = rec
+            cl = self.state.setdefault("cmdLog", [])
+            cl.append(rec)
+            del cl[:-12]
+            log(f"[대응 명령] {CMD_NAMES.get(typ, typ or '?')}{(' ' + arg) if arg else ''} → {msg}")
+        save_state(self.state)
+        self.upload(force=True)
+
+    @staticmethod
+    def _num(v):
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def run_command(self, c):
+        typ, arg = str(c.get("type") or ""), str(c.get("arg") or "").strip()
+        if typ not in CMD_NAMES:
+            return "rejected", "모르는 명령이라 실행하지 않음"
+        age = self.server_now() - self._num(c.get("at")) / 1000
+        if age > CMD_MAX_AGE_SEC:
+            return "expired", f"누른 지 {CMD_MAX_AGE_SEC // 60}분이 지나 실행하지 않음 · 필요하면 다시 눌러 주세요"
+        g, now = self.state["guard"], time.time()
+        if typ == "pause":
+            g.update({"paused": True, "pausedAt": int(now * 1000)})
+            return "done", "새 실주문 멈춤 · 들고 있는 포지션은 익절·손절·보유시간대로 계속 관리"
+        if typ == "resume":
+            rested = g.get("restUntil", 0) > now
+            g["paused"] = False
+            if rested:
+                g.update({"restUntil": 0, "streak": 0, "resumedAt": int(now * 1000)})
+            ll = self.live_day()
+            note = (" · 연속 손실 쉼도 해제" if rested else "") \
+                + (" · 보호 손절 실패 쉼은 시간이 지나야 풀림" if g.get("blockUntil", 0) > now else "") \
+                + (" · 단, 손실 한도에 닿아 있어 새 실주문은 안 나감" if ll["monthPnl"] <= -self.month_loss or ll["dayPnl"] <= -self.daily_loss else "")
+            return "done", "새 실주문 재개" + note
+        live_syms = [s_ for s_, p in self.state["positions"].items() if p.get("live")]
+        if typ == "close":
+            sym = arg.upper()
+            if sym not in live_syms:
+                return "rejected", f"{sym or '종목'} 실보유가 봇 장부에 없음(이미 정리됐을 수 있음)"
+            return self.manual_close([sym])
+        if typ == "closeSide":
+            if arg not in ("long", "short"):
+                return "rejected", "방향(long/short)이 없어 실행하지 않음"
+            syms = [s_ for s_ in live_syms if self.state["positions"][s_]["side"] == arg]
+            if not syms:
+                return "done", f"{'롱' if arg == 'long' else '숏'} 실보유 없음"
+            return self.manual_close(syms)
+        if typ == "closeAll":
+            if arg == "pause":                                    # 비상 정지: 먼저 새 진입부터 막고 정리
+                g.update({"paused": True, "pausedAt": int(now * 1000)})
+            if not live_syms:
+                return "done", "실보유 없음" + (" · 새 실주문 멈춤" if arg == "pause" else "")
+            st, msg = self.manual_close(live_syms)
+            return st, msg + (" · 새 실주문 멈춤(재개를 누를 때까지)" if arg == "pause" else "")
+        if typ == "breakeven":
+            syms = live_syms if arg in ("", "all") else [arg.upper()]
+            if not [s_ for s_ in syms if s_ in live_syms]:
+                return "rejected", "대상 실보유 없음"
+            return self.manual_breakeven([s_ for s_ in syms if s_ in live_syms])
+        return "rejected", "모르는 명령이라 실행하지 않음"
+
+    def manual_close(self, syms):
+        """사용자가 누른 정리: 실보유를 시장가(reduceOnly)로 닫고 장부에 반영.
+        규칙 성적(통과·퇴출 판정)과 연속 손실 쉼에는 넣지 않음 — 규칙이 아니라 사람이 끊은 거래라서"""
+        if not self.live:
+            return "failed", "실계좌 연결이 꺼져 있어 정리하지 못함 → 바이낸스 앱에서 직접 정리 필요"
+        try:
+            px = prices(syms)
+        except Exception as e:
+            return "failed", f"시세 확인 실패로 정리하지 못함: {str(e)[:80]}"
+        ok, fail, usdt = [], [], 0.0
+        for sym in syms:
+            p = self.state["positions"].get(sym)
+            if not p or not p.get("live"):
+                continue
+            price = px.get(sym) or p["entry"]
+            before = self.state["liveLedger"]["pnlUsdt"]
+            try:
+                self.close_live(sym, price, MANUAL_CLOSE, record=False)
+            except Exception as e:
+                log(f"[경고] {sym} 수동 정리 실패: {type(e).__name__}: {str(e)[:100]}")
+            if sym in self.state["positions"]:
+                fail.append(sym)                                  # 못 닫음 → 거래소 보호 손절·봇 규칙은 그대로 살아 있음
+            else:
+                ok.append(sym)
+                usdt += self.state["liveLedger"]["pnlUsdt"] - before
+        save_state(self.state)
+        short = lambda xs: ", ".join(x.replace("USDT", "") for x in xs)
+        msg = (f"{len(ok)}건 정리({short(ok)}) · 손익 {usdt:+.2f} USDT" if ok else "정리된 것 없음") \
+            + (f" · 실패 {len(fail)}건({short(fail)}) → 다시 누르거나 바이낸스 앱에서 확인" if fail else "")
+        return ("done" if ok and not fail else ("failed" if not ok else "partial")), msg
+
+    def manual_breakeven(self, syms):
+        """수익 중인 실보유의 손절을 본전(수수료 포함) 위로 올림 — 봇 손절가와 거래소 보호 손절 둘 다. 손절을 넓히는 일은 없음"""
+        try:
+            px = prices(syms)
+        except Exception as e:
+            return "failed", f"시세 확인 실패: {str(e)[:80]}"
+        moved, skip = [], []
+        for sym in syms:
+            p = self.state["positions"].get(sym)
+            price = px.get(sym)
+            if not p or not p.get("live") or not price:
+                continue
+            name = sym.replace("USDT", "")
+            if self.move_stop_to_even(sym, p, price):
+                moved.append(name)
+            else:
+                skip.append(name)
+        save_state(self.state)
+        if not moved:
+            return "rejected", f"올린 것 없음 · 순손익 +{BE_MIN_PCT:g}% 이상인 실보유만 가능 ({', '.join(skip) or '대상 없음'})"
+        return "done", f"{len(moved)}건 손절을 본전 위로 올림({', '.join(moved)})" + (f" · 조건 미달 {len(skip)}건" if skip else "")
+
+    def move_stop_to_even(self, sym, p, price):
+        """한 종목 손절을 본전 위로. 올렸으면 True (순손익 BE_MIN_PCT 미만·이미 올라가 있음·거래소 손절 변경 실패면 False)"""
+        long_ = p["side"] == "long"
+        gross = (price / p["entry"] - 1) if long_ else (p["entry"] / price - 1)
+        if (gross - 2 * FEE) * 100 < BE_MIN_PCT:
+            return False
+        lock = 2 * FEE + BE_LOCK_PCT / 100
+        new_sl = p["entry"] * (1 + lock) if long_ else p["entry"] * (1 - lock)
+        if not (new_sl > p["sl"] if long_ else new_sl < p["sl"]):
+            return False
+        old = p["sl"]
+        p["sl"], p["beMoved"] = new_sl, True
+        p.setdefault("slOrig", old)
+        if self.live and p.get("stopId"):                        # 거래소 보호 손절도 새 손절 기준으로 다시 걺
+            self.live.cancel_stops(sym)
+            if not self.arm_stop(sym, p):
+                p["sl"] = old                                     # 못 걸면 원래 손절로 되돌리고 다시 걺
+                p.pop("beMoved", None)
+                self.arm_stop(sym, p)
+                return False
+        log(f"[돈 지키기] {sym} 손절을 본전 위로 올림 {old:.6g} → {new_sl:.6g} (걸려도 수수료 빼고 +{BE_LOCK_PCT:g}%)")
+        return True
+
+    # ---------- 승인·요청 연결 (운영자 PC만 · 업비트 봇이 하던 일을 11-23부터 엔진이 맡음) ----------
+    def bridge_on(self):
+        return self.cfg.get("ROLE", "owner") == "owner"
+
+    def bridge_init(self):
+        """처음 한 번: 업비트 봇 장부(bot_state.json)에 있던 승인·요청 기록과 '이미 본 것' 목록을 넘겨받음(읽기만)"""
+        st = self.state
+        if st.get("bridgeInit"):
+            return
+        src = {}
+        try:
+            with open(os.path.join(BASE_DIR, "bot_state.json"), encoding="utf-8") as f:
+                src = json.load(f)
+        except Exception:
+            pass
+        st["aiDecisions"] = dict(src.get("aiDecisions") or {})
+        st["userRequests"] = list(src.get("userRequests") or [])[-40:]
+        st["inboxSeen"] = [str(x) for x in (src.get("inboxSeen") or [])][-300:]
+        st["sugSeen"] = [str(x) for x in (src.get("sugSeen") or [])][-500:]
+        st["bridgeInit"] = int(time.time() * 1000)
+        st["bridgeFresh"] = not src.get("inboxSeen")             # 넘겨받은 목록이 없으면 첫 확인 때 오래된 항목은 '이미 처리됨'으로 둠
+        save_state(st)
+        log(f"[연결] 승인·요청 확인을 바이낸스 엔진이 맡음 · 넘겨받은 기록: 승인 {len(st['aiDecisions'])}건 · 요청 {len(st['userRequests'])}건")
+
+    def bridge_poll(self):
+        """대시보드 승인함·요청함(1분마다)과 친구 제안함(30분마다) 확인 → 장부(aiDecisions·userRequests)에 기록.
+        AI 점검이 보고서 파일에서 읽어 PR 병합·답변에 씀. 실패해도 매매에는 영향 없음"""
+        if not self.bridge_on():
+            return
+        now = time.time()
+        if now < getattr(self, "_bridge_backoff", 0):
+            return
+        self.bridge_init()
+        st, changed = self.state, False
+        try:
+            if now - getattr(self, "_inbox_at", 0) >= BRIDGE_INBOX_SEC:
+                self._inbox_at = now
+                changed |= self.bridge_inbox(self.cloud.inbox_items())
+            if now - getattr(self, "_sug_at", 0) >= BRIDGE_SUG_SEC:
+                self._sug_at = now
+                try:
+                    changed |= self.bridge_suggestions(self.cloud.suggestions())
+                except Exception as e:
+                    if "429" in str(e):
+                        raise
+        except Exception as e:
+            if "429" in str(e):
+                self._bridge_backoff = now + DASH_READ_BACKOFF_SEC
+                log(f"[경고] 웹페이지 읽기 한도 초과(429) → 승인·요청 확인을 {DASH_READ_BACKOFF_SEC // 60}분 쉼 (매매는 계속)")
+            elif not getattr(self, "_bridge_warned", False):
+                self._bridge_warned = True
+                log(f"[경고] 승인·요청함 확인 실패 (매매는 계속): {str(e)[:120]}")
+            return
+        self._bridge_warned = False
+        if changed:
+            save_state(st)
+            self.upload(force=True)
+
+    def bridge_inbox(self, items):
+        st = self.state
+        seen, reqs, dec = st.setdefault("inboxSeen", []), st.setdefault("userRequests", []), st.setdefault("aiDecisions", {})
+        changed = False
+        fresh = st.pop("bridgeFresh", False)
+        for iid, it in sorted(items.items(), key=lambda x: self._num(x[1].get("at"))):
+            if iid in seen:
+                continue
+            seen.append(iid)
+            changed = True
+            at = int(self._num(it.get("at")) or time.time() * 1000)
+            if fresh and time.time() * 1000 - at > 6 * 3600 * 1000:
+                continue                                          # 넘겨받은 목록 없이 처음 볼 때: 6시간 넘은 항목은 예전에 처리된 것으로 봄
+            kind = it.get("kind")
+            if kind == "request":
+                rid = "req-" + iid[-12:]
+                if not any(r.get("id") == rid for r in reqs):
+                    reqs.append({"id": rid, "text": str(it.get("text", ""))[:600], "at": at})
+                    log(f"[연결] 요청 접수: {str(it.get('text', ''))[:60]} → 다음 AI 점검에서 검토")
+            elif kind in ("approve", "reject") and str(it.get("target") or "").startswith("ai-"):
+                dec[str(it["target"])] = {"decision": kind, "at": at}
+                log(f"[연결] 개선안 {it['target']} {'승인' if kind == 'approve' else '거절'} 기록 → 다음 AI 점검 때 반영")
+        if changed:
+            del seen[:-300]
+            del reqs[:-40]
+        return changed
+
+    def bridge_suggestions(self, items):
+        st = self.state
+        seen, reqs = st.setdefault("sugSeen", []), st.setdefault("userRequests", [])
+        new = 0
+        for it in sorted(items, key=lambda x: self._num(x.get("at"))):
+            sid = str(it.get("_id") or "")
+            if not sid or sid in seen:
+                continue
+            seen.append(sid)
+            text, who = str(it.get("text", ""))[:600], str(it.get("nick") or "친구")[:20]
+            rid = "sug-" + sid[-16:]
+            if not any(r.get("id") == rid for r in reqs):
+                reqs.append({"id": rid, "text": text, "at": int(self._num(it.get("at")) or time.time() * 1000),
+                             "from": who, "friend": True})
+                new += 1
+                log(f"[연결] 친구 제안 접수({who}): {text[:60]} → 다음 AI 점검에서 검토")
+        if new or len(seen) > 500:
+            del seen[:-500]
+            del reqs[:-40]
+        return bool(new)
 
     def check_exchange(self, force=False):
         """실보유가 거래소에서 이미 정리됐는지(보호 손절 체결·직접 정리) 1분마다 확인. 두 번 연속 없을 때만 정리로 봄"""
@@ -2262,6 +2581,8 @@ class Engine:
             hit_tp = price >= p["tp"] if long_ else price <= p["tp"]
             hit_sl = price <= p["sl"] if long_ else price >= p["sl"]
             reason = "익절" if hit_tp else ("손절" if hit_sl else ("보유시간 초과" if time.time() >= p["deadline"] else None))
+            if reason == "손절" and p.get("beMoved"):
+                reason = "본전 정리"                              # 본전 위로 올린 손절에 걸림 — 손절 관찰(넘침·재진입)에 섞이지 않게 따로 부름
             if not reason and DEEP_CUT_LIVE and p.get("live") and p.get("dcPct") is not None:
                 # 설정 BINANCE_DEEP_CUT=on: 손절폭 4%↑ 실주문이 순손익 -2.5% 이하로 빠지면 끝까지 기다리지 않고 정리
                 # (사유에 '손절'을 넣지 않음 → 손절 넘침·재진입 관찰에 섞이지 않게)
@@ -2385,7 +2706,9 @@ class Engine:
                 pct = round((g - 2 * FEE - SLIP) * 100, 2)
             pos.append({"symbol": sym, "side": p["side"], "live": bool(p.get("live")), "entry": p["entry"], "tp": p["tp"], "sl": p["sl"], "price": cur,
                         "pnlPct": pct, "at": p["at"], "deadline": p["deadline"] * 1000, "desc": p["desc"],
-                        "stopPx": p.get("stopPx"), "p": p.get("p"), "fundPct": p.get("fundPct")})
+                        "stopPx": p.get("stopPx"), "p": p.get("p"), "fundPct": p.get("fundPct"),
+                        "usdt": round(float(p.get("usdt") or 0), 2), "maxFav": round(p.get("maxFav", 0.0), 2),
+                        "beMoved": bool(p.get("beMoved"))})
         g, evo, now = self.state["guard"], self.state["evo"], time.time()
         ll = self.live_day()
         rest = max(g.get("restUntil", 0), g.get("blockUntil", 0))
@@ -2395,6 +2718,7 @@ class Engine:
                  "restWhy": (g.get("blockWhy") if g.get("blockUntil", 0) > now else f"연속 {LOSS_STREAK_MAX}번 손실") if rest > now else "",
                  "restKind": ("block" if g.get("blockUntil", 0) > now else "streak") if rest > now else "",
                  "restStart": g.get("restStart", 0),
+                 "paused": bool(g.get("paused")), "pausedAt": g.get("pausedAt", 0),
                  "armed": sum(1 for q in self.state["positions"].values() if q.get("live") and q.get("stopId")),
                  "liveOpen": sum(1 for q in self.state["positions"].values() if q.get("live")),
                  "sizeRange": [round(self.order_usdt * SIZE_MIN_X * 0.5, 1), round(self.order_usdt * SIZE_MAX_X, 1)],
@@ -2478,7 +2802,26 @@ class Engine:
             "positions": pos, "recent": self.state["tradeLog"][-15:], "activity": ACT[-30:],
             "exchange": self.exchange_view(),
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),
+            "exposure": self.exposure_view(),
+            "cmd": self.state.get("cmd") or {}, "cmdLog": (self.state.get("cmdLog") or [])[-8:],
+            "cmdPollSec": CMD_POLL_SEC, "cmdMaxAgeSec": CMD_MAX_AGE_SEC,
+            "bridge": bool(self.bridge_on() and self.state.get("bridgeInit")),
+            "aiDecisions": dict(sorted((self.state.get("aiDecisions") or {}).items(), key=lambda x: x[1].get("at", 0))[-40:]),
+            "userRequests": (self.state.get("userRequests") or [])[-40:],
+            "role": self.cfg.get("ROLE", "owner"),
         }
+
+    def exposure_view(self):
+        """지금 실보유가 어느 방향으로 얼마나 쏠려 있는지(진입 금액 기준 USDT) — 대시보드 표시용"""
+        out = {"long": 0.0, "short": 0.0, "nLong": 0, "nShort": 0}
+        for p in self.state["positions"].values():
+            if not p.get("live"):
+                continue
+            out[p["side"]] += float(p.get("usdt") or 0)
+            out["nLong" if p["side"] == "long" else "nShort"] += 1
+        out["long"], out["short"] = round(out["long"], 1), round(out["short"], 1)
+        out["net"] = round(out["long"] - out["short"], 1)
+        return out
 
     def slip_view(self):
         st = self.state.get("liveSlip") or {}
@@ -2580,10 +2923,44 @@ class Engine:
                 rep = dict(data)
                 rep["tradeLog"] = self.state["tradeLog"]
                 rep["ruleBook"] = list(self.state["ruleBook"].values())[-80:]
-                with open(os.path.join(cb.REPORT_DIR, "binance_report.json"), "w", encoding="utf-8") as f:
+                rep["savedAt"] = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+                rep["aiDecisions"] = self.state.get("aiDecisions") or {}        # 화면용은 최근 40건, 보고서에는 전부
+                tmp = os.path.join(cb.REPORT_DIR, "binance_report.json.tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(rep, f, ensure_ascii=False, indent=1)
+                os.replace(tmp, os.path.join(cb.REPORT_DIR, "binance_report.json"))
+                self.bridge_report()
             except Exception:
                 pass
+
+    def bridge_report(self):
+        """업비트 봇이 종료돼 report.json 이 멈춰 있으면, AI 점검이 예전 위치에서도 승인·요청을 읽을 수 있게 같은 이름으로 적어 둠.
+        업비트 봇이 살아서 그 파일을 쓰고 있으면(10분 안에 바뀜) 건드리지 않음. 업비트 마지막 보고서는 upbit_last_report.json 으로 보관"""
+        if not (self.bridge_on() and self.state.get("bridgeInit")):
+            return
+        path = os.path.join(cb.REPORT_DIR, "report.json")
+        mine = False
+        if os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    mine = bool(json.load(f).get("upbitRetired"))
+            except Exception:
+                mine = False
+            if not mine:
+                if time.time() - os.path.getmtime(path) < BRIDGE_STALE_SEC:
+                    return                                        # 업비트 봇이 아직 쓰는 중
+                keep = os.path.join(cb.REPORT_DIR, "upbit_last_report.json")
+                if not os.path.exists(keep):
+                    os.replace(path, keep)
+        stub = {"upbitRetired": True, "botState": "retired", "upbitMode": "off",
+                "message": "업비트 자동매매 종료(2026-11-23) · 승인·요청 장부는 바이낸스 엔진이 기록 (binance_report.json 에도 같은 내용)",
+                "savedAt": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"), "updatedAt": int(time.time() * 1000),
+                "aiDecisions": self.state.get("aiDecisions") or {}, "userRequests": (self.state.get("userRequests") or [])[-40:],
+                "proposals": [], "positions": [], "tradeLog": []}
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(stub, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
 
     def run(self):
         uid = self.cloud.connect()
@@ -2627,14 +3004,21 @@ class Engine:
                 except Exception as e:
                     log(f"[안내] 펀딩비 기록 건너뜀: {type(e).__name__}: {str(e)[:80]}")
                 self.check_exchange()
+                self.check_commands()
                 self.check_resume()
                 self.check_test_order()
                 self.scan()
                 self.upload()
+                self.bridge_poll()
             except Exception as e:
                 log(f"[경고] {type(e).__name__}: {e}")
                 time.sleep(20)
-            time.sleep(20)
+            for _ in range(max(1, 20 // CMD_POLL_SEC)):         # 쉬는 20초 사이에도 대응 명령은 10초마다 확인
+                time.sleep(CMD_POLL_SEC)
+                try:
+                    self.check_commands()
+                except Exception as e:
+                    log(f"[경고] 대응 명령 처리 오류: {type(e).__name__}: {str(e)[:120]}")
 
 
 CB_UPDATE_URL = UPDATE_URL.replace("binance_bot.py", "chamdom_bot.py")
@@ -2645,8 +3029,46 @@ CB_NEEDS = ("load_config", "Cloud", "settings_view", "sync_app_settings", "disab
 def standalone():
     """바이낸스 전용 폴더(업비트 봇 start_bot.bat 이 없는 폴더, 예: 지인 PC C:\\chamdom_binance)인지.
     전용 폴더에서는 아무도 chamdom_bot.py 를 실행하지 않으므로 바이낸스 엔진이 그 공용 파일도 최신(main)으로 맞춤.
-    업비트 봇과 같은 폴더(성민님 PC)에서는 업비트 봇이 직접 갱신하므로 건드리지 않음"""
+    업비트 봇과 같은 폴더에서 업비트 봇이 돌고 있으면 그 봇이 직접 갱신하므로 건드리지 않음"""
     return not os.path.exists(os.path.join(HERE, "start_bot.bat"))
+
+
+UPBIT_QUIET_MIN = 30
+_OWNER = None
+
+
+def owner_pc():
+    """운영자(ROLE=owner) PC 인지 — 설정을 못 읽으면 False(= 기존 동작 그대로)"""
+    global _OWNER
+    if _OWNER is None:
+        try:
+            _OWNER = cb.load_config().get("ROLE", "owner") == "owner"
+        except BaseException:
+            _OWNER = False
+    return _OWNER
+
+
+def upbit_quiet():
+    """같은 폴더의 업비트 봇이 조용한지(기록·장부 파일이 30분 넘게 그대로). 11-23 운영자 업비트 종료 뒤에는 그 봇이 꺼져 있거나
+    종료 대기라 아무도 공용 파일(chamdom_bot.py)을 최신으로 맞추지 않음 → 운영자 PC에서 조용하면 바이낸스 엔진이 대신 받음.
+    업비트 봇이 살아 움직이는 동안(예전 코드로 거래 중)에는 건드리지 않음 — 그 봇이 스스로 새 버전을 받아야 종료 대기로 넘어감"""
+    newest = 0.0
+    for name in ("bot.log", "bot_state.json"):
+        try:
+            newest = max(newest, os.path.getmtime(os.path.join(HERE, name)))
+        except OSError:
+            pass
+    return time.time() - newest > UPBIT_QUIET_MIN * 60
+
+
+def cb_mtime():
+    try:
+        return os.path.getmtime(os.path.join(HERE, "chamdom_bot.py"))
+    except OSError:
+        return 0.0
+
+
+CB_MTIME = cb_mtime()                   # 시작할 때 읽어 들인 공용 파일 시각 — 그 뒤 파일이 바뀌면 다시 시작해서 새 내용을 씀
 
 
 def _update_file(url, path, marker, name):
@@ -2672,16 +3094,18 @@ def _update_file(url, path, marker, name):
 
 def check_update():
     changed = _update_file(UPDATE_URL, os.path.abspath(__file__), "바이낸스 선물 엔진", "binance_bot.py")
-    if standalone():
+    if standalone() or (owner_pc() and upbit_quiet()):
         changed = _update_file(CB_UPDATE_URL, os.path.join(HERE, "chamdom_bot.py"), "def load_config", "chamdom_bot.py") or changed
+    if not changed and cb_mtime() != CB_MTIME:                  # 업비트 봇 쪽에서 공용 파일을 새로 받았으면 엔진도 다시 시작해 맞춤
+        changed = True
     return changed
 
 
 if __name__ == "__main__":
     missing = [n for n in CB_NEEDS if not hasattr(cb, n)]
     if missing:                                         # 공용 파일(chamdom_bot.py)이 옛 버전 — 예: 지인용 업비트 봇(stable) 폴더에 넣은 경우
-        if standalone() and check_update():
-            print("공용 파일(chamdom_bot.py)을 최신으로 받았습니다. 다시 시작합니다.")
+        if check_update():                              # 전용 폴더이거나, 운영자 PC에서 업비트 봇이 조용하면 공용 파일도 받음
+            print("새 파일을 받았습니다. 다시 시작합니다.")
             sys.exit(RESTART_CODE)
         print("[설치 위치 확인 필요] 이 폴더의 chamdom_bot.py 가 옛 버전이라 바이낸스 엔진을 시작할 수 없습니다.\n"
               "  → 업비트 봇 폴더가 아니라 별도 폴더(예: C:\\chamdom_binance)에 바이낸스 설치 파일을 풀어서 실행하세요.\n"
