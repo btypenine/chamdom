@@ -111,6 +111,16 @@
     "https://crypto.news/bitcoin-price-pi-network-vvv-weekend-recovery/"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-23T12:33:00+09:00",
+   "btcMove": "+2.0% (60분 저점 대비, 11:43 120분 -1.18% 바닥 후 반등, 30분 +1.41%, 24시간 +3.48%)",
+   "summary": "사실: 11:43~12:01 BTC 하락 추세 감지 후 12:10~12:25 BTC·알트 30여 종목이 60분 저점 대비 +2% 이상 동반 반등. 원인 뉴스는 검색으로 확인 못 함(추정: 11월 급락 뒤 기술적 반등·숏 정리). 바이낸스 실주문은 숏 8개 보유 중이라 반대 방향.",
+   "sources": [
+    "https://www.kucoin.com/news/articles/crypto-daily-market-report-november-23-2026",
+    "https://cryptonews.net/news/analytics/33792714/"
+   ],
+   "confirmed": false
   }
  ]
 }
