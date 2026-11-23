@@ -121,6 +121,16 @@
     "https://cryptonews.net/news/analytics/33792714/"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-23T23:33:00+09:00",
+   "btcMove": "BTC 2시간 +4.74%(30분 +0.63%), 바이낸스 엔진 국면 '횡보'→'상승'(24h +5.99%)",
+   "summary": "사실: 22:56~23:27 BTC 급등으로 바이낸스 실주문 숏 7건 손절(-20.07 USDT), 모의 숏도 연쇄 손절. 원인: 이 시각 직접 원인 기사 미확인. 맥락(추정): 11/22 2년 저점(약 6.2만 달러) 뒤 반등 연장·미 주가지수 선물 회복, 숏 몰림 상태에서의 숏 청산 연쇄 가능성.",
+   "sources": [
+    "https://www.coindesk.com/markets/2026/11/23/bitcoin-rebounds-from-2-year-low-as-wall-street-futures-recover",
+    "https://fortune.com/article/price-of-bitcoin-11-23-2026/"
+   ],
+   "confirmed": false
   }
  ]
 }
