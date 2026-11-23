@@ -530,6 +530,7 @@ class Engine:
         self.cfg = cb.load_config()
         self.cloud = cb.Cloud(self.cfg["FIREBASE_LINK_CODE"])
         self.state = load_state()
+        self.slipsym_seed()                                                        # 관찰 전용: 미끄러운 종목 기록 준비
         self.rng = random.Random()
         self.last_status = 0
         c = self.cfg
@@ -856,6 +857,9 @@ class Engine:
             d["sumOver"] = round(d["sumOver"] + over, 4)
             d["worst"] = round(min(d["worst"], over), 3)
             d["sumUsdt"] = round(d["sumUsdt"] + float(p.get("usdt") or 0) * over / 100, 4)   # 넘친 만큼의 USDT
+            if who == "exchange":                      # 종목별 '거래소 보호 손절 최악 넘침' 기억 (미끄러운 종목 관찰용)
+                ss = self.state.setdefault("slipSym", {})
+                ss[sym] = round(min(float(ss.get(sym, 0.0)), over), 3)
             rec = self.state.setdefault("stopGapRecent", [])
             rec.append({"t": datetime.now(KST).strftime("%m-%d %H:%M"), "symbol": sym, "side": p["side"],
                         "who": who, "sl": round(-sl_pct, 2), "pct": round(pct, 3), "over": round(over, 3)})
@@ -868,6 +872,60 @@ class Engine:
         rows = [{"who": k, "n": v["n"], "avgOver": round(v["sumOver"] / v["n"], 3), "worst": v["worst"],
                  "usdt": round(v["sumUsdt"], 2)} for k, v in ((k, st.get(k)) for k in ("bot", "exchange")) if v and v.get("n")]
         return {"rows": rows, "buffer": EXCHANGE_STOP_BUFFER, "recent": (self.state.get("stopGapRecent") or [])[-5:]}
+
+    # --- 미끄러운 종목 관찰: 예전에 거래소 보호 손절이 규칙보다 크게 넘쳐 나간 종목 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
+    SLIPSYM_HI = 1.0                                     # 그 종목 거래소 보호 손절 넘침 최악이 이만큼(%p) 이상이면 '미끄러운 종목'
+
+    def slipsym_seed(self):
+        """처음 한 번: 이 기능 전에 쌓인 최근 손절 넘침 기록(stopGapRecent)에서 종목별 최악 넘침을 채움"""
+        try:
+            if "slipSym" in self.state:
+                return
+            ss = self.state.setdefault("slipSym", {})
+            for r in self.state.get("stopGapRecent") or []:
+                if r.get("who") == "exchange" and r.get("symbol"):
+                    ss[r["symbol"]] = round(min(float(ss.get(r["symbol"], 0.0)), float(r.get("over") or 0)), 3)
+        except Exception as e:
+            log(f"[안내] 미끄러운 종목 기록 준비 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def slipsym_mark(self, sym):
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or "slipSym" in p:
+                return
+            w = float((self.state.get("slipSym") or {}).get(sym, 0.0))
+            p["slipSym"] = round(w, 3)
+            if -w >= self.SLIPSYM_HI:
+                log(f"[미끄러짐 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} 진입 · "
+                    f"이 종목은 예전에 거래소 보호 손절이 규칙보다 {abs(w)}%p 더 밀려 나간 적 있음 → '미끄러운 종목' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 미끄러운 종목 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def slipsym_record(self, kind, p, pct):
+        try:
+            if "slipSym" not in p:                        # 이 기능 전에 연 포지션은 건너뜀
+                return
+            k = f"{kind}|{'slip' if -float(p['slipSym']) >= self.SLIPSYM_HI else 'normal'}|{p['side']}"
+            d = self.state.setdefault("slipSymStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["worst"] = round(min(d["worst"], pct), 3)
+        except Exception as e:
+            log(f"[안내] 미끄러운 종목 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def slipsym_view(self):
+        try:
+            rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None, "worst": v.get("worst")}
+                    for k, v in sorted((self.state.get("slipSymStats") or {}).items())]
+            ss = self.state.get("slipSym") or {}
+            syms = sorted([(s, w) for s, w in ss.items() if -float(w) >= self.SLIPSYM_HI], key=lambda x: x[1])[:6]
+            op = sum(1 for q in self.state["positions"].values() if "slipSym" in q and -float(q["slipSym"]) >= self.SLIPSYM_HI)
+            return {"hi": self.SLIPSYM_HI, "rows": rows, "open": op,
+                    "symbols": [{"symbol": s, "worst": w} for s, w in syms]}
+        except Exception:
+            return None
 
     def payoff_view(self):
         """관찰 전용: 최근 청산(tradeLog 최대 100건)의 손익비와 손익분기 승률. 읽기만 함 — 매매·판정·주문에는 전혀 안 씀"""
@@ -1577,6 +1635,54 @@ class Engine:
         except Exception:
             return None
 
+    # --- 종목 자체 24시간 역방향 큰 움직임 관찰 (진입·청산·금액·실주문 판단에는 전혀 안 씀) ---
+    COINRUN_HI = 8.0                                     # 진입 때 그 종목 최근 24시간이 내 방향과 이만큼(%) 이상 반대로 움직였으면 '역주행'(예: +8% 급등 중 숏)
+
+    def coinrun_mark(self, sym, cl):
+        """관찰 전용: 진입 직전 그 종목 15분봉 96개(24시간) 변화율을 포지션에 표시. 숏은 상승, 롱은 하락이 '역주행'"""
+        try:
+            p = self.state["positions"].get(sym)
+            if p is None or "run24" in p or not cl or len(cl) < 97:
+                return
+            a, b = float(cl[-97]["trade_price"]), float(cl[-1]["trade_price"])
+            if a <= 0:
+                return
+            ch = round((b / a - 1) * 100, 2)
+            p["run24"] = ch
+            against = ch if p["side"] == "short" else -ch
+            if against >= self.COINRUN_HI:
+                log(f"[역주행 관찰] {sym} {'롱' if p['side'] == 'long' else '숏'}{' 실주문' if p.get('live') else ''} 진입 · "
+                    f"이 종목 24시간 {'+' if ch > 0 else ''}{ch}% (내 방향과 반대 {self.COINRUN_HI}% 이상) → '역주행 진입' 표시 (관찰만, 매매는 그대로)")
+        except Exception as e:
+            log(f"[안내] 역주행 관찰 표시 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def coinrun_record(self, kind, p, pct):
+        try:
+            if "run24" not in p:                          # 이 기능 전에 연 포지션은 건너뜀
+                return
+            against = p["run24"] if p["side"] == "short" else -p["run24"]
+            k = f"{kind}|{'against' if against >= self.COINRUN_HI else 'normal'}|{p['side']}"
+            d = self.state.setdefault("coinRunStats", {}).setdefault(k, {"n": 0, "wins": 0, "sumPct": 0.0, "worst": 0.0})
+            d["n"] += 1
+            d["wins"] += 1 if pct > 0 else 0
+            d["sumPct"] = round(d["sumPct"] + pct, 4)
+            d["worst"] = round(min(d["worst"], pct), 3)
+        except Exception as e:
+            log(f"[안내] 역주행 관찰 집계 실패(매매엔 영향 없음): {str(e)[:120]}")
+
+    def coinrun_view(self):
+        try:
+            rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
+                     "avgPct": round(v["sumPct"] / v["n"], 3) if v["n"] else None, "worst": v.get("worst")}
+                    for k, v in sorted((self.state.get("coinRunStats") or {}).items())]
+            op = 0
+            for q in self.state["positions"].values():
+                if "run24" in q and (q["run24"] if q.get("side") == "short" else -q["run24"]) >= self.COINRUN_HI:
+                    op += 1
+            return {"hi": self.COINRUN_HI, "rows": rows, "open": op}
+        except Exception:
+            return None
+
     def reentry_view(self):
         try:
             rows = [{"kind": k.split("|")[0], "flag": k.split("|")[1], "side": k.split("|")[2], "n": v["n"], "wins": v["wins"],
@@ -1631,6 +1737,8 @@ class Engine:
                 self.reentry_mark(sym)
                 self.crowd_mark(sym)
                 self.btcflow_mark(sym)
+                self.coinrun_mark(sym, cl)
+                self.slipsym_mark(sym)
                 continue
             if n_paper() < self.max_open:
                 self.open_paper(sym, strat, px)
@@ -1641,6 +1749,8 @@ class Engine:
                 self.reentry_mark(sym)
                 self.crowd_mark(sym)
                 self.btcflow_mark(sym)
+                self.coinrun_mark(sym, cl)
+                self.slipsym_mark(sym)
                 self.skip_mark(sym)
         save_state(st)
 
@@ -1868,6 +1978,8 @@ class Engine:
         self.reentry_record("live", sym, p, pct, reason)
         self.crowd_record("live", p, pct)
         self.btcflow_record("live", p, pct)
+        self.coinrun_record("live", p, pct)
+        self.slipsym_record("live", p, pct)
         self.asym_record("live", p, pct)
         self.p_calib_record(p, pct, usdt)
         self.stop_gap_record(sym, p, pct, reason)
@@ -2188,6 +2300,8 @@ class Engine:
         self.reentry_record("paper", sym, p, pct, reason)
         self.crowd_record("paper", p, pct)
         self.btcflow_record("paper", p, pct)
+        self.coinrun_record("paper", p, pct)
+        self.slipsym_record("paper", p, pct)
         self.asym_record("paper", p, pct)
         self.skip_record(p, pct)
         if reason == "익절":
@@ -2229,6 +2343,31 @@ class Engine:
         self.refresh_pool()
 
     # --- 대시보드·보고서 ---
+    def stop_risk(self, px):
+        """보고용(매매엔 안 씀): 지금 실보유가 모두 보호 손절에 걸리면 얼마를 잃는지, 오늘 손실 한도 안에 드는지.
+        손절가는 거래소 보호 손절(stopPx)이 있으면 그것, 없으면 봇 손절가. 수수료·밀림 가정 포함"""
+        try:
+            rows, all_stop, now_usdt, same = [], 0.0, 0.0, {"long": 0, "short": 0}
+            for sym, p in self.state["positions"].items():
+                if not p.get("live"):
+                    continue
+                usdt, e, sl = float(p.get("usdt") or 0), float(p["entry"]), float(p.get("stopPx") or p["sl"])
+                lose = lambda x: ((x / e - 1) if p["side"] == "long" else (e / x - 1)) - 2 * FEE - SLIP
+                at_stop = usdt * lose(sl)
+                all_stop += at_stop
+                same[p["side"]] += 1
+                cur = px.get(sym)
+                if cur:
+                    now_usdt += usdt * lose(cur)
+                rows.append({"symbol": sym, "side": p["side"], "usdt": round(usdt, 1), "atStop": round(at_stop, 2)})
+            ll = self.live_day()
+            left = self.daily_loss + ll["dayPnl"]
+            return {"n": len(rows), "allStop": round(all_stop, 2), "nowUsdt": round(now_usdt, 2), "dayLeft": round(left, 2),
+                    "fits": (left + all_stop) > 0, "long": same["long"], "short": same["short"],
+                    "rows": sorted(rows, key=lambda r: r["atStop"])[:10]}
+        except Exception:
+            return None
+
     def view(self):
         lg = self.state["ledger"]
         n = lg["trades"]
@@ -2259,7 +2398,8 @@ class Engine:
                  "armed": sum(1 for q in self.state["positions"].values() if q.get("live") and q.get("stopId")),
                  "liveOpen": sum(1 for q in self.state["positions"].values() if q.get("live")),
                  "sizeRange": [round(self.order_usdt * SIZE_MIN_X * 0.5, 1), round(self.order_usdt * SIZE_MAX_X, 1)],
-                 "bankX": round(min(2.0, max(0.5, 1 + ll["pnlUsdt"] / (self.order_usdt * BANK_X))), 2)}
+                 "bankX": round(min(2.0, max(0.5, 1 + ll["pnlUsdt"] / (self.order_usdt * BANK_X))), 2),
+                 "stopRisk": self.stop_risk(px)}
         avg_of = lambda d: round(d["sumPct"] / d["n"], 3) if d["n"] else None
         evo_view = {"share": evo["share"], "pool": len(self.state["genePool"]), "maxGen": evo["maxGen"], "born": evo["born"],
                     "evoN": evo["evo"]["n"], "evoAvg": avg_of(evo["evo"]), "randN": evo["rand"]["n"], "randAvg": avg_of(evo["rand"]),
@@ -2285,6 +2425,8 @@ class Engine:
             "reentry": self.reentry_view(),
             "crowd": self.crowd_view(),
             "btcFlow": self.btcflow_view(),
+            "coinRun": self.coinrun_view(),
+            "slipSym": self.slipsym_view(),
             "asym": self.asym_view(),
             "skipOut": self.skip_view(),
             "pCalib": self.p_calib_view(),
