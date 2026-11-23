@@ -59,37 +59,45 @@ button:disabled { opacity: .45; cursor: default; }
 .deck[data-state="warn"] { border-bottom-color: var(--warn); }
 .deck[data-state="stop"] { border-bottom-color: var(--stop); }
 .deck-in { max-width: 1120px; margin: 0 auto; padding: 10px max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px)); display: grid; gap: 8px; }
-.deck-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.deck-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
 .mark { width: 30px; height: 30px; border-radius: 9px; background: var(--brand); display: grid; place-items: center; flex: none; }
 .mark svg { width: 19px; height: 19px; fill: #fff; }
-.brand-name { font-weight: 800; font-size: 16px; letter-spacing: -0.01em; white-space: nowrap; }
-.state { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.brand-name { display: none; font-weight: 800; font-size: 16px; letter-spacing: -0.01em; white-space: nowrap; }
+/* 상태 단어는 늘 다 보임. 자리가 모자라면 뒤 설명만 줄임표로 줄고, 그래도 모자라면 버튼이 아랫줄로 내려감 */
+.state { display: flex; align-items: center; gap: 8px; min-width: min-content; flex: 1 1 0; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--deck-muted); flex: none; }
 .deck[data-state="ok"] .dot { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 28%, transparent); }
 .deck[data-state="warn"] .dot { background: var(--warn); }
 .deck[data-state="stop"] .dot { background: var(--stop); }
-.state b { font-size: 15px; font-weight: 750; white-space: nowrap; }
-.state span { font-size: 12.5px; color: var(--deck-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.deck-btns { display: flex; align-items: center; gap: 6px; flex: none; }
+.state b { font-size: 15px; font-weight: 750; white-space: nowrap; flex: none; }
+#stSub { font-size: 12.5px; color: var(--deck-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; width: 0; flex: 1 1 0; }
+.deck-btns { display: flex; align-items: center; gap: 6px; flex: none; margin-left: auto; }
 .deck-btns button { min-height: 34px; padding: 5px 11px; font-size: 13px; border-radius: 99px; background: transparent; color: var(--deck-fg); border-color: var(--deck-line); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
 .deck-btns button svg { width: 16px; height: 16px; fill: currentColor; }
+.deck-btns .lbl { display: none; }
 .deck-btns .appr-btn { background: var(--warn); border-color: var(--warn); color: #fff; font-weight: 750; }
 .deck-btns .appr-btn b { background: #fff; color: var(--warn); border-radius: 99px; min-width: 18px; padding: 0 5px; font-size: 12px; line-height: 18px; text-align: center; }
 .deck-nums { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; align-items: end; }
 .dn { display: flex; flex-direction: column; min-width: 0; }
 .dn .k { font-size: 12px; color: var(--deck-muted); }
-.dn .v { font-size: 25px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; white-space: nowrap; }
-.dn .v small { font-size: 13px; font-weight: 600; color: var(--deck-muted); letter-spacing: 0; margin-left: 4px; }
+.dn .v { font-size: 25px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; white-space: nowrap; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 4px; }   /* 숫자가 길면 단위·비율만 아랫줄로 */
+.dn .v small { font-size: 13px; font-weight: 600; color: var(--deck-muted); letter-spacing: 0; }
 .deck .up { color: #ff7b7b; } .deck .down { color: #7fb0ff; }
 .dn.minor { display: none; }
-@media (max-width: 420px) { .brand-name { display: none; } .dn .v { font-size: 22px; } .deck-btns .lbl { display: none; } }
-@media (min-width: 760px) {
-  .deck-in { grid-template-columns: auto auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px 14px; padding-block: 12px; }
-  .deck-top { display: contents; }
-  .deck-nums { order: 1; grid-template-columns: repeat(4, auto); gap: 4px 28px; margin-right: 14px; }
-  .deck-btns { order: 2; }
+@media (max-width: 420px) { .dn .v { font-size: 22px; } }
+@media (min-width: 480px) { .deck-btns .lbl { display: inline; } }
+@media (min-width: 600px) {   /* 미실현·이번 달은 넓은 화면에서만 */
+  .brand-name { display: inline; }
+  .deck-nums { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .dn.minor { display: flex; }
   .dn.minor .v { font-size: 19px; }
+}
+@media (min-width: 1040px) {   /* 한 줄 계기판. 숫자가 아주 길어 한 줄에 안 들어가면 뒤쪽부터 아랫줄로 내려감(겹치거나 잘리지 않음) */
+  .deck-in { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding-block: 12px; }
+  .deck-top { display: contents; }
+  .deck-nums { order: 1; display: flex; align-items: flex-end; gap: 4px 28px; margin-right: 14px; flex: none; }
+  .dn { min-width: max-content; }
+  .deck-btns { order: 2; }
 }
 
 /* ---------- 본문 ---------- */
@@ -152,19 +160,22 @@ button:disabled { opacity: .45; cursor: default; }
 
 /* 포지션 */
 .plist { display: flex; flex-direction: column; }
-.p { display: grid; gap: 7px; padding-block: 12px; border-top: 1px solid var(--line); }
+.p { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding-block: 12px; border-top: 1px solid var(--line); }
 .p:first-child { border-top: none; padding-top: 0; }
-.p-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.p-name { display: flex; align-items: center; gap: 7px; min-width: 0; font-weight: 750; font-size: 16px; }
+/* 좁은 화면·긴 종목 이름: 넘치지 않고 손익이 다음 줄 오른쪽으로 내려감 */
+.p-top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 10px; }
+.p-name { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; min-width: 0; font-weight: 750; font-size: 16px; }
 .side { font-size: 12px; font-weight: 800; padding: 1px 8px; border-radius: 6px; color: #fff; flex: none; }
 .side.long { background: var(--up); } .side.short { background: var(--down); }
 .p-name .sz { font-size: 13px; font-weight: 500; color: var(--muted); white-space: nowrap; }
-.p-pnl { text-align: right; font-weight: 800; font-size: 16px; white-space: nowrap; }
+.p-pnl { text-align: right; font-weight: 800; font-size: 16px; white-space: nowrap; margin-left: auto; }
 .p-pnl small { font-size: 12.5px; font-weight: 600; margin-left: 5px; }
 .range { position: relative; height: 10px; border-radius: 5px; background: linear-gradient(90deg, color-mix(in srgb, var(--down) 38%, transparent), var(--chip) var(--e, 50%), color-mix(in srgb, var(--up) 38%, transparent)); }
 .range .tick { position: absolute; top: -4px; width: 4px; height: 18px; border-radius: 2px; background: var(--fg); transform: translateX(-50%); }
 .range .entry { position: absolute; top: -2px; width: 2px; height: 14px; background: var(--muted); transform: translateX(-50%); opacity: .7; }
-.range-lbl { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); gap: 8px; }
+.range-lbl { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; font-size: 12px; color: var(--muted); gap: 8px; }
+.range-lbl > :first-child, .range-lbl > :last-child { white-space: nowrap; }
+.range-lbl > :nth-child(2) { text-align: center; }   /* 가격이 길면 가운데 칸만 두 줄이 됨 */
 .p-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .p-foot .sub { min-width: 0; }
 .p-foot button { min-height: 36px; padding: 5px 14px; font-size: 13.5px; flex: none; }
@@ -189,11 +200,11 @@ button:disabled { opacity: .45; cursor: default; }
 .li .r { text-align: right; white-space: nowrap; font-weight: 700; }
 .label { font-size: 12.5px; color: var(--muted); font-weight: 600; }
 table.mini { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-table.mini th { text-align: right; font-weight: 600; color: var(--muted); font-size: 12.5px; padding: 4px 0 4px 8px; }
+table.mini th { text-align: right; font-weight: 600; color: var(--muted); font-size: 12.5px; padding: 4px 0 4px 8px; white-space: nowrap; }
 table.mini th:first-child { text-align: left; padding-left: 0; }
-table.mini td { text-align: right; padding: 6px 0 6px 8px; border-top: 1px solid var(--line); white-space: nowrap; }
-table.mini td:first-child { text-align: left; padding-left: 0; font-weight: 650; }
-table.mini td small { color: var(--muted); font-size: 12px; margin-left: 3px; }
+table.mini td { text-align: right; padding: 6px 0 6px 8px; border-top: 1px solid var(--line); }   /* 좁으면 횟수만 아랫줄로 */
+table.mini td:first-child { text-align: left; padding-left: 0; font-weight: 650; white-space: nowrap; }
+table.mini td small { color: var(--muted); font-size: 12px; margin-left: 3px; white-space: nowrap; display: inline-block; }
 
 /* 엔진 */
 details.fold { border-top: 1px solid var(--line); padding-top: 10px; }
@@ -208,12 +219,12 @@ details.fold > :not(summary) { margin-top: 10px; }
 footer { font-size: 12.5px; color: var(--muted); text-align: center; display: flex; flex-wrap: wrap; gap: 4px 14px; justify-content: center; }
 
 /* 창(시트) */
-dialog.sheet { border: 1px solid var(--line); border-radius: 18px; padding: 0; background: var(--surface); color: var(--fg); width: min(560px, calc(100% - 24px)); max-height: calc(100dvh - 32px); }
+dialog.sheet { border: 1px solid var(--line); border-radius: 18px; padding: 0; background: var(--surface); color: var(--fg); width: min(560px, calc(100% - 24px)); max-width: none; max-height: var(--sheet-max, calc(100dvh - 32px)); }
 dialog.sheet::backdrop { background: rgb(5 12 20 / .55); }
-.sheet-in { padding: 18px; display: flex; flex-direction: column; gap: 12px; overflow: auto; max-height: calc(100dvh - 34px); }
+.sheet-in { padding: 18px; display: flex; flex-direction: column; gap: 12px; overflow: auto; max-height: calc(var(--sheet-max, calc(100dvh - 32px)) - 2px); }
 .sheet-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
 .sheet-head .btn-text { font-size: 15px; padding: 2px 6px; white-space: nowrap; flex: none; }
-.confirm-body { font-size: 15px; display: grid; gap: 8px; }
+.confirm-body { font-size: 15px; display: grid; gap: 8px; text-wrap: pretty; }
 .confirm-body ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
 .confirm-btns { display: grid; grid-template-columns: 1fr 1.4fr; gap: 10px; }
 .confirm-btns .do { background: var(--fg); color: var(--surface); border-color: var(--fg); }
@@ -228,6 +239,7 @@ dialog.sheet::backdrop { background: rgb(5 12 20 / .55); }
 .appr .no.armed { background: var(--stop); color: #fff; border-color: var(--stop); }
 .inp { width: 100%; font: inherit; font-size: 15px; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; resize: vertical; }
 .inp:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+@media (pointer: coarse) { .inp { font-size: 16px; } }   /* 휴대폰에서 입력 칸을 누를 때 화면이 저절로 확대되지 않게 */
 .req-compose { display: flex; gap: 8px; align-items: stretch; }
 .req-compose .inp { flex: 1; min-width: 0; min-height: 130px; max-height: 55dvh; line-height: 1.5; }
 .req-side { flex: none; width: 78px; display: flex; flex-direction: column; gap: 6px; }
@@ -241,7 +253,8 @@ dialog.sheet::backdrop { background: rgb(5 12 20 / .55); }
 .set-group { display: flex; flex-direction: column; gap: 10px; }
 .set-group + .set-group { border-top: 1px solid var(--line); padding-top: 12px; }
 .set-group > h4 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 700; }
-.set-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 132px); gap: 10px; align-items: center; }
+.set-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 150px); gap: 10px; align-items: center; }
+@media (max-width: 359px) { .set-row { grid-template-columns: minmax(0, 1fr); gap: 6px; } }   /* 아주 좁으면 입력 칸을 아랫줄로 */
 .set-row .name { font-size: 14px; font-weight: 650; }
 .set-row .hint { font-size: 12.5px; color: var(--muted); }
 .set-row select.inp, .set-row input.inp { padding: 8px 10px; min-height: 42px; }
@@ -470,7 +483,11 @@ let appSettings = null, pendingCmds = {}, unsubs = [];
 let sent = null;                         // 방금 보낸 명령 {id, type, arg, at}
 let lastAck = null;
 
-function toast(text) { const t = $("toast"); t.textContent = text; t.hidden = false; clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), 3200); }
+function toast(text) {
+  const t = $("toast"), top = [...document.querySelectorAll("dialog[open]")].sort((a, b) => (a._openedAt || 0) - (b._openedAt || 0)).pop();
+  if (t.parentNode !== (top || document.body)) (top || document.body).append(t);   // 창이 열려 있으면 그 창과 같은 층에 띄워 어둡게 가려지지 않게 함
+  t.textContent = text; t.hidden = false; clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), 3200);
+}
 const sg = (x, d = 2) => (x > 0 ? "+" : "") + Number(x || 0).toFixed(d);
 const pct = (x, d = 2) => x == null ? "-" : sg(x, d) + "%";
 const sym = (s) => String(s || "").replace("USDT", "");
@@ -759,15 +776,21 @@ function ask(type, arg = "") {
       (type === "closeAll" ? `<div>정리한 뒤 새 진입도 멈춥니다. '거래 재개'를 누를 때까지 새 실주문이 없습니다.</div>` : "") +
       `<div class="sub">되돌릴 수 없습니다. 엔진이 ${b.cmdPollSec || 10}초 안에 실행하고 결과를 여기에 알려 줍니다.</div>`;
   }
+  openConfirm({ title, html, yes, tone, run: () => sendCmd(type, arg) });
+}
+// 확인 창 하나를 같이 씀(대응 명령·시험 주문). 열리자마자 겹쳐 눌린 두 번째 누름은 실행으로 치지 않음
+const TAP_GUARD_MS = 400;
+function openConfirm({ title, html, yes, tone = "", run }) {
   $("cfTitle").textContent = title; $("cfBody").innerHTML = html;
   const y = $("cfYes"); y.textContent = yes; y.className = "do" + (tone ? " " + tone : "");
   y.onclick = async () => {
+    if (performance.now() - ($("confirmSheet")._openedAt || 0) < TAP_GUARD_MS) return;
     y.disabled = true;
-    try { await sendCmd(type, arg); $("confirmSheet").close(); }
+    try { await run(); $("confirmSheet").close(); }
     catch (e) { toast("전달 실패: " + (e.code || e.message)); }
     finally { y.disabled = false; }
   };
-  $("confirmSheet").showModal();
+  openSheet($("confirmSheet"));
 }
 $("cfNo").addEventListener("click", () => $("confirmSheet").close());
 
@@ -909,18 +932,43 @@ function renderEngine(b) {
     : to.msg ? `마지막 테스트: ${to.msg}` : `주문 연결을 확인하는 용도. 거래대금 1위 종목에 숏 ${b.liveOrderUsdt || 20} USDT · 익절 +1% · 손절 -1% · 최대 4시간`;
 }
 let testAskedAt = 0;
-$("testBtn").addEventListener("click", async () => {
+$("testBtn").addEventListener("click", () => {
   if (!auth.currentUser || !B) return;
-  if (!confirm(`실제 돈으로 주문합니다.\n거래대금 1위 종목에 숏 ${B.liveOrderUsdt || 20} USDT(레버리지 1배)로 들어가고\n익절 +1% · 손절 -1% · 최대 4시간에 자동 정리합니다.\n진행할까요?`)) return;
-  const at = Date.now(); $("testBtn").disabled = true;
-  try { await setDoc(doc(db, "users", auth.currentUser.uid, "status", "settings"), { binanceTestOrderAt: at }, { merge: true }); }
-  catch (e1) { try { await setDoc(doc(db, "users", auth.currentUser.uid), { binanceTestOrderAt: at }, { merge: true }); } catch (e2) { toast("요청 저장 실패 · 다시 눌러 주세요"); $("testBtn").disabled = false; return; } }
-  testAskedAt = at; render();
+  openConfirm({
+    title: "실제 돈으로 시험 주문할까요?", yes: "시험 주문 넣기", tone: "danger",
+    html: `<div>거래대금 1위 종목에 숏 ${B.liveOrderUsdt || 20} USDT(레버리지 1배)로 들어가고, 익절 +1% · 손절 -1% · 최대 4시간에 자동 정리합니다.</div><div class="sub">모의가 아닌 실제 주문입니다. 엔진이 받는 대로 실행합니다.</div>`,
+    run: async () => {
+      const uid = auth.currentUser.uid, at = Date.now();
+      try { await setDoc(doc(db, "users", uid, "status", "settings"), { binanceTestOrderAt: at }, { merge: true }); }
+      catch (e1) { await setDoc(doc(db, "users", uid), { binanceTestOrderAt: at }, { merge: true }); }
+      testAskedAt = at; render();
+    },
+  });
 });
 
 /* ---------- 창 공통 ---------- */
+// 창은 누른 곳 가까이에 띄움: 누른 버튼 바로 아래(자리가 모자라면 위), 화면 밖으로 나가지 않게 맞춤
+let pressRect = null;
+document.addEventListener("click", (e) => {
+  const t = e.target instanceof Element ? e.target.closest("button, summary, a") : null;
+  if (t) pressRect = t.getBoundingClientRect();        // 누른 순간의 자리(창을 닫으며 버튼이 사라져도 남음)
+}, true);
+function placeSheet(d) {
+  const s = d.style, r = d._at;
+  s.margin = s.left = s.top = s.right = s.bottom = ""; s.removeProperty("--sheet-max");
+  if (!r || (!r.width && !r.height)) return;           // 기준이 없으면 화면 가운데(기본)
+  const vw = document.documentElement.clientWidth, vh = window.innerHeight, m = 12, gap = 8;
+  const w = d.offsetWidth, h = d.offsetHeight;
+  const left = Math.max(m, Math.min(r.left + r.width / 2 - w / 2, vw - w - m));
+  const below = vh - r.bottom - gap - m, above = r.top - gap - m;
+  const top = h <= below ? r.bottom + gap : h <= above ? r.top - gap - h : Math.max(m, Math.min(r.bottom + gap, vh - h - m));
+  s.margin = "0"; s.right = s.bottom = "auto"; s.left = Math.round(left) + "px"; s.top = Math.round(top) + "px";
+  s.setProperty("--sheet-max", Math.max(200, vh - Math.round(top) - m) + "px");
+}
+function openSheet(d) { d._at = pressRect; d._openedAt = performance.now(); d.showModal(); placeSheet(d); }
+addEventListener("resize", () => document.querySelectorAll("dialog.sheet[open]").forEach(placeSheet));
 document.querySelectorAll("dialog.sheet").forEach((d) => {
-  d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
+  d.addEventListener("click", (e) => { if (e.target === d && performance.now() - (d._openedAt || 0) > TAP_GUARD_MS) d.close(); });
   d.querySelectorAll("[data-close]").forEach((x) => x.addEventListener("click", () => d.close()));
 });
 
@@ -957,7 +1005,7 @@ function renderRequests() {
     box.append(li);
   }
 }
-$("reqOpen").addEventListener("click", async () => { await loadMySugs(); renderRequests(); $("reqSheet").showModal(); setTimeout(() => $("reqText").focus(), 50); });
+$("reqOpen").addEventListener("click", async () => { await loadMySugs(); renderRequests(); openSheet($("reqSheet")); setTimeout(() => $("reqText").focus(), 50); });
 $("reqText").addEventListener("input", () => { $("reqCount").textContent = $("reqText").value.length + "/600"; });
 $("reqText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("reqSend").click(); } });
 $("reqSend").addEventListener("click", async () => {
@@ -1011,7 +1059,7 @@ function renderApprovals() {
     a.append(btns); box.append(a);
   }
 }
-$("apprTop").addEventListener("click", () => { renderApprovals(); $("apprSheet").showModal(); });
+$("apprTop").addEventListener("click", () => { renderApprovals(); openSheet($("apprSheet")); });
 loadAiProposals(); setInterval(loadAiProposals, 5 * 60 * 1000);
 
 /* ---------- 설정 (대시보드 → status/settings → 엔진이 10분마다 받아 다시 시작) ---------- */
@@ -1088,9 +1136,19 @@ function checkSettings() {
   $("setSave").textContent = changed.length ? `저장 (${changed.length}개 변경)` : "저장";
 }
 $("setReset").addEventListener("click", () => { setDirty = false; renderSettings(); });
-$("setSave").addEventListener("click", async () => {
+$("setSave").addEventListener("click", () => {
   const { out, bad } = readSettingsForm(); if (bad.length) return;
-  if (out.BINANCE_TRADE_MODE === "live" && (eff("BINANCE_TRADE_MODE") || {}).value !== "live" && !confirm("실제 주문으로 바꿉니다. 실제 돈으로 거래가 시작됩니다. 저장할까요?")) return;
+  if (out.BINANCE_TRADE_MODE === "live" && (eff("BINANCE_TRADE_MODE") || {}).value !== "live") {
+    openConfirm({
+      title: "실제 주문으로 바꿀까요?", yes: "실제 주문으로 저장", tone: "danger",
+      html: `<div>거래 방식을 '실제 주문'으로 바꿉니다. 저장하면 실제 돈으로 거래가 시작됩니다.</div><div class="sub">참돔 PC 엔진이 10분 안에 받아 다시 시작하며 적용합니다.</div>`,
+      run: () => saveSettings(out),
+    });
+    return;
+  }
+  saveSettings(out);
+});
+async function saveSettings(out) {
   const values = { ...(appSettings || {}), ...out };
   $("setSave").disabled = true;
   try {
@@ -1102,7 +1160,7 @@ $("setSave").addEventListener("click", async () => {
     toast("저장함 · 참돔 PC가 10분 안에 받아 다시 시작하며 적용");
     renderSettings();
   } catch (e) { toast("설정 저장 실패: " + (e.code || e.message)); checkSettings(); }
-});
+}
 function setTab(t) {
   document.querySelectorAll("#setTabs [data-tab]").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.tab === t)));
   document.querySelectorAll("#setSheet .set-tab").forEach((x) => { x.hidden = x.dataset.tab !== t; });
@@ -1110,11 +1168,11 @@ function setTab(t) {
 document.querySelectorAll("#setTabs [data-tab]").forEach((x) => x.addEventListener("click", () => setTab(x.dataset.tab)));
 $("setOpen").addEventListener("click", () => {
   const u = auth.currentUser; $("acctNick").textContent = u ? nickOf(u) : ""; $("acctMail").textContent = (u && u.email) || "";
-  renderSettings(); $("setSheet").showModal();
+  renderSettings(); openSheet($("setSheet"));
 });
 
 /* ---------- 닉네임 · PC 연결 코드 ---------- */
-$("acctNickBtn").addEventListener("click", () => { const u = auth.currentUser; if (!u) return; $("setSheet").close(); $("nickInput").value = nickOf(u); $("nickSheet").showModal(); $("nickInput").select(); });
+$("acctNickBtn").addEventListener("click", () => { const u = auth.currentUser; if (!u) return; $("setSheet").close(); $("nickInput").value = nickOf(u); openSheet($("nickSheet")); $("nickInput").select(); });
 async function saveNick(name) {
   const u = auth.currentUser; if (!u) return;
   try { if (name) localStorage.setItem("nick:" + u.uid, name); else localStorage.removeItem("nick:" + u.uid); } catch (e) {}
