@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
-"""bt-lab 실험 8: 바이낸스 선물 '포트폴리오' 걸어가며 검증 — 단기 청산·같은 방향 제한·국면 필터·BTC 헤지 비교
-배경(11-23 대표님 지시): 사람처럼 길게 보지 말고 기계답게 단기·순간 변화로 수익, 시장 흐름이 문제면 헤지.
-  11-22~23 실주문 34회 -28 USDT: 숏 31회가 BTC +4.5% 상승과 겹쳐 손절 몰림, 익절 +3% vs 손절 -5%·최대 60시간.
-  이긴 거래는 빨리 끝나고(중앙값 약 1.3시간) 진 거래는 오래 끌다(중앙값 약 9.5시간) 손절 → 청산·노출 관리가 핵심 후보.
-방법
-- 시세: 바이낸스 공개 자료실(data.binance.vision)의 USDⓈ-M 선물 15분봉 실제 기록. 안 되면 현물 API 로 대체(출처 표시)
-- 구간마다: 직전 20일(1920봉)로 종목별 전략 1개(롱·숏 중 좋은 쪽) 선정 → 다음 5일(480봉)에 그대로 적용, 5일씩 앞으로
-- 대상: 봇이 실제로 고르던 종목 + 주요 종목 중, 구간 시작 직전 24시간 거래대금 상위 40개
-- 한 계좌처럼 시간순으로 진행: 동시 보유 한도·같은 방향 제한·국면 필터·헤지·본전 손절·시간 손절을 실제 순서대로 적용
-- 비용: 수수료 0.05%x2 + 미끄러짐 0.02%x2 (봇과 같음), 헤지 조정도 같은 비용. 펀딩비는 미반영
-- 1회 50 USDT 고정, 손익은 USDT. 최대낙폭·최악의 하루는 미실현 손익 포함 봉 단위 자산 기준
+"""bt-lab 실험 9: 진짜 우위 찾기 — 지정가(메이커) 체결·모든 종목 공통 규칙·시장 중립 묶음·국면별 진입
+배경: 실험 8(실제 선물 15분봉 125일, 포트폴리오 단위)에서 지금 방식은 거래 2,651회 거래당 -0.007%(사실상 0),
+  단기 청산(본전·추적·시간 손절·짧은 손절)과 BTC 헤지는 모두 더 나빴음(헤지는 수수료만 2배). 같은 방향 최대 3만 낙폭을 절반으로 줄임.
+이번에 보는 것
+- A 지정가 체결: 진입을 신호 봉 종가 지정가(다음 1~2봉 안에 그 가격을 지나가야 체결), 익절도 지정가 → 수수료 0.02%·밀림 없음.
+  손절·시간 정리는 시장가 그대로. 못 들어간 신호(가격이 그냥 가 버림)까지 반영
+- B 공통 규칙: 종목마다 따로 고르지 않고, 40종목을 한데 모아 거래 수백 회로 검증된 규칙만 골라 모든 종목에 적용(우연히 맞은 규칙 줄이기)
+- C 시장 중립 묶음: 일정 시간마다 많이 오른 5종목 숏 + 많이 내린 5종목 롱(되돌림) 또는 그 반대(추세) — 롱·숏 금액이 같아 시장 방향과 무관
+- D 국면별 진입: BTC 24시간 기준 횡보에서만 / 추세 방향만 / 횡보 숏+추세 방향
 분석 전용 — 봇 동작에는 영향 없음
 """
 import io, json, math, os, random, sys, time, zipfile, zlib
@@ -29,6 +27,7 @@ TRAIN, STEP, WARM = (600, 200, 150) if SELFTEST else (1920, 480, 300)
 TOPN = 8 if SELFTEST else 40
 NOTIONAL = 50.0
 FEE, SLIP = bb.FEE, bb.SLIP
+FEE_M = 0.0002                    # 지정가(메이커) 수수료
 DAYS_BACK = 114
 REG_BARS, REG_UP, REG_DOWN = 96, 1.5, -1.5
 FLOW_BARS = 8
@@ -46,8 +45,6 @@ ZKCUSDT ZKPUSDT""".split()
 # 전략 모양(익절·손절·보유) 후보 묶음. base = 지금 봇 그대로
 SPACES = {
     "base": {"tp": list(cb.TP_CHOICES), "sl": list(cb.SL_CHOICES), "hold": list(cb.HOLD_CHOICES)},
-    "short": {"tp": [0.8, 1.0, 1.5, 2.0, 3.0], "sl": [-1.0, -1.5, -2.0, -3.0], "hold": [8, 16, 30]},          # 단기형: 최대 2~7.5시간, 손절 -3% 이내
-    "mid": {"tp": [1.5, 2.0, 3.0], "sl": [-1.5, -2.0, -3.0], "hold": [30, 60]},                               # 균형형: 최대 7.5~15시간, 손절 -3% 이내
 }
 
 D = {}            # sym -> {"o","h","l","c","q","ok"} (전체 시간축에 맞춘 배열)
@@ -257,34 +254,57 @@ def sel_task(args):
 
 # ---------------- 포트폴리오 진행 ----------------
 BASE_P = {"max_open": 10, "side_cap": None, "net_cap": None, "regime": False, "flow": None, "be": None, "trail": None,
-          "tstop": None, "sl_cap": None, "hold_cap": None, "hedge": None, "hedge_band": 25.0, "hedge_free": 0.0}
+          "tstop": None, "sl_cap": None, "hold_cap": None, "hedge": None, "hedge_band": 25.0, "hedge_free": 0.0,
+          "maker_entry": None, "maker_tp": False, "allow": None}
 
 
 def simulate(sel, W0, NW, P):
-    """sel[w] = [(sym, info), ...] 거래대금 순. 반환: 지표 dict"""
+    """sel[w] = [(sym, info), ...] (같은 종목이 여러 규칙으로 여러 번 나와도 됨, 종목당 포지션은 1개). 반환: 지표 dict"""
     P = {**BASE_P, **P}
     NT = len(T)
     bc = D["BTCUSDT"]["c"]
-    pos, cool, trades = {}, {}, []
+    pos, cool, trades, pend = {}, {}, [], {}
     realized = hedge_pnl = hedge_fee = 0.0
     H = 0.0
     eq = []
-    skipped = {"cap": 0, "side": 0, "net": 0, "regime": 0, "flow": 0}
+    skipped = {"cap": 0, "side": 0, "net": 0, "regime": 0, "flow": 0, "allow": 0, "nofill": 0}
     max_same = 0
-    sigsets = [{sym: set(info["sig"]) for sym, info in sel[w]} for w in range(NW)]
+    sigsets = [[set(info["sig"]) for _, info in sel[w]] for w in range(NW)]
+
+    def open_pos(sym, info, i, entry, reg, fillbar):
+        spec = info["spec"]
+        slp = spec["sl"] if P["sl_cap"] is None else max(spec["sl"], P["sl_cap"])
+        hold = spec["hold"] if P["hold_cap"] is None else min(spec["hold"], P["hold_cap"])
+        pos[sym] = {"side": info["side"], "entry": entry, "tp": cb.target_price(entry, spec["tp"]), "stop": entry * (1 + slp / 100),
+                    "j": i, "hold": hold, "maxfav": 0.0, "reg": reg, "beta": info["beta"], "moved": False, "fillbar": fillbar}
+
     for i in range(W0, NT):
         w = min((i - W0) // STEP, NW - 1)
         b24 = (bc[i - 1] / bc[i - 1 - REG_BARS] - 1) * 100
         b2 = (bc[i - 1] / bc[i - 1 - FLOW_BARS] - 1) * 100
         reg = "상승" if b24 >= REG_UP else ("하락" if b24 <= REG_DOWN else "횡보")
-        # 1) 진입 (직전 봉 신호 → 이번 봉 시가)
-        for sym, info in sel[w]:
-            if (i - 1) not in sigsets[w][sym] or sym in pos or cool.get(sym, 0) > i or not D[sym]["ok"][i]:
+        # 0) 걸어 둔 지정가 진입: 이번 봉이 그 가격을 지나가면 체결, 기한이 지나면 취소
+        for sym in list(pend):
+            o = pend[sym]
+            d = D[sym]
+            if not d["ok"][i]:
+                del pend[sym]
+                continue
+            lo = d["l"][i] if o["info"]["side"] == "long" else 1 / d["h"][i]
+            if lo < o["limit"] * (1 - 1e-4):
+                open_pos(sym, o["info"], i, o["limit"] * (1 + FEE_M), o["reg"], True)
+                del pend[sym]
+            elif i >= o["expire"]:
+                skipped["nofill"] += 1
+                del pend[sym]
+        # 1) 진입 (직전 봉 신호 → 이번 봉)
+        for k, (sym, info) in enumerate(sel[w]):
+            if (i - 1) not in sigsets[w][k] or sym in pos or sym in pend or cool.get(sym, 0) > i or not D[sym]["ok"][i]:
                 continue
             side = info["side"]
-            nl = sum(1 for p in pos.values() if p["side"] == "long")
-            ns = len(pos) - nl
-            if len(pos) >= P["max_open"]:
+            nl = sum(1 for p in pos.values() if p["side"] == "long") + sum(1 for o in pend.values() if o["info"]["side"] == "long")
+            ns = len(pos) + len(pend) - nl
+            if len(pos) + len(pend) >= P["max_open"]:
                 skipped["cap"] += 1
                 continue
             if P["side_cap"] and (nl if side == "long" else ns) >= P["side_cap"]:
@@ -296,21 +316,33 @@ def simulate(sel, W0, NW, P):
             if P["regime"] and ((reg == "상승" and side == "short") or (reg == "하락" and side == "long")):
                 skipped["regime"] += 1
                 continue
+            if P["allow"] is not None and side not in P["allow"].get(reg, ()):
+                skipped["allow"] += 1
+                continue
             if P["flow"] is not None and b2 * (1 if side == "short" else -1) >= P["flow"]:
                 skipped["flow"] += 1
                 continue
-            spec = info["spec"]
+            if P["maker_entry"]:
+                c1 = D[sym]["c"][i - 1]
+                pend[sym] = {"info": info, "limit": c1 if side == "long" else 1 / c1, "expire": i - 1 + P["maker_entry"], "reg": reg}
+                # 걸자마자 이번 봉에서 체결되는지 바로 확인
+                d = D[sym]
+                lo = d["l"][i] if side == "long" else 1 / d["h"][i]
+                if lo < pend[sym]["limit"] * (1 - 1e-4):
+                    open_pos(sym, info, i, pend[sym]["limit"] * (1 + FEE_M), reg, True)
+                    del pend[sym]
+                elif i >= pend[sym]["expire"]:
+                    skipped["nofill"] += 1
+                    del pend[sym]
+                continue
             o = D[sym]["o"][i]
             ao = o if side == "long" else 1 / o
-            entry = ao * (1 + SLIP) * (1 + FEE)
-            slp = spec["sl"] if P["sl_cap"] is None else max(spec["sl"], P["sl_cap"])
-            hold = spec["hold"] if P["hold_cap"] is None else min(spec["hold"], P["hold_cap"])
-            pos[sym] = {"side": side, "entry": entry, "tp": cb.target_price(entry, spec["tp"]), "stop": entry * (1 + slp / 100),
-                        "j": i, "hold": hold, "maxfav": 0.0, "reg": reg, "beta": info["beta"], "moved": False}
+            open_pos(sym, info, i, ao * (1 + SLIP) * (1 + FEE), reg, False)
         nl = sum(1 for p in pos.values() if p["side"] == "long")
         max_same = max(max_same, nl, len(pos) - nl)
         # 2) 청산
         unreal = 0.0
+        taker = (1 - SLIP) * (1 - FEE)
         for sym in list(pos):
             p, d = pos[sym], D[sym]
             if not d["ok"][i]:
@@ -320,16 +352,20 @@ def simulate(sel, W0, NW, P):
             else:
                 o, h, l, c = 1 / d["o"][i], 1 / d["l"][i], 1 / d["h"][i], 1 / d["c"][i]
             ex = why = None
+            cost = taker
+            first = p["fillbar"] and i == p["j"]            # 지정가로 방금 체결된 봉: 고가가 체결 전일 수 있어 익절은 다음 봉부터
             if l <= p["stop"]:
-                ex, why = (p["stop"] if o >= p["stop"] else o), ("본전·추적" if p["moved"] else "손절")
-            elif h >= p["tp"]:
+                ex, why = (p["stop"] if (o >= p["stop"] or first) else o), ("본전·추적" if p["moved"] else "손절")
+            elif not first and ((h > p["tp"] * (1 + 1e-4)) if P["maker_tp"] else (h >= p["tp"])):
                 ex, why = p["tp"], "익절"
+                if P["maker_tp"]:
+                    cost = 1 - FEE_M
             elif i - p["j"] >= p["hold"]:
                 ex, why = c, "시간"
-            elif P["tstop"] and i - p["j"] >= P["tstop"][0] and (c * (1 - SLIP) * (1 - FEE) / p["entry"] - 1) * 100 < P["tstop"][1]:
+            elif P["tstop"] and i - p["j"] >= P["tstop"][0] and (c * taker / p["entry"] - 1) * 100 < P["tstop"][1]:
                 ex, why = c, "시간손절"
             if ex is not None:
-                pct = (ex * (1 - SLIP) * (1 - FEE) / p["entry"] - 1) * 100
+                pct = (ex * cost / p["entry"] - 1) * 100
                 realized += pct / 100 * NOTIONAL
                 trades.append((i, sym, p["side"], pct, why, i - p["j"], p["reg"], w))
                 if pct < 0:
@@ -338,21 +374,21 @@ def simulate(sel, W0, NW, P):
                 continue
             p["maxfav"] = max(p["maxfav"], (h / p["entry"] - 1) * 100)
             if P["be"] and p["maxfav"] >= P["be"][0]:
-                ns_ = p["entry"] * (1 + P["be"][1] / 100) / ((1 - SLIP) * (1 - FEE))
+                ns_ = p["entry"] * (1 + P["be"][1] / 100) / taker
                 if ns_ > p["stop"]:
                     p["stop"], p["moved"] = ns_, True
             if P["trail"] and p["maxfav"] >= P["trail"][0]:
                 ns_ = p["entry"] * (1 + p["maxfav"] / 100) * (1 - P["trail"][1] / 100)
                 if ns_ > p["stop"]:
                     p["stop"], p["moved"] = ns_, True
-            unreal += (c * (1 - SLIP) * (1 - FEE) / p["entry"] - 1) * NOTIONAL
-        # 3) 헤지 (BTC 선물로 순노출 상쇄): 이번 봉 동안 들고 있던 헤지의 손익 → 봉 끝에서 목표로 조정
+            unreal += (c * taker / p["entry"] - 1) * NOTIONAL
+        # 3) 헤지
         if P["hedge"]:
             if H:
                 hedge_pnl += H * (bc[i] / bc[i - 1] - 1)
             net = sum((1 if p["side"] == "long" else -1) * NOTIONAL * (p["beta"] if P["hedge"][0] == "beta" else 1.0)
                       for p in pos.values())
-            if P["hedge_free"]:                                  # 여유분까지는 그대로 두고, 넘는 만큼만 상쇄
+            if P["hedge_free"]:
                 net = math.copysign(max(0.0, abs(net) - P["hedge_free"]), net)
             target = -net * P["hedge"][1]
             if abs(target - H) >= P["hedge_band"]:
@@ -406,50 +442,162 @@ def line(name, r):
             f"숏 {r['short'][0]}회 {r['short'][1]:+.2f}% · 같은방향 최대 {r['maxSame']}")
 
 
+# ---------------- B: 모든 종목 공통 규칙 (한데 모아 검증) ----------------
+POOL_SPECS = 12 if SELFTEST else 25      # 작업 1개가 시험하는 무작위 규칙 수
+POOL_CHUNKS = 2 if SELFTEST else 6       # 방향마다 작업 수 → 방향당 150개 규칙
+POOL_TOP = 3                             # 방향마다 채택할 규칙 수
+POOL_MIN_N = 40 if SELFTEST else 120
+UNI = []                                 # 구간별 대상 종목 (main 에서 채움, 작업 프로세스가 물려받음)
+
+
+def pool_task(args):
+    """한 구간·한 방향: 무작위 규칙 POOL_SPECS개를 대상 종목 전부의 학습 구간에 돌려 '모은' 성적을 냄"""
+    w, s0, side, chunk = args
+    sp = SPACES["base"]
+    cb.TP_CHOICES, cb.SL_CHOICES, cb.HOLD_CHOICES = sp["tp"], sp["sl"], sp["hold"]
+    rng = random.Random(zlib.crc32(f"pool:{w}:{side}:{chunk}".encode()))
+    specs = [cb.random_spec(rng) for _ in range(POOL_SPECS)]
+    acc = [[0, 0.0, 0.0, 0, 0.0] for _ in specs]          # 학습 n, 합, 제곱합 / 검증 n, 합
+    for sym in UNI[w]:
+        ser = bb.series_of(candles(sym, s0 - TRAIN, s0, inv=(side == "short")))
+        split = int(ser.n * (1 - cb.BT_HOLDOUT))
+        for k, spec in enumerate(specs):
+            for x in cb.backtest(ser, spec, end=split):
+                acc[k][0] += 1; acc[k][1] += x; acc[k][2] += x * x
+            for x in cb.backtest(ser, spec, start=split):
+                acc[k][3] += 1; acc[k][4] += x
+    return w, side, [(spec, a) for spec, a in zip(specs, acc)]
+
+
+def pool_sig_task(args):
+    """채택된 공통 규칙 1개를 다음 구간의 모든 대상 종목에 적용 → 종목별 신호"""
+    w, s0, side, spec = args
+    out = []
+    e = min(s0 + STEP, len(T))
+    bc = D["BTCUSDT"]["c"]
+    for sym in UNI[w]:
+        ser = bb.series_of(candles(sym, s0 - WARM, e, inv=(side == "short")))
+        sig = ser.signal(spec)
+        hits = [s0 - WARM + k for k, v in enumerate(sig) if v and s0 - WARM + k >= s0 - 1]
+        if hits:
+            out.append((sym, {"side": side, "spec": spec, "sig": hits, "beta": 1.0}))
+    return w, out
+
+
+def pooled_selection(pool, W0, NW):
+    res = {}
+    tasks = [(w, W0 + w * STEP, side, ch) for w in range(NW) for side in ("long", "short") for ch in range(POOL_CHUNKS)]
+    for w, side, rows in pool.imap_unordered(pool_task, tasks, chunksize=1):
+        res.setdefault((w, side), []).extend(rows)
+    picks, info = [], []
+    for w in range(NW):
+        for side in ("long", "short"):
+            cand = []
+            for spec, (n, sm, sq, hn, hs) in res.get((w, side), []):
+                if n < POOL_MIN_N:
+                    continue
+                mean = sm / n
+                sd = max(1e-9, (sq / n - mean * mean)) ** 0.5
+                t = mean / sd * n ** 0.5
+                if mean < 0.10 or (hn >= 20 and hs / hn < 0):
+                    continue
+                cand.append((t, mean, n, hn, (hs / hn if hn else 0.0), spec))
+            cand.sort(key=lambda x: -x[0])
+            for t, mean, n, hn, hm, spec in cand[:POOL_TOP]:
+                picks.append((w, W0 + w * STEP, side, spec))
+                info.append((w, side, round(t, 2), round(mean, 3), n, hn, round(hm, 3)))
+    sel = [[] for _ in range(NW)]
+    for w, rows in pool.imap_unordered(pool_sig_task, picks, chunksize=1):
+        sel[w].extend(rows)
+    for w in range(NW):                                    # 거래대금 순서로(같은 종목이면 먼저 고른 규칙 먼저)
+        rank = {s: i for i, s in enumerate(UNI[w])}
+        sel[w].sort(key=lambda x: rank.get(x[0], 999))
+    return sel, info
+
+
+# ---------------- C: 시장 중립 묶음 (많이 오른 것 숏 + 많이 내린 것 롱, 또는 반대) ----------------
+def basket(W0, NW, L, Hd, K, mode, cost):
+    """L봉 수익률로 줄 세워 위 K개·아래 K개를 반대 방향으로 들고 Hd봉 뒤 전부 바꿈. cost = 왕복 비용(비율)"""
+    NT = len(T)
+    pnl, n, gross_sum, wins = [], 0, 0.0, 0
+    for t in range(W0, NT - Hd, Hd):
+        w = min((t - W0) // STEP, NW - 1)
+        rows = []
+        for sym in UNI[w]:
+            d = D[sym]
+            if not (d["ok"][t - 1] and d["ok"][t - 1 - L] and d["ok"][t] and d["ok"][t + Hd]):
+                continue
+            rows.append((d["c"][t - 1] / d["c"][t - 1 - L] - 1, sym))
+        if len(rows) < 2 * K + 4:
+            continue
+        rows.sort()
+        low, high = rows[:K], rows[-K:]
+        longs, shorts = (low, high) if mode == "되돌림" else (high, low)
+        step = 0.0
+        for side, grp in ((1, longs), (-1, shorts)):
+            for _, sym in grp:
+                d = D[sym]
+                g = side * (d["o"][t + Hd] / d["o"][t] - 1)
+                gross_sum += g
+                step += (g - cost) * NOTIONAL
+                n += 1
+                wins += 1 if g - cost > 0 else 0
+        pnl.append(step)
+    if not n:
+        return None
+    eq, peak, dd, acc = [], 0.0, 0.0, 0.0
+    for x in pnl:
+        acc += x
+        peak = max(peak, acc)
+        dd = min(dd, acc - peak)
+    m = sum(pnl) / len(pnl)
+    sd = (sum((x - m) ** 2 for x in pnl) / len(pnl)) ** 0.5
+    per_year = 365 * 96 / Hd
+    half = len(pnl) // 2
+    return {"n": n, "gross": gross_sum / n * 100, "net": (gross_sum / n - cost) * 100, "total": acc, "dd": dd,
+            "sharpe": m / sd * per_year ** 0.5 if sd > 0 else 0, "win": wins / n * 100,
+            "h1": sum(pnl[:half]), "h2": sum(pnl[half:])}
+
+
+ONLY_FLAT = {"횡보": ("long", "short")}
+TREND_ONLY = {"상승": ("long",), "하락": ("short",)}
+FLAT_SHORT_TREND = {"상승": ("long",), "하락": ("short",), "횡보": ("short",)}
+FLAT_SHORT = {"횡보": ("short",)}
+MK1 = {"maker_entry": 1, "maker_tp": True}
+MK2 = {"maker_entry": 2, "maker_tp": True}
 VARIANTS = [
-    ("현재 방식(제한 없음)", {}),
+    ("현재 방식(시장가)", {}),
+    ("익절만 지정가", {"maker_tp": True}),
+    ("진입·익절 지정가(1봉 대기)", MK1),
+    ("진입·익절 지정가(2봉 대기)", MK2),
     ("같은 방향 최대 3", {"side_cap": 3}),
-    ("같은 방향 최대 5", {"side_cap": 5}),
-    ("롱-숏 차이 최대 2", {"net_cap": 2}),
-    ("국면 필터(BTC 24h ±1.5%)", {"regime": True}),
-    ("BTC 2시간 역행 1% 쉬기", {"flow": 1.0}),
-    ("헤지 100%(금액 기준)", {"hedge": ("flat", 1.0)}),
-    ("헤지 100%(민감도 반영)", {"hedge": ("beta", 1.0)}),
-    ("헤지 50%(민감도 반영)", {"hedge": ("beta", 0.5)}),
-    ("헤지 100%·조정폭 75", {"hedge": ("beta", 1.0), "hedge_band": 75.0}),
-    ("헤지: 순노출 100 넘는 만큼만", {"hedge": ("beta", 1.0), "hedge_free": 100.0, "hedge_band": 50.0}),
-    ("헤지: 순노출 150 넘는 만큼만", {"hedge": ("beta", 1.0), "hedge_free": 150.0, "hedge_band": 50.0}),
-    ("본전 손절(+1.0% 뒤)", {"be": (1.0, 0.0)}),
-    ("본전 손절(+1.5% 뒤)", {"be": (1.5, 0.0)}),
-    ("본전+0.3% 잠금(+1.5% 뒤)", {"be": (1.5, 0.3)}),
-    ("추적 손절(+1.5% 뒤 1.0% 간격)", {"trail": (1.5, 1.0)}),
-    ("시간 손절(4시간 뒤 손실이면)", {"tstop": (16, 0.0)}),
-    ("시간 손절(8시간 뒤 손실이면)", {"tstop": (32, 0.0)}),
-    ("손절 최대 -3%", {"sl_cap": -3.0}),
-    ("손절 최대 -2%", {"sl_cap": -2.0}),
-    ("최대 보유 7.5시간", {"hold_cap": 30}),
-    ("최대 보유 15시간", {"hold_cap": 60}),
-    ("조합A: 방향3+국면", {"side_cap": 3, "regime": True}),
-    ("조합B: A+본전(+1.0%)", {"side_cap": 3, "regime": True, "be": (1.0, 0.0)}),
-    ("조합C: B+시간 손절 8h", {"side_cap": 3, "regime": True, "be": (1.0, 0.0), "tstop": (32, 0.0)}),
-    ("조합D: B+손절 -3%", {"side_cap": 3, "regime": True, "be": (1.0, 0.0), "sl_cap": -3.0}),
-    ("조합E: 본전+시간8h+손절-3%", {"be": (1.0, 0.0), "tstop": (32, 0.0), "sl_cap": -3.0}),
-    ("조합F: E+헤지100%(민감도)", {"be": (1.0, 0.0), "tstop": (32, 0.0), "sl_cap": -3.0, "hedge": ("beta", 1.0)}),
-    ("조합G: 국면+본전+헤지50%", {"regime": True, "be": (1.0, 0.0), "hedge": ("beta", 0.5)}),
-    ("조합H: 차이2+본전+시간8h", {"net_cap": 2, "be": (1.0, 0.0), "tstop": (32, 0.0)}),
+    ("같은 방향 3 + 지정가(2봉)", {"side_cap": 3, **MK2}),
+    ("횡보에서만 진입", {"allow": ONLY_FLAT}),
+    ("추세 방향만 진입", {"allow": TREND_ONLY}),
+    ("횡보 숏 + 추세 방향", {"allow": FLAT_SHORT_TREND}),
+    ("횡보 숏만", {"allow": FLAT_SHORT}),
+    ("횡보 숏 + 추세 방향 + 지정가(2봉)", {"allow": FLAT_SHORT_TREND, **MK2}),
+    ("횡보 숏+추세 방향·같은 방향 3·지정가", {"allow": FLAT_SHORT_TREND, "side_cap": 3, **MK2}),
 ]
-VARIANTS_ALT = [
-    ("제한 없음", {}),
-    ("방향3+국면", {"side_cap": 3, "regime": True}),
-    ("본전(+1.0%)", {"be": (1.0, 0.0)}),
-    ("방향3+국면+본전", {"side_cap": 3, "regime": True, "be": (1.0, 0.0)}),
-    ("헤지 100%(민감도)", {"hedge": ("beta", 1.0)}),
-    ("차이2+헤지50%", {"net_cap": 2, "hedge": ("beta", 0.5)}),
-    ("헤지: 순노출 100 넘는 만큼만", {"hedge": ("beta", 1.0), "hedge_free": 100.0, "hedge_band": 50.0}),
+VARIANTS_POOL = [
+    ("공통 규칙(시장가)", {}),
+    ("공통 규칙 + 같은 방향 3", {"side_cap": 3}),
+    ("공통 규칙 + 지정가(2봉)", MK2),
+    ("공통 규칙 + 같은 방향 3 + 지정가", {"side_cap": 3, **MK2}),
+    ("공통 규칙 + 횡보 숏+추세 방향", {"allow": FLAT_SHORT_TREND}),
+    ("공통 규칙 동시 20개(시장가)", {"max_open": 20}),
 ]
+
+
+def show(name, r, NW):
+    wp = r["winPnl"]
+    h = len(wp) // 2
+    print(line(name, r) + f" · 앞 절반 {sum(wp[:h]):+.1f} / 뒤 절반 {sum(wp[h:]):+.1f}"
+          + (f" · 못 채운 지정가 {r['skipped']['nofill']}" if r["skipped"].get("nofill") else ""), flush=True)
 
 
 def main():
+    global UNI
     t0 = time.time()
     end = datetime.now(timezone.utc).date() - timedelta(days=1)
     start = end - timedelta(days=DAYS_BACK)
@@ -467,56 +615,83 @@ def main():
     W0 = TRAIN
     NW = (NT - W0 + STEP - 1) // STEP
     kst = lambda ms: datetime.fromtimestamp(ms / 1000, timezone(timedelta(hours=9))).strftime("%m-%d %H:%M")
-    print(f"시세 출처: {SRC['name']} · 종목 {len(D)}개 받음(후보 {len(CANDS)}) · 15분봉 {NT}개 ({kst(T[0])} ~ {kst(T[-1])} KST)")
-    print(f"학습 {TRAIN}봉 → 다음 {STEP}봉씩 {NW}구간 (검증 {(NT - W0) / 96:.0f}일) · 구간마다 직전 24시간 거래대금 상위 {TOPN}종목 · 1회 {NOTIONAL:g} USDT · 받는 데 {time.time() - t0:.0f}초")
+    print(f"시세 출처: {SRC['name']} · 종목 {len(D)}개 · 15분봉 {NT}개 ({kst(T[0])} ~ {kst(T[-1])} KST) · 학습 {TRAIN}봉 → 다음 {STEP}봉씩 {NW}구간(검증 {(NT - W0) / 96:.0f}일) · 1회 {NOTIONAL:g} USDT")
     bc = D["BTCUSDT"]["c"]
-    print(f"BTC 검증 기간 변화: {(bc[-1] / bc[W0] - 1) * 100:+.1f}%")
-    # 구간별 대상 종목
-    uni = []
+    print(f"BTC 검증 기간 변화: {(bc[-1] / bc[W0] - 1) * 100:+.1f}% · 비용: 시장가 왕복 {(FEE + SLIP) * 200:.2f}% / 지정가 진입·익절 {FEE_M * 200:.2f}%")
     for w in range(NW):
         s0 = W0 + w * STEP
         e = min(s0 + STEP, NT)
         ok = [s for s in D if full(s, s0 - TRAIN, e)]
         ok.sort(key=lambda s: -sum(D[s]["q"][s0 - 96:s0]))
-        uni.append(ok[:TOPN])
-    print("구간별 대상 종목 수:", " ".join(str(len(u)) for u in uni))
-    tasks = [(sp, w, W0 + w * STEP, s) for sp in SPACES for w in range(NW) for s in uni[w]]
-    sel = {sp: [dict() for _ in range(NW)] for sp in SPACES}
-    t1 = time.time()
+        UNI.append(ok[:TOPN])
+    tasks = [("base", w, W0 + w * STEP, s) for w in range(NW) for s in UNI[w]]
+    picked = [dict() for _ in range(NW)]
+    out = {"src": SRC["name"], "bars": NT, "windows": NW, "from": kst(T[W0]), "to": kst(T[-1])}
     with mp.get_context("fork").Pool(os.cpu_count() or 2) as pool:
+        t1 = time.time()
         for sp, w, sym, info in pool.imap_unordered(sel_task, tasks, chunksize=4):
             if info:
-                sel[sp][w][sym] = info
-    print(f"전략 선정 {len(tasks)}건 · {time.time() - t1:.0f}초 (CPU {os.cpu_count()})")
-    out = {"src": SRC["name"], "bars": NT, "windows": NW, "from": kst(T[W0]), "to": kst(T[-1]), "spaces": {}}
-    for sp in SPACES:
-        ordered = [[(s, sel[sp][w][s]) for s in uni[w] if s in sel[sp][w]] for w in range(NW)]
-        specs = [info["spec"] for w in range(NW) for _, info in ordered[w]]
-        sides = [info["side"] for w in range(NW) for _, info in ordered[w]]
-        cnt = lambda key: " ".join(f"{k:g}:{v}" for k, v in sorted({x: sum(1 for s in specs if s[key] == x) for x in set(s[key] for s in specs)}.items()))
-        print(f"\n===== 전략 모양 '{sp}' — 익절 {SPACES[sp]['tp']} · 손절 {SPACES[sp]['sl']} · 최대 보유(15분봉 수) {SPACES[sp]['hold']}")
-        print(f"채택 {len(specs)}개(구간·종목) · 롱 {sides.count('long')} 숏 {sides.count('short')} · 익절폭 [{cnt('tp')}] · 손절폭 [{cnt('sl')}] · 보유 [{cnt('hold')}]")
-        res = {}
-        for name, p in (VARIANTS if sp == "base" else VARIANTS_ALT):
-            r = simulate(ordered, W0, NW, p)
-            res[name] = r
-            print(line(name, r), flush=True)
-        out["spaces"][sp] = res
-        b = res[(VARIANTS if sp == "base" else VARIANTS_ALT)[0][0]]
-        print("  청산 사유(횟수·평균%·평균 보유시간):", " · ".join(f"{k} {v[0]}회 {v[1]:+.2f}% {v[2]}h" for k, v in b["why"].items()),
-              f"· 이긴 거래 보유 중앙값 {b['holdMedWinH']}h / 진 거래 {b['holdMedLossH']}h")
+                picked[w][sym] = info
+        print(f"종목별 전략 선정 {len(tasks)}건 · {time.time() - t1:.0f}초")
+        t1 = time.time()
+        psel, pinfo = pooled_selection(pool, W0, NW)
+        print(f"공통 규칙 선정(구간·방향마다 무작위 {POOL_SPECS * POOL_CHUNKS}개를 {TOPN}종목에 모아 검증) · {time.time() - t1:.0f}초")
+    ordered = [[(s, picked[w][s]) for s in UNI[w] if s in picked[w]] for w in range(NW)]
+
+    print("\n===== A·D: 지금의 종목별 전략 선정 그대로 + 체결 방식·진입 조건만 바꿈")
+    res = {}
+    for name, p in VARIANTS:
+        r = simulate(ordered, W0, NW, p)
+        res[name] = r
+        show(name, r, NW)
+    b = res["현재 방식(시장가)"]
+    print("  국면×방향(횟수·거래당%):", " · ".join(f"{k} {v[0]}회 {v[1]:+.2f}%" for k, v in b["reg"].items()))
+    m = res["진입·익절 지정가(2봉 대기)"]
+    print("  지정가(2봉) 청산 사유:", " · ".join(f"{k} {v[0]}회 {v[1]:+.2f}% {v[2]}h" for k, v in m["why"].items()))
+    print("  지정가(2봉) 국면×방향:", " · ".join(f"{k} {v[0]}회 {v[1]:+.2f}%" for k, v in m["reg"].items()))
+    out["perSymbol"] = res
+
+    print(f"\n===== B: 모든 종목 공통 규칙 — 채택 {len(pinfo)}개(구간·방향마다 최대 {POOL_TOP}개, 모은 거래 {POOL_MIN_N}회 이상·거래당 +0.10% 이상·검증 구간 플러스)")
+    ts = [x[2] for x in pinfo]
+    ns = [x[4] for x in pinfo]
+    if pinfo:
+        print(f"  채택 규칙 학습 성적: 거래 수 중앙값 {sorted(ns)[len(ns) // 2]}회 · 거래당 평균 {sum(x[3] for x in pinfo) / len(pinfo):+.3f}% · t값 중앙값 {sorted(ts)[len(ts) // 2]:.1f} · 롱 {sum(1 for x in pinfo if x[1] == 'long')}개 숏 {sum(1 for x in pinfo if x[1] == 'short')}개")
+    resp = {}
+    for name, p in VARIANTS_POOL:
+        r = simulate(psel, W0, NW, p)
+        resp[name] = r
+        show(name, r, NW)
+    if resp:
+        b = resp["공통 규칙(시장가)"]
         print("  국면×방향(횟수·거래당%):", " · ".join(f"{k} {v[0]}회 {v[1]:+.2f}%" for k, v in b["reg"].items()))
-        print("  못 들어간 신호:", b["skipped"])
-    # 구간별 흐름: 현재 방식과 주요 조합
-    print("\n===== 구간별 손익(USDT, base 모양) — BTC 변화와 함께")
-    keys = ["현재 방식(제한 없음)", "조합A: 방향3+국면", "조합B: A+본전(+1.0%)", "헤지 100%(민감도 반영)", "조합F: E+헤지100%(민감도)"]
+        print("  청산 사유:", " · ".join(f"{k} {v[0]}회 {v[1]:+.2f}% {v[2]}h" for k, v in b["why"].items()))
+    out["pooled"] = resp
+
+    print("\n===== C: 시장 중립 묶음 (위 5종목·아래 5종목, 포지션마다 50 USDT) — 수익률은 포지션 1개당 %")
+    cost_t, cost_m = 2 * (FEE + SLIP), 2 * FEE_M
+    rowsC = []
+    for mode in ("되돌림", "추세"):
+        for L in ((4, 16, 96) if SELFTEST else (4, 16, 96, 288, 672)):
+            for Hd in ((4, 16) if SELFTEST else (4, 16, 96)):
+                r = basket(W0, NW, L, Hd, 5, mode, cost_t)
+                if not r:
+                    continue
+                rm = basket(W0, NW, L, Hd, 5, mode, cost_m)
+                rowsC.append((mode, L, Hd, r, rm))
+                print(f"{mode} · 기준 {L * 15 / 60:g}시간 수익률 · {Hd * 15 / 60:g}시간마다 교체: 거래 {r['n']} · 비용 전 {r['gross']:+.3f}% · "
+                      f"시장가 {r['net']:+.3f}% 합계 {r['total']:+.0f}(낙폭 {r['dd']:+.0f}, 샤프 {r['sharpe']:+.2f}, 앞 {r['h1']:+.0f}/뒤 {r['h2']:+.0f}) · "
+                      f"지정가 가정 {rm['net']:+.3f}% 합계 {rm['total']:+.0f}(앞 {rm['h1']:+.0f}/뒤 {rm['h2']:+.0f})", flush=True)
+    out["basket"] = [{"mode": m_, "L": L, "H": Hd, "taker": r, "maker": rm} for m_, L, Hd, r, rm in rowsC]
+
+    print("\n===== 구간별 손익(USDT) — BTC 변화와 함께")
+    keys = [("현재", res["현재 방식(시장가)"]), ("지정가2", res["진입·익절 지정가(2봉 대기)"]), ("횡보숏+추세", res["횡보 숏 + 추세 방향"]),
+            ("공통", resp["공통 규칙(시장가)"]), ("공통+지정가", resp["공통 규칙 + 지정가(2봉)"])]
     for w in range(NW):
         s0 = W0 + w * STEP
         e = min(s0 + STEP, NT) - 1
-        row = " · ".join(f"{k.split(':')[0]} {out['spaces']['base'][k]['winPnl'][w]:+6.1f}" for k in keys if w < len(out['spaces']['base'][k]['winPnl']))
-        print(f"[{w + 1:>2}] {kst(T[s0])}~ BTC {(bc[e] / bc[s0] - 1) * 100:+5.1f}% · {row}")
-    for sp in out["spaces"]:
-        for r in out["spaces"][sp].values():
+        print(f"[{w + 1:>2}] {kst(T[s0])}~ BTC {(bc[e] / bc[s0] - 1) * 100:+5.1f}% · " + " · ".join(f"{k} {r['winPnl'][w]:+6.1f}" for k, r in keys))
+    for grp in (res, resp):
+        for r in grp.values():
             r.pop("winPnl", None)
     json.dump(out, open("bt_summary.json", "w"), ensure_ascii=False, indent=1)
     print(f"\n소요 {time.time() - t0:.0f}초")
