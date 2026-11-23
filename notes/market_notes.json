@@ -131,6 +131,16 @@
     "https://fortune.com/article/price-of-bitcoin-11-23-2026/"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-24T02:33:00+09:00",
+   "btcMove": "BTC 2시간 -2.60%(바이낸스 엔진 btcFlow), BTC 약 6.2만 달러대(02:15 실주문 숏 진입가 62,040)",
+   "summary": "사실: 23:33 무렵 급반등(+4.7%/2h) 뒤 되밀려 2시간 -2.6%, 11/22 주말 저점(약 62,081달러) 부근 재접근. 바이낸스 실주문 롱 PROMUSDT 보호손절(-3.96 USDT), ICNTUSDT 롱 손절(-3.33). 원인: 이 시각 직접 원인 기사 미확인. 맥락(추정): 11월 -23% 약세장 속 반등 실패·되돌림.",
+   "sources": [
+    "https://cryptobriefing.com/bitcoin-falls-23-november-2026-bear-market/",
+    "https://pro.edgex.exchange/en-US/news/article/bitcoin-slides-23-percent-62081-weekend-low"
+   ],
+   "confirmed": false
   }
  ]
 }
