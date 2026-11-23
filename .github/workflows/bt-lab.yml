@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install requests pyjwt
+      - run: pip install requests pyjwt numpy
       - run: mkdir -p results && python -u tools/bt_lab.py | tee results/bt_out.txt && mv bt_summary.json results/
       - name: 결과 저장 (bt-lab 브랜치, 재실행 안 함)
         run: |
