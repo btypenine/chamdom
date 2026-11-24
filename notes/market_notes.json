@@ -141,6 +141,16 @@
     "https://pro.edgex.exchange/en-US/news/article/bitcoin-slides-23-percent-62081-weekend-low"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-24T12:33:00+09:00",
+   "btcMove": "BTC 1시간 약 -1.9%(엔진 24h 변화 -0.14%→-2.01%), btcFlow -2.19%",
+   "summary": "사실: 11:33~12:33 사이 BTC 하락, 엔진 국면 횡보→하락 전환. 실보유 숏 9건(순노출 -408 USDT)이라 방향은 유리, 미실현 +0.63 USDT. 원인: 이 시각 직접 원인 기사 미확인. 맥락(추정): 11월 약세장(-23%) 속 주말 저점 6.2만 달러 부근 재시험.",
+   "sources": [
+    "https://cryptobriefing.com/bitcoin-falls-23-november-2026-bear-market/",
+    "https://investinglive.com/cryptocurrency/weekend-bitcoin-fell-to-four-month-low-near-62-000-as-crypto-liquidations-top-2-billion/"
+   ],
+   "confirmed": false
   }
  ]
 }
