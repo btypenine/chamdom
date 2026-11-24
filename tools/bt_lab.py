@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""bt-lab 실험 15: 추세 묶음 낙폭 줄이기 (4시간봉 2년, 상장폐지 포함)
+"""bt-lab 실험 16: 주간 멈춤 문턱 이웃 값·멈춤 정리 밀림·다시 들어가는 시점 (4시간봉 2년, 상장폐지 포함)
+실험 15 에서 3묶음·위아래7 + 주간 멈춤 -8% 가 가장 나았음 → 그것이 우연한 문턱인지, 밀림·재진입 방식에 튼튼한지 확인
+ 1) 문턱 -6·-7·-8·-9·-10% (묶음3·위아래7, 묶음7·위아래10)
+ 2) 멈춤 정리 추가 밀림 편도 0.5%·1.0%·2.0% (4시간봉 종가 판정이 늦게 잡히는 것과 동시 정리 호가 밀림 대신)
+ 3) 멈춘 뒤 그 주는 쉼(기존) vs 다음 날 0시 같은 종목 다시 진입
+--- 아래는 실험 15 설명(틀 재사용) ---
+실험 15: 추세 묶음 낙폭 줄이기
 배경: 실험 14에서 작은 계좌용으로 가장 고른 모양은 3묶음·위아래 7(42종목), 모의 설정은 7묶음·위아래 10.
   수익률은 괜찮으나 돈으로 바꾸면 낙폭이 커서(700 USDT 전부 넣으면 최악 약 -400) 실주문과 맞지 않음.
 보는 것 (모두 같은 총 금액 — 롱·숏 합 = 1)
@@ -166,7 +172,7 @@ class Lab:
         self.lr = np.concatenate([np.zeros((self.ns, 1)), lr], axis=1)   # lr[:, j] = log(ff[j]/ff[j-1])
 
     def run(self, N, K, F, H, start, skip=1, use_fund=True, excl=None, leg="both", cost=COST, seed=None, split=False,
-            wmode="eq", stop=None, btc=None):
+            wmode="eq", stop=None, btc=None, resume="week", sslip=0.0):
         O, ff = self.O, self.ff
         S, Hb, Fb, kb = 7 * DB, H * DB, F * DB, skip * DB
         W = 14 * DB
@@ -218,36 +224,48 @@ class Lab:
                 pos = [p for p in pos if p[1] < 0]
             tw = sum(p[2] for p in pos)
             pos = [(i, s, w / tw) for i, s, w in pos]
-            # 주 중 손실 멈춤 확인 (4시간봉 종가 기준)
-            stop_at = None
-            if stop is not None:
-                for j in range(T, T + Hb - 1):
-                    v = 0.0
-                    for i, sg, w in pos:
-                        px = ff[i, j]
-                        c0 = 0.0 if (i, sg) in prev else cost
-                        f = -sg * (self.cf[i, j + 1] - self.cf[i, T]) if use_fund else 0.0
-                        v += w * (sg * (px / O[i, T] - 1) - c0 + f)
-                    if v <= -stop:
-                        stop_at = j
-                        break
+            # 주 중 손실 멈춤 (4시간봉 종가 기준) · resume: "week"=그 주는 쉼, "day"=다음 날 0시(UTC) 같은 종목 다시 진입
+            # sslip: 멈춤 정리 때 추가 밀림(편도, 금액 대비)
             pg = pf = pc = 0.0
-            held = set()
-            for i, sg, w in pos:
-                if stop_at is not None:
-                    ex = ff[i, stop_at]
-                    fe = stop_at + 1
-                else:
-                    ex = O[i, T + Hb]
-                    if np.isnan(ex):
-                        ex = ff[i, T + Hb - 1]
-                    fe = T + Hb
-                g = sg * (ex / O[i, T] - 1)
-                c = (0.0 if (i, sg) in prev else cost) + (cost / 2 if stop_at is not None else 0.0)
-                f = -sg * (self.cf[i, fe] - self.cf[i, T]) if use_fund else 0.0
-                pg += w * g; pf += w * f; pc += w * c
-                held.add((i, sg))
-            prev = set() if stop_at is not None else held
+            seg0, first, stopped_any = T, True, False
+            end = T + Hb
+            while seg0 < end:
+                stop_at = None
+                if stop is not None:
+                    for j in range(seg0, end - 1):
+                        v = 0.0
+                        for i, sg, w in pos:
+                            c0 = (0.0 if ((i, sg) in prev and first) else cost)
+                            f = -sg * (self.cf[i, j + 1] - self.cf[i, seg0]) if use_fund else 0.0
+                            v += w * (sg * (ff[i, j] / O[i, seg0] - 1) - c0 + f)
+                        if v <= -stop:
+                            stop_at = j
+                            break
+                for i, sg, w in pos:
+                    if stop_at is not None:
+                        ex = ff[i, stop_at]; fe = stop_at + 1
+                    else:
+                        ex = O[i, end]
+                        if np.isnan(ex):
+                            ex = ff[i, end - 1]
+                        fe = end
+                    g = sg * (ex / O[i, seg0] - 1)
+                    c = (0.0 if ((i, sg) in prev and first) else cost) + (cost / 2 + sslip if stop_at is not None else 0.0)
+                    f = -sg * (self.cf[i, fe] - self.cf[i, seg0]) if use_fund else 0.0
+                    pg += w * g; pf += w * f; pc += w * c
+                first = False
+                if stop_at is None:
+                    break
+                stopped_any = True
+                if resume != "day":
+                    break
+                nxt = T + ((stop_at + 1 - T) // DB + 1) * DB
+                if nxt >= end - DB or any(np.isnan(O[i, nxt]) for i, _, _ in pos):
+                    break
+                seg0 = nxt
+            held = {(i, sg) for i, sg, _ in pos}
+            prev = set() if stopped_any else held
+            stop_at = 1 if stopped_any else None
             tot = pg + pf - pc
             out.append((T, tot, pg, pf, pc, stop_at is not None) if split else (T, tot))
             T += Hb
@@ -316,10 +334,14 @@ def main():
         return out
 
     SHAPES = {3: [[d, (d + 2) % 7, (d + 4) % 7] for d in range(7)], 7: [list(range(7))]}
-    VARS = [("같은 금액(기준)", dict(wmode="eq")), ("변동성 조절", dict(wmode="vol")), ("BTC 방향 맞춤", dict(wmode="beta")),
-            ("변동성+BTC 방향", dict(wmode="volbeta")), ("주간 멈춤 -5%", dict(wmode="eq", stop=0.05)),
-            ("주간 멈춤 -8%", dict(wmode="eq", stop=0.08)), ("주간 멈춤 -12%", dict(wmode="eq", stop=0.12)),
-            ("변동성+BTC+멈춤 -8%", dict(wmode="volbeta", stop=0.08))]
+    VARS = [("멈춤 없음(기준)", dict(wmode="eq"))]
+    for th in (0.06, 0.07, 0.08, 0.09, 0.10):
+        VARS.append((f"멈춤 -{th * 100:.0f}%", dict(wmode="eq", stop=th)))
+    for sl in (0.005, 0.01, 0.02):
+        VARS.append((f"멈춤 -8% + 정리 밀림 {sl * 100:.1f}%", dict(wmode="eq", stop=0.08, sslip=sl)))
+    for th in (0.06, 0.08, 0.10):
+        VARS.append((f"멈춤 -{th * 100:.0f}% 다음 날 재진입", dict(wmode="eq", stop=th, resume="day")))
+    VARS.append(("멈춤 -8% 다음 날 재진입 + 밀림 1.0%", dict(wmode="eq", stop=0.08, resume="day", sslip=0.01)))
     summary = []
 
     def agg(s):
