@@ -40,6 +40,7 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -61,6 +62,7 @@ import chamdom_bot as cb          # 전략 생성·백테스트·지표·Firebas
 
 # 이 엔진이 새로 쓰는 대시보드 설정 — 같은 폴더의 공용 파일(chamdom_bot.py)이 아직 옛 버전이어도 받아들이게 여기서도 등록
 cb.APP_SETTINGS.setdefault("BINANCE_SIDE_CAP", ("num", (0, 10)))
+cb.APP_SETTINGS.setdefault("BINANCE_TREND_PAPER", ("choice", ("off", "on")))
 
 FAPI = "https://fapi.binance.com"
 KST = timezone(timedelta(hours=9))
@@ -99,6 +101,16 @@ SW_LOOK, SW_MIN = 20, 10          # 관찰 전용 '약한 방향': 같은 방향
 SIDE_CAP_LIVE = 0                 # 대시보드 설정 BINANCE_SIDE_CAP: 같은 방향(롱끼리·숏끼리) 실보유를 이 개수까지만. 0 = 제한 없음(기본 = 기존 동작)
                                   #   bt-lab 실험 8(11-24, 실제 선물 15분봉 125일·40종목): 제한 없음 대비 3개 제한은 거래당 성적은 같고(-0.007% → -0.017%, 차이는 오차 범위)
                                   #   최대 낙폭 -115 → -57 USDT, 최악의 하루 -29 → -13 USDT (1회 50 USDT 기준). 넘는 신호는 모의로만 기록
+# 추세 묶음 모의(관찰 전용, 실주문 없음): 대시보드 설정 BINANCE_TREND_PAPER=on 일 때만 (기본 꺼짐 = 기존 동작)
+#   거래대금(최근 7일) 상위 TREND_N 종목 중 최근 TREND_F일(직전 1일 제외) 가장 많이 오른 TREND_K개 롱 + 가장 많이 내린 TREND_K개 숏, 금액 맞춤
+#   7묶음: 매일 UTC 0시 10분 뒤(한국 09:10) 그 요일 묶음 하나만 교체 → 묶음마다 7일 보유. 손익·펀딩비·비용을 따로 기록
+#   bt-lab 실험 11·13(4시간봉 2년·상장폐지 포함 851종목): 상위100·위아래10 7묶음 주당 +1.29%(t 2.02, 낙폭 -28%p), 가짜 순위 40번은 모두 더 낮음,
+#   단 수익의 절반 이상이 펀딩비이고 해마다 보면 t<1 → 8주 이상 모의로 지켜본 뒤 실주문 여부를 사용자가 결정
+TREND_PAPER = False
+TREND_N, TREND_K, TREND_F = 100, 10, 14
+TREND_CAND = 180                  # 거래대금(24시간) 상위 이만큼만 일봉을 읽어 7일 거래대금을 셈 (하루 1번, 별도 스레드)
+TREND_COST = 2 * (FEE + SLIP)     # 새로 들어가는 종목 왕복 비용 (전 묶음에서 같은 방향으로 이어지는 종목은 0)
+TREND_HIST = 120
 MAX_OPEN = 10                     # 동시 모의 보유 최대
 # 확장형(wide): 대상 종목 2배 → 거래 기회 2배. 대시보드 설정 BINANCE_STYLE=wide 일 때만 (기본 swing = 기존 동작)
 # bt-lab 11-07: 보지 않은 다음 10일 — 20종목 134회 거래당 +0.206% / 40종목 284회 +0.284% (회전형 작은 익절은 -0.12~-0.20%로 탈락)
@@ -262,6 +274,69 @@ def prices(symbols):
 
 
 # ---------------- 실주문 (서명 요청) ----------------
+
+def trend_pick(rows, n=None, k=None):
+    """rows=[(종목, 7일 거래대금, F일 수익률)] → (롱 목록, 숏 목록). 종목이 2K개보다 적으면 ([], [])"""
+    n, k = n or TREND_N, k or TREND_K
+    uni = sorted(rows, key=lambda r: -r[1])[:n]
+    if len(uni) < 2 * k:
+        return [], []
+    order = sorted(uni, key=lambda r: r[2])
+    return [r[0] for r in order[-k:]][::-1], [r[0] for r in order[:k]]
+
+
+def trend_close(tr, marks):
+    """끝난 묶음 하나의 성적(포지션당 평균 %, 비용·펀딩 포함). marks 에 없는 종목(상장폐지 등)은 마지막으로 본 가격"""
+    g_l, g_s, fs, cs, n = 0.0, 0.0, 0.0, 0.0, 0
+    for side, sign in (("L", 1), ("S", -1)):
+        for sym, q in (tr.get(side) or {}).items():
+            ex = marks.get(sym) or q.get("lp") or q["e"]
+            g = sign * (ex / q["e"] - 1) * 100
+            if sign > 0:
+                g_l += g
+            else:
+                g_s += g
+            fs += q.get("f", 0.0)
+            cs += q.get("c", 0.0) * 100
+            n += 1
+    if not n:
+        return None
+    nl, ns = max(1, len(tr.get("L") or {})), max(1, len(tr.get("S") or {}))
+    return {"n": n, "price": round((g_l + g_s) / n, 3), "fund": round(fs / n, 3), "cost": round(-cs / n, 3),
+            "pct": round((g_l + g_s + fs - cs) / n, 3), "long": round(g_l / nl, 3), "short": round(g_s / ns, 3)}
+
+
+def trend_select():
+    """추세 묶음 고르기(공개 시세만, 주문 없음): (롱, 숏, {종목: 표시 가격})"""
+    info = get("/fapi/v1/exchangeInfo")
+    perp = {s["symbol"] for s in info["symbols"]
+            if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING"}
+    protected = {c + "USDT" for c in cb.PROTECTED_COINS} | {"1000" + c + "USDT" for c in cb.PROTECTED_COINS}
+    tick = get("/fapi/v1/ticker/24hr")
+    cand = sorted(((float(t["quoteVolume"]), t["symbol"]) for t in tick
+                   if t["symbol"] in perp and t["symbol"] not in EXCLUDE and t["symbol"] not in protected), reverse=True)
+    now_ms, rows = int(time.time() * 1000), []
+    for _, sym in cand[:TREND_CAND]:
+        try:
+            d = get("/fapi/v1/klines", {"symbol": sym, "interval": "1d", "limit": TREND_F + 4})
+        except Exception:
+            continue
+        closed = [x for x in d if x[6] < now_ms]
+        if len(closed) >= TREND_F + 2:
+            a, b = float(closed[-2][4]), float(closed[-2 - TREND_F][4])
+            if a > 0 and b > 0:
+                rows.append((sym, sum(float(x[7]) for x in closed[-7:]), a / b - 1))
+        time.sleep(0.05)
+    longs, shorts = trend_pick(rows)
+    marks = {}
+    for x in get("/fapi/v1/premiumIndex"):
+        try:
+            marks[x["symbol"]] = float(x["markPrice"])
+        except (KeyError, TypeError, ValueError):
+            pass
+    return [s for s in longs if marks.get(s)], [s for s in shorts if marks.get(s)], marks
+
+
 class Live:
     def __init__(self, key, secret):
         self.key, self.secret = key, secret
@@ -566,6 +641,9 @@ class Engine:
             SIDE_CAP_LIVE = max(0, min(10, int(float(str(c.get("BINANCE_SIDE_CAP", "0")).replace(",", "").strip() or 0))))
         except ValueError:
             SIDE_CAP_LIVE = 0
+        global TREND_PAPER
+        c.setdefault("BINANCE_TREND_PAPER", "off")                              # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
+        TREND_PAPER = str(c.get("BINANCE_TREND_PAPER", "off")).strip().lower() == "on"   # 기본 꺼짐 = 기존 동작(관찰도 안 함)
         global DEEP_CUT_LIVE
         c.setdefault("BINANCE_DEEP_CUT", "off")                                  # 대시보드에 '꺼짐(기존) · 기본값'으로 보이게
         DEEP_CUT_LIVE = str(c.get("BINANCE_DEEP_CUT", "off")).strip().lower() == "on"   # 기본 꺼짐 = 기존 동작
@@ -2689,6 +2767,107 @@ class Engine:
         except Exception:
             return None
 
+    # --- 추세 묶음 모의 (관찰 전용: 주문 없음, 매매·한도·규칙 판정에 전혀 안 씀) ---
+    def _trend_job(self, day):
+        try:
+            self._trend_sel = (day,) + trend_select()
+        except Exception as e:
+            self._trend_sel = None
+            log(f"[안내] 추세 묶음 고르기 실패 (매매는 그대로, 30분 뒤 다시): {type(e).__name__}: {str(e)[:80]}")
+
+    def trend_tick(self, now=None):
+        if not TREND_PAPER:
+            return
+        st = self.state.setdefault("trend", {"tr": {}, "hist": [], "day": "", "fn": {}})
+        t = now or time.time()
+        if st["tr"] and t - getattr(self, "_trend_fund_at", 0) >= FUNDING_CHECK_SEC:
+            self._trend_fund_at = t
+            self.trend_fund()
+        utc = datetime.fromtimestamp(t, timezone.utc)
+        day = utc.strftime("%Y-%m-%d")
+        if st.get("day") == day or utc.hour * 60 + utc.minute < 10:
+            return
+        sel = getattr(self, "_trend_sel", None)
+        if not sel or sel[0] != day:
+            th = getattr(self, "_trend_th", None)
+            if (th is None or not th.is_alive()) and t - getattr(self, "_trend_try", 0) >= 1800:
+                self._trend_try = t
+                self._trend_th = threading.Thread(target=self._trend_job, args=(day,), daemon=True)
+                self._trend_th.start()
+            return
+        self.trend_rotate(st, day, str(utc.weekday()), sel[1], sel[2], sel[3], t)
+
+    def trend_rotate(self, st, day, d, longs, shorts, marks, t):
+        st["day"] = day
+        if len(longs) < TREND_K or len(shorts) < TREND_K:
+            log(f"[추세 묶음 모의] 고를 종목이 모자라 오늘은 건너뜀 (롱 {len(longs)} · 숏 {len(shorts)})")
+            return
+        old = st["tr"].get(d) or {}
+        if old:
+            r = trend_close(old, marks)
+            if r:
+                r.update({"at": int(t * 1000), "d": int(d), "from": old.get("at", 0)})
+                st["hist"] = (st.get("hist") or [])[-(TREND_HIST - 1):] + [r]
+                log(f"[추세 묶음 모의] {'월화수목금토일'[int(d)]}요일 묶음 7일 정리: 포지션당 {r['pct']:+.2f}% "
+                    f"(가격 {r['price']:+.2f} · 펀딩 {r['fund']:+.2f} · 비용 {r['cost']:+.2f}) · 끝난 묶음 {len(st['hist'])}개")
+        new = {"at": int(t * 1000), "L": {}, "S": {}}
+        for side, lst in (("L", longs), ("S", shorts)):
+            for sym in lst:
+                new[side][sym] = {"e": marks[sym], "lp": marks[sym], "f": 0.0,
+                                  "c": 0.0 if sym in (old.get(side) or {}) else TREND_COST}
+        st["tr"][d] = new
+        log(f"[추세 묶음 모의] {'월화수목금토일'[int(d)]}요일 묶음 새로 잡음 (주문 없음): 롱 " + ", ".join(x.replace("USDT", "") for x in longs[:5])
+            + " … / 숏 " + ", ".join(x.replace("USDT", "") for x in shorts[:5]) + " …")
+
+    def trend_fund(self):
+        """묶음 종목의 표시 가격·펀딩비 정산 기록 (5분마다, 공개 시세 1번)"""
+        st = self.state.get("trend") or {}
+        try:
+            data = get("/fapi/v1/premiumIndex")
+        except Exception:
+            return
+        now_ms = int(time.time() * 1000)
+        info = {x.get("symbol"): x for x in data if isinstance(x, dict)}
+        fn = st.setdefault("fn", {})
+        held = {sym for tr in st.get("tr", {}).values() for side in ("L", "S") for sym in (tr.get(side) or {})}
+        for sym in held:
+            x = info.get(sym)
+            if not x:
+                continue
+            try:
+                mark, rate, nft = float(x["markPrice"]), float(x.get("lastFundingRate") or 0), int(x.get("nextFundingTime") or 0)
+            except (KeyError, TypeError, ValueError):
+                continue
+            prev = fn.get(sym)
+            for tr in st["tr"].values():
+                for side, sign in (("L", -1), ("S", 1)):
+                    q = (tr.get(side) or {}).get(sym)
+                    if not q:
+                        continue
+                    q["lp"] = mark
+                    if prev and now_ms >= prev[0] > tr.get("at", 0):
+                        q["f"] = round(q.get("f", 0.0) + sign * prev[1] * 100, 4)
+            if nft:
+                fn[sym] = [nft, rate]
+        for sym in [k for k in fn if k not in held]:
+            fn.pop(sym, None)
+
+    def trend_view(self):
+        st = self.state.get("trend") or {}
+        hist = st.get("hist") or []
+        opened = []
+        for d, tr in sorted((st.get("tr") or {}).items()):
+            r = trend_close(tr, {})
+            if r:
+                opened.append({"d": int(d), "at": tr.get("at", 0), "n": r["n"], "pct": r["pct"]})
+        n = len(hist)
+        avg = lambda k: round(sum(h[k] for h in hist) / n, 3) if n else None
+        return {"on": TREND_PAPER, "N": TREND_N, "K": TREND_K, "F": TREND_F, "open": opened, "doneN": n,
+                "avgPct": avg("pct"), "avgPrice": avg("price"), "avgFund": avg("fund"), "avgCost": avg("cost"),
+                "sumPct": round(sum(h["pct"] for h in hist), 3) if n else None,
+                "since": min([h.get("from", 0) for h in hist] + [o["at"] for o in opened]) if (hist or opened) else 0,
+                "recent": hist[-14:]}
+
     def view(self):
         lg = self.state["ledger"]
         n = lg["trades"]
@@ -2803,6 +2982,7 @@ class Engine:
             "exchange": self.exchange_view(),
             "lastSelect": self.state["lastSelect"] * 1000, "phase": getattr(self, "_phase", ""),
             "exposure": self.exposure_view(),
+            "trendPaper": self.trend_view(),
             "cmd": self.state.get("cmd") or {}, "cmdLog": (self.state.get("cmdLog") or [])[-8:],
             "cmdPollSec": CMD_POLL_SEC, "cmdMaxAgeSec": CMD_MAX_AGE_SEC,
             "bridge": bool(self.bridge_on() and self.state.get("bridgeInit")),
@@ -3003,6 +3183,10 @@ class Engine:
                     self.funding_track()                 # 관찰 전용 (실패해도 매매 영향 없음)
                 except Exception as e:
                     log(f"[안내] 펀딩비 기록 건너뜀: {type(e).__name__}: {str(e)[:80]}")
+                try:
+                    self.trend_tick()                    # 추세 묶음 모의 — 설정을 켰을 때만, 주문 없음 (실패해도 매매 영향 없음)
+                except Exception as e:
+                    log(f"[안내] 추세 묶음 모의 건너뜀: {type(e).__name__}: {str(e)[:80]}")
                 self.check_exchange()
                 self.check_commands()
                 self.check_resume()
