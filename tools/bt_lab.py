@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-"""bt-lab 실험 11: '추세 묶음'(최근 F일 많이 오른 K개 롱 + 많이 내린 K개 숏, 금액 맞춤)이 얼마나 튼튼한지 (4시간봉 2년)
-배경: 실험 10(일봉 2년·912종목)에서 상위80·위아래10·F=14일(직전 1일 제외)·7일마다 교체가 주당 +1.59%(t 2.28)였으나
-  96가지 중 t>2 는 2개뿐 → 우연히 고른 시작 요일·시각·이웃 값에서만 좋은 것인지 확인.
+"""bt-lab 실험 12: '펀딩비 받는 묶음' — 최근 L일 펀딩비가 크게 마이너스인 K개 롱 + 크게 플러스인 K개 숏, 금액 맞춤 (4시간봉 2년)
+배경: 실험 11에서 추세 묶음 수익의 약 90%가 펀딩비였음(펀딩 빼면 주당 +0.09%) → 펀딩비 자체를 기준으로 고르면 더 나은지 직접 확인.
 보는 것
- 1) 교체 시각: 일주일 안 42가지 시작 칸(요일 7 x 4시간 6)마다 같은 전략을 돌려 성적 분포
- 2) 나눠서 교체: 7묶음(하루씩 어긋나게 시작) 평균 — 같은 수익에 변동이 얼마나 줄어드는지
- 3) 이웃 값: 상위 N(60·80·100·120) x K(7·10·13) x F(10·14·21일), 각 칸은 7개 시작 요일 평균
- 4) 급등락 종목 빼기: 직전 1일 ±20% 넘게 움직인 종목, 최근 F일 +150% 넘은 종목, 변동성 상위 20%
- 5) 분기별·해마다 일관성, 펀딩비 뺐을 때
-개선점(실험 10 대비): 보유 중 상장폐지되면 마지막 가격으로 정리(전에는 그런 종목을 빼서 약간 좋게 나올 수 있었음)
+ 1) 기준 조합(상위100·위아래10·L=3일·1일마다, 하루씩 어긋난 묶음으로 나눠 교체)의 수익을 가격/펀딩/비용으로 나눠 보기
+ 2) 이웃 값: 상위 N(60·100·150) x K(5·10·15) x L(1·3·7일) x 교체 H(1·3·7일)
+ 3) 펀딩 문턱: 8시간당 평균 |펀딩| 0.03%·0.05% 넘는 종목만
+ 4) 비용 더 비싸게(왕복 0.30%: 소형 종목 호가 벌어짐 가정), 롱 쪽만 / 숏 쪽만
+ 5) 펀딩 부호 뒤집힘: 보유 중 받은 펀딩 vs 고를 때 펀딩, 최악의 주·하루, 분기별
+ 6) 비교: 실험 11 추세 묶음(상위80·위아래10·F=14·7일, 7묶음)
+펀딩 계산은 보수적으로: 진입 봉·청산 봉 시각의 정산은 넣지 않음, 고를 때는 그 시점까지 이미 정산된 펀딩만 씀
 분석 전용 — 봇 동작에는 영향 없음
 """
 import io, math, os, re, time, zipfile, json
@@ -143,7 +143,7 @@ def synth(n_sym=60, n_day=420):
             p *= math.exp(mom + rng.gauss(0, 0.016))
             kl[s][b0 + b] = (o, p, 1e5 * (1 + i % 7))
             if b % 2 == 0:
-                fr[s][b0 + b] = 0.0001
+                fr[s][b0 + b] = 0.0001 + 0.3 * mom + rng.gauss(0, 0.0002)
     return kl, fr
 
 
@@ -155,76 +155,81 @@ class Lab:
         self.cq = np.concatenate([np.zeros((self.ns, 1)), np.cumsum(Q, axis=1)], axis=1)
         self.cv = np.concatenate([np.zeros((self.ns, 1)), np.cumsum(valid, axis=1)], axis=1)
         self.cf = np.concatenate([np.zeros((self.ns, 1)), np.cumsum(Fu, axis=1)], axis=1)
-        # 마지막 유효 종가(앞으로 채움): 상장폐지 뒤 정리 가격
         ff = C.copy()
         for j in range(1, self.nb):
             m = np.isnan(ff[:, j])
             ff[m, j] = ff[m, j - 1]
         self.ff = ff
-        lr = np.diff(np.log(ff), axis=1)
-        lr = np.nan_to_num(lr)
-        self.cl2 = np.concatenate([np.zeros((self.ns, 2)), np.cumsum(lr ** 2, axis=1)], axis=1)
 
-    def run(self, N, K, F, H, start, skip=1, use_fund=True, excl=None, leg="both"):
-        """start: 첫 교체 봉 번호(0 기준). 반환 [(봉, 포지션당 순수익)]"""
-        O, ff = self.O, self.ff
-        S, Hb, Fb, kb = 7 * DB, H * DB, F * DB, skip * DB
+    def run(self, N, K, H, start, L=3, F=14, sig="fund", cost=COST, use_fund=True, thr=0.0, leg="both"):
+        """sig: fund(최근 L일 펀딩 합) / trend(실험 11 추세: F일 수익률, 직전 1일 제외).
+        반환 [(봉, 포지션당 순수익, 가격, 펀딩, 비용, 고를 때 펀딩(8시간당), 받은 펀딩(8시간당), 롱 성적, 숏 성적)]"""
+        O, ff, cf = self.O, self.ff, self.cf
+        S, Hb, Lb, Fb, kb = 7 * DB, H * DB, L * DB, F * DB, DB
         out, prev = [], set()
         T = start
-        need = S + Fb + kb + 2
+        need = S + max(Lb, Fb + kb) + 2
         while T < need:
             T += Hb
         while T + Hb < self.nb:
             v7 = self.cv[:, T] - self.cv[:, T - S]
             ok = (v7 == S) & ~np.isnan(O[:, T])
-            a = ff[:, T - 1 - kb]
-            b = ff[:, T - 1 - kb - Fb]
-            ok &= ~np.isnan(a) & ~np.isnan(b) & (self.cv[:, T - 1 - kb - Fb + 1] - self.cv[:, T - 1 - kb - Fb] == 1)
+            if sig == "trend":
+                ok &= ~np.isnan(ff[:, T - 1 - kb - Fb]) & (self.cv[:, T - 1 - kb - Fb + 1] - self.cv[:, T - 1 - kb - Fb] == 1)
+            else:
+                ok &= (self.cv[:, T] - self.cv[:, T - Lb] == Lb)
             idx = np.where(ok)[0]
             if len(idx) < max(2 * K + 6, 20):
                 T += Hb
                 continue
             qv = self.cq[idx, T] - self.cq[idx, T - S]
             uni = idx[np.argsort(-qv)[:N]]
-            ret = ff[uni, T - 1 - kb] / ff[uni, T - 1 - kb - Fb] - 1
-            if excl == "jump1d":
-                r1 = ff[uni, T - 1] / ff[uni, T - 1 - DB] - 1
-                keep = np.abs(r1) <= 0.20
-                uni, ret = uni[keep], ret[keep]
-            elif excl == "bigF":
-                keep = np.abs(ret) <= 1.5
-                uni, ret = uni[keep], ret[keep]
-            elif excl == "vol":
-                var = (self.cl2[uni, T] - self.cl2[uni, T - S]) / S
-                keep = var <= np.quantile(var, 0.8)
-                uni, ret = uni[keep], ret[keep]
-            if len(uni) < 2 * K:
-                T += Hb
-                continue
-            order = uni[np.argsort(ret)]
-            shorts, longs = order[:K], order[-K:]
-            tot, cnt, held = 0.0, 0, set()
+            if sig == "trend":
+                score = ff[uni, T - 1 - kb] / ff[uni, T - 1 - kb - Fb] - 1
+                order = uni[np.argsort(score)]
+                shorts, longs = order[:K], order[-K:]
+            else:
+                fs = cf[uni, T] - cf[uni, T - Lb]                 # 최근 L일 펀딩 합(이미 정산된 것만)
+                per8 = fs / (L * 3)
+                order = uni[np.argsort(fs)]
+                longs, shorts = order[:K], order[-K:]               # 펀딩 마이너스 → 롱(받음), 플러스 → 숏(받음)
+                if thr > 0:
+                    pm = dict(zip(uni, per8))
+                    longs = np.array([i for i in longs if pm[i] < -thr], dtype=int)
+                    shorts = np.array([i for i in shorts if pm[i] > thr], dtype=int)
+            tot = pr = fu = co = 0.0
+            cnt, held, pick, got = 0, set(), [], []
+            side = {1: [0.0, 0], -1: [0.0, 0]}
             for sign, grp in ((1, longs), (-1, shorts)):
                 if (leg == "long" and sign < 0) or (leg == "short" and sign > 0):
                     continue
                 for i in grp:
                     ex = O[i, T + Hb]
                     if np.isnan(ex):
-                        ex = ff[i, T + Hb - 1]           # 보유 중 거래 중단/상장폐지 → 마지막 가격
+                        ex = ff[i, T + Hb - 1]
                     g = sign * (ex / O[i, T] - 1)
-                    c = 0.0 if (i, sign) in prev else COST
-                    f = -sign * (self.cf[i, T + Hb] - self.cf[i, T]) if use_fund else 0.0
-                    tot += g - c + f
+                    c = 0.0 if (i, sign) in prev else cost
+                    f = -sign * (cf[i, T + Hb] - cf[i, T + 1]) if use_fund else 0.0   # 진입·청산 봉 시각 정산 제외
+                    r = g - c + f
+                    tot += r; pr += g; fu += f; co += c
                     cnt += 1
                     held.add((i, sign))
+                    side[sign][0] += r; side[sign][1] += 1
+                    if sig == "fund":
+                        pick.append(-sign * (cf[i, T] - cf[i, T - Lb]) / (L * 3))
+                        got.append(f / max(1, H * 3 - 1))
             prev = held
-            out.append((T, tot / cnt))
+            if cnt == 0:
+                T += Hb
+                continue
+            out.append((T, tot / cnt, pr / cnt, fu / cnt, co / cnt,
+                        (sum(pick) / len(pick)) if pick else 0.0, (sum(got) / len(got)) if got else 0.0,
+                        side[1][0] / side[1][1] if side[1][1] else None, side[-1][0] / side[-1][1] if side[-1][1] else None))
             T += Hb
         return out
 
 
-def stats(series, H):
-    per = [r for _, r in series]
+def stats(per, H):
     if len(per) < 15:
         return None
     m = sum(per) / len(per)
@@ -234,8 +239,9 @@ def stats(series, H):
         acc += x
         peak = max(peak, acc)
         dd = min(dd, acc - peak)
-    return {"n": len(per), "mean": m * 100, "sd": sd * 100, "t": m / sd * len(per) ** 0.5 if sd else 0,
-            "sharpe": m / sd * (365 / H) ** 0.5 if sd else 0, "dd": dd * 100, "win": sum(1 for x in per if x > 0) / len(per) * 100}
+    return {"n": len(per), "mean": m * 100, "day": m * 100 / H, "sd": sd * 100, "t": m / sd * len(per) ** 0.5 if sd else 0,
+            "sharpe": m / sd * (365 / H) ** 0.5 if sd else 0, "dd": dd * 100, "win": sum(1 for x in per if x > 0) / len(per) * 100,
+            "worst": min(per) * 100}
 
 
 def main():
@@ -251,97 +257,102 @@ def main():
     lab = Lab(O, C, Q, Fu, b0)
     ds = lambda b: datetime.fromtimestamp((b0 + b) * 4 * 3600, timezone.utc).strftime("%Y-%m-%d %H시")
     print(f"시세 출처: {src} · 4시간봉 받은 종목 {len(syms)}개 · {ds(0)} ~ {ds(lab.nb - 1)} · 받는 데 {time.time() - t0:.0f}초")
-    print(f"비용: 바뀌는 종목 왕복 {COST * 100:.2f}% + 실제 펀딩비 · 보유 중 상장폐지는 마지막 가격으로 정리 · 시각은 UTC")
-    # 시작 칸 0 = 월요일 0시(UTC)
+    print(f"비용: 바뀌는 종목 왕복 {COST * 100:.2f}% + 실제 펀딩비(진입·청산 시각 정산 제외) · 보유 중 상장폐지는 마지막 가격 · 시각 UTC")
     wd0 = datetime.fromtimestamp(b0 * 4 * 3600, timezone.utc)
-    base = ((7 - wd0.weekday()) % 7) * DB - wd0.hour // 4
-    base %= 7 * DB
-    WD = "월화수목금토일"
-    BASE = dict(N=80, K=10, F=14, H=7)
+    base = (((7 - wd0.weekday()) % 7) * DB - wd0.hour // 4) % (7 * DB)
+    BASE = dict(N=100, K=10, L=3, H=1)
     if SELFTEST:
-        BASE = dict(N=40, K=5, F=14, H=7)
+        BASE = dict(N=40, K=5, L=3, H=1)
 
-    print("\n===== 1) 교체 시각 42칸(요일 x 4시간) — 기준 조합(상위80·위아래10·F=14일·직전1일 제외·7일마다)")
-    rows = []
-    for off in range(7 * DB):
-        st = stats(lab.run(start=(base + off) % (7 * DB), **BASE), 7)
-        if st:
-            rows.append((off, st))
-    ms = sorted(r["mean"] for _, r in rows)
-    ts = sorted(r["t"] for _, r in rows)
-    print(f"  칸 {len(rows)}개 · 주당 순수익 최저 {ms[0]:+.2f}% / 중앙 {ms[len(ms) // 2]:+.2f}% / 최고 {ms[-1]:+.2f}% · t 최저 {ts[0]:+.2f} / 중앙 {ts[len(ts) // 2]:+.2f} / 최고 {ts[-1]:+.2f}"
-          f" · 플러스 칸 {sum(1 for m in ms if m > 0)}/{len(ms)} · t>2 칸 {sum(1 for t in ts if t > 2)}")
-    for d in range(7):
-        if any(off // DB == d for off, _ in rows):
-            print(f"  {WD[d]}요일 시작: " + " · ".join(f"{(off % DB) * 4:02d}시 {r['mean']:+.2f}%(t {r['t']:+.1f})" for off, r in rows if off // DB == d))
-    hour_avg = {}
-    for off, r in rows:
-        hour_avg.setdefault((off % DB) * 4, []).append(r["mean"])
-    print("  시각별 평균(7요일): " + " · ".join(f"{h:02d}시 {sum(v) / len(v):+.2f}%" for h, v in sorted(hour_avg.items())))
+    def split(**kw):
+        """H일 보유를 하루씩 어긋난 H묶음으로 나눔(H=1 이면 0시 UTC 하나). 기간 = H일 단위, 묶음 평균."""
+        p = dict(BASE); p.update(kw)
+        H = p["H"]
+        runs = [lab.run(start=(base + d * DB) % (H * DB), **p) for d in range(H)]
+        per = {}
+        for d, s in enumerate(runs):
+            o = (base + d * DB) % (H * DB)
+            for row in s:
+                per.setdefault((row[0] - o) // (H * DB), []).append(row)
+        rows = []
+        for k, v in sorted(per.items()):
+            if len(v) >= max(1, (H + 1) // 2):
+                rows.append((k, [sum(r[j] for r in v) / len(v) for j in range(1, 7)],
+                             [r[7] for r in v if r[7] is not None], [r[8] for r in v if r[8] is not None]))
+        st = stats([r[1][0] for r in rows], H)
+        if not st:
+            return None, rows, p
+        n = len(rows)
+        st["price"] = sum(r[1][1] for r in rows) / n * 100
+        st["fund"] = sum(r[1][2] for r in rows) / n * 100
+        st["cost"] = sum(r[1][3] for r in rows) / n * 100
+        st["pick8"] = sum(r[1][4] for r in rows) / n * 100
+        st["got8"] = sum(r[1][5] for r in rows) / n * 100
+        lv = [x for r in rows for x in r[2]]; sv = [x for r in rows for x in r[3]]
+        st["long"] = sum(lv) / len(lv) * 100 / H if lv else None
+        st["short"] = sum(sv) / len(sv) * 100 / H if sv else None
+        half = n // 2
+        st["h1"] = sum(r[1][0] for r in rows[:half]) / max(1, half) * 100 / H
+        st["h2"] = sum(r[1][0] for r in rows[half:]) / max(1, n - half) * 100 / H
+        return st, rows, p
 
-    print("\n===== 2) 나눠서 교체: 7묶음(요일마다 하나씩, 0시 UTC) 평균 vs 한 번에")
-    tr = [lab.run(start=(base + d * DB) % (7 * DB), **BASE) for d in range(7)]
-    wk = {}
-    for d, s in enumerate(tr):
-        for T, r in s:
-            k = (T - (base + d * DB) % (7 * DB)) // (7 * DB)
-            wk.setdefault(k, []).append(r)
-    comb = [(k, sum(v) / len(v)) for k, v in sorted(wk.items()) if len(v) >= 4]
-    sc = stats(comb, 7)
-    singles = [x for x in (stats(s, 7) for s in tr) if x]
-    print(f"  한 번에(7요일 각각): 주당 평균 {sum(x['mean'] for x in singles) / len(singles):+.2f}% · 주간 변동 평균 ±{sum(x['sd'] for x in singles) / len(singles):.2f}% · 샤프 평균 {sum(x['sharpe'] for x in singles) / len(singles):+.2f} · 낙폭 평균 {sum(x['dd'] for x in singles) / len(singles):+.0f}%p")
-    if sc:
-        print(f"  7묶음 나눠서: 주당 {sc['mean']:+.2f}% · 주간 변동 ±{sc['sd']:.2f}% · 샤프 {sc['sharpe']:+.2f} · t {sc['t']:+.2f} · 낙폭 {sc['dd']:+.0f}%p · 플러스 주 {sc['win']:.0f}% ({sc['n']}주)")
+    def line(st):
+        return (f"하루 {st['day']:+.3f}% · t {st['t']:+.2f} · 샤프 {st['sharpe']:+.2f} · 낙폭 {st['dd']:+.0f}%p · 앞/뒤 절반 하루 {st['h1']:+.3f}/{st['h2']:+.3f}%")
+
+    def qtr(rows, H):
         q = {}
-        for k, r in comb:
-            T = base + k * 7 * DB
-            dt = datetime.fromtimestamp((b0 + T) * 4 * 3600, timezone.utc)
-            q.setdefault(f"{dt.year}Q{(dt.month - 1) // 3 + 1}", []).append(r)
-        print("  분기별(7묶음, 주당 평균): " + " · ".join(f"{k} {sum(v) / len(v) * 100:+.2f}%({len(v)})" for k, v in sorted(q.items())))
-        print(f"  플러스 분기 {sum(1 for v in q.values() if sum(v) > 0)}/{len(q)}")
+        for k, v, _, _ in rows:
+            dt = datetime.fromtimestamp((b0 + base + k * H * DB) * 4 * 3600, timezone.utc)
+            q.setdefault(f"{dt.year}Q{(dt.month - 1) // 3 + 1}", []).append(v[0])
+        return q
 
-    def avg7(**kw):
-        sts = []
-        p = dict(BASE)
-        p.update(kw)
-        for d in range(7):
-            s = stats(lab.run(start=(base + d * DB) % (7 * DB), **p), p["H"])
-            if s:
-                sts.append(s)
-        if not sts:
-            return None
-        return {"mean": sum(x["mean"] for x in sts) / len(sts), "t": sum(x["t"] for x in sts) / len(sts),
-                "dd": sum(x["dd"] for x in sts) / len(sts), "tmin": min(x["t"] for x in sts), "pos": sum(1 for x in sts if x["mean"] > 0), "k": len(sts)}
+    print("\n===== 1) 기준 조합: 상위100·위아래10·펀딩 L=3일·1일마다 교체")
+    st, rows, p = split()
+    if st:
+        H = p["H"]
+        print(f"  {line(st)} · 플러스 날 {st['win']:.0f}% · 최악의 기간 {st['worst']:+.2f}% ({st['n']}기간)")
+        print(f"  나눠 보기(하루): 가격 {st['price'] / H:+.3f}% · 펀딩 {st['fund'] / H:+.3f}% · 비용 -{st['cost'] / H:.3f}% · 롱 쪽 {st['long']:+.3f}% · 숏 쪽 {st['short']:+.3f}%")
+        print(f"  펀딩(8시간당, 받는 쪽 기준): 고를 때 {st['pick8']:+.4f}% → 보유 중 실제 {st['got8']:+.4f}% (유지율 {st['got8'] / st['pick8'] * 100 if st['pick8'] else 0:.0f}%)")
+        q = qtr(rows, H)
+        print("  분기별(하루 평균): " + " · ".join(f"{k} {sum(v) / len(v) * 100 / H:+.3f}%" for k, v in sorted(q.items())) + f" · 플러스 분기 {sum(1 for v in q.values() if sum(v) > 0)}/{len(q)}")
 
-    print("\n===== 3) 이웃 값 (각 칸 = 7개 시작 요일 평균 · 주당 순수익 / t 평균 / 7요일 중 플러스)")
+    print("\n===== 2) 이웃 값 (하루 순수익 / t / 낙폭 · 가격·펀딩 나눔)")
     grid = []
-    Ns, Ks, Fs = ((60, 80, 100, 120), (7, 10, 13), (10, 14, 21)) if not SELFTEST else ((30, 40), (5,), (10, 14))
-    for N in Ns:
-        for K in Ks:
-            line = []
-            for F in Fs:
-                r = avg7(N=N, K=K, F=F)
-                if r:
-                    grid.append(((N, K, F), r))
-                    line.append(f"F{F}일 {r['mean']:+.2f}%/t{r['t']:+.1f}/{r['pos']}of{r['k']}")
-            print(f"  상위{N}·위아래{K}: " + " · ".join(line), flush=True)
+    Ns, Ks, Ls, Hs = ((60, 100, 150), (5, 10, 15), (1, 3, 7), (1, 3, 7)) if not SELFTEST else ((30,), (5,), (1, 3), (1, 3))
+    for H in Hs:
+        for N in Ns:
+            for K in Ks:
+                parts = []
+                for L in Ls:
+                    s, _, _ = split(N=N, K=K, L=L, H=H)
+                    if s:
+                        grid.append(((N, K, L, H), s))
+                        parts.append(f"L{L} {s['day']:+.3f}%/t{s['t']:+.1f}/가{s['price'] / H:+.2f}·펀{s['fund'] / H:+.2f}")
+                print(f"  H{H}일 상위{N}·위아래{K}: " + " · ".join(parts), flush=True)
     if grid:
-        mm = sorted(r["mean"] for _, r in grid)
-        print(f"  요약: {len(grid)}칸 중 플러스 {sum(1 for m in mm if m > 0)} · 중앙값 {mm[len(mm) // 2]:+.2f}% · t평균>1.5 {sum(1 for _, r in grid if r['t'] > 1.5)}칸 · t평균>2 {sum(1 for _, r in grid if r['t'] > 2)}칸")
+        mm = sorted(s["day"] for _, s in grid)
+        print(f"  요약: {len(grid)}칸 중 플러스 {sum(1 for m in mm if m > 0)} · 중앙값 하루 {mm[len(mm) // 2]:+.3f}% · t>2 {sum(1 for _, s in grid if s['t'] > 2)}칸 · 앞·뒤 절반 모두 플러스 {sum(1 for _, s in grid if s['h1'] > 0 and s['h2'] > 0)}칸")
+        for H in Hs:
+            g = [s for k, s in grid if k[3] == H]
+            if g:
+                print(f"  교체 {H}일: 하루 중앙값 {sorted(x['day'] for x in g)[len(g) // 2]:+.3f}% · 가격 평균 {sum(x['price'] for x in g) / len(g) / H:+.3f}% · 펀딩 평균 {sum(x['fund'] for x in g) / len(g) / H:+.3f}% · 비용 평균 -{sum(x['cost'] for x in g) / len(g) / H:.3f}%")
+        best = sorted(grid, key=lambda x: -x[1]["t"])[:5]
+        print("  t 상위 5: " + " · ".join(f"N{k[0]}K{k[1]}L{k[2]}H{k[3]} 하루 {s['day']:+.3f}%(t {s['t']:+.1f}, 앞/뒤 {s['h1']:+.2f}/{s['h2']:+.2f})" for k, s in best))
 
-    print("\n===== 4) 급등락 종목 빼기 · 펀딩 빼기 · 한쪽만 (기준 조합, 7요일 평균)")
-    for name, kw in (("기준", {}), ("직전 1일 ±20% 넘은 종목 제외", {"excl": "jump1d"}), ("최근 F일 ±150% 넘은 종목 제외", {"excl": "bigF"}),
-                     ("변동성 상위 20% 제외", {"excl": "vol"}), ("펀딩비 빼고", {"use_fund": False}), ("롱 쪽만", {"leg": "long"}), ("숏 쪽만", {"leg": "short"})):
-        r = avg7(**kw)
-        if r:
-            print(f"  {name}: 주당 {r['mean']:+.2f}% · t 평균 {r['t']:+.2f}(최저 {r['tmin']:+.2f}) · 낙폭 평균 {r['dd']:+.0f}%p · 7요일 중 플러스 {r['pos']}")
+    print("\n===== 3) 펀딩 문턱 · 비싼 비용 · 한쪽만 · 펀딩 빼기 (기준 조합 + H=3일)")
+    for H in (1, 3):
+        for name, kw in (("기준", {}), ("|펀딩| 8시간당 0.03% 넘는 종목만", {"thr": 0.0003}), ("0.05% 넘는 종목만", {"thr": 0.0005}),
+                         ("비용 왕복 0.30%", {"cost": 0.003}), ("롱 쪽만(펀딩 마이너스 종목 롱)", {"leg": "long"}),
+                         ("숏 쪽만(펀딩 플러스 종목 숏)", {"leg": "short"}), ("펀딩 빼고(가격만)", {"use_fund": False})):
+            s, _, _ = split(H=H, **kw)
+            if s:
+                print(f"  H{H}일 {name}: {line(s)}")
 
-    print("\n===== 5) 3일·14일마다 교체 비교 (기준 나머지 동일, 7요일 평균)")
-    for H in (3, 14):
-        r = avg7(H=H)
-        if r:
-            print(f"  H={H}일: 회당 {r['mean']:+.2f}%(하루 {r['mean'] / H:+.3f}%) · t 평균 {r['t']:+.2f} · 낙폭 평균 {r['dd']:+.0f}%p · 플러스 {r['pos']}/{r['k']}")
-    json.dump({"src": src, "grid": [{"N": k[0], "K": k[1], "F": k[2], **v} for k, v in grid]}, open("bt_summary.json", "w"), ensure_ascii=False, indent=1)
+    print("\n===== 4) 비교: 실험 11 추세 묶음(상위80·위아래10·F=14·7일, 7묶음) 같은 계산법")
+    s, rows, _ = split(sig="trend", N=80, K=10, F=14, H=7)
+    if s:
+        print(f"  {line(s)} · 가격 하루 {s['price'] / 7:+.3f}% · 펀딩 하루 {s['fund'] / 7:+.3f}%")
+    json.dump({"src": src, "grid": [{"N": k[0], "K": k[1], "L": k[2], "H": k[3], **v} for k, v in grid]}, open("bt_summary.json", "w"), ensure_ascii=False, indent=1)
     print(f"\n소요 {time.time() - t0:.0f}초")
 
 
