@@ -1,19 +1,10 @@
 # -*- coding: utf-8 -*-
-"""bt-lab 실험 16: 주간 멈춤 문턱 이웃 값·멈춤 정리 밀림·다시 들어가는 시점 (4시간봉 2년, 상장폐지 포함)
-실험 15 에서 3묶음·위아래7 + 주간 멈춤 -8% 가 가장 나았음 → 그것이 우연한 문턱인지, 밀림·재진입 방식에 튼튼한지 확인
- 1) 문턱 -6·-7·-8·-9·-10% (묶음3·위아래7, 묶음7·위아래10)
- 2) 멈춤 정리 추가 밀림 편도 0.5%·1.0%·2.0% (4시간봉 종가 판정이 늦게 잡히는 것과 동시 정리 호가 밀림 대신)
- 3) 멈춘 뒤 그 주는 쉼(기존) vs 다음 날 0시 같은 종목 다시 진입
---- 아래는 실험 15 설명(틀 재사용) ---
-실험 15: 추세 묶음 낙폭 줄이기
-배경: 실험 14에서 작은 계좌용으로 가장 고른 모양은 3묶음·위아래 7(42종목), 모의 설정은 7묶음·위아래 10.
-  수익률은 괜찮으나 돈으로 바꾸면 낙폭이 커서(700 USDT 전부 넣으면 최악 약 -400) 실주문과 맞지 않음.
-보는 것 (모두 같은 총 금액 — 롱·숏 합 = 1)
- 1) 변동성으로 종목별 금액 조절(최근 7일 변동 작은 종목에 더 많이, 1/변동)
- 2) BTC 방향(베타) 맞추기: 최근 14일 BTC 대비 민감도로 롱·숏 쪽 금액 비율을 바꿔 순 베타 0 (각 쪽 30~70%)
- 3) 1+2 함께
- 4) 주간 손실 멈춤: 묶음 하나가 주 중 -5% / -8% / -12% 에 닿으면 그 주는 모두 정리(정리 비용 추가, 다음 주 새로 진입)
- 5) 해마다·앞/뒤 절반, 최악의 주, 200 USDT 투입 때 최대 낙폭(USDT)
+"""bt-lab 실험 17: 주간 멈춤 판정 시점 — 4시간봉 종가 판정(실험 16) vs 봉 안 최악가 판정 (4시간봉 2년, 상장폐지 포함)
+계기: 실제 엔진은 계속 지켜보므로 4시간봉 종가보다 빨리(더 나쁜 값에서도) 멈출 수 있음. 1시간봉 대신 4시간봉 고가·저가로 위아래 한계를 잡음
+ - 종가 판정·종가 정리: 실험 16 과 같음(늦게 잡히는 쪽)
+ - 최악가 판정: 각 종목의 봉 안 가장 불리한 값(롱=저가, 숏=고가)을 모두 더해 문턱에 닿으면 멈춤 → 실제보다 일찍·자주 멈추는 쪽(보수적)
+   · 정리 가격: 그 봉 종가 / 각 종목 봉 안 최악가(가장 나쁜 체결)
+ - 문턱 -7·-8·-9%, 묶음3·위아래7 과 묶음7·위아래10
 분석 전용 — 봇 동작에는 영향 없음
 """
 import io, math, os, re, time, zipfile, json
@@ -105,8 +96,8 @@ def load(syms, months):
             if not c:
                 continue
             if kind == "k":
-                for t, o, cl, q in rows_of(c, (1, 4, 7)):
-                    kl[s][t // BAR] = (o, cl, q)
+                for t, o, hi, lo, cl, q in rows_of(c, (1, 2, 3, 4, 7)):
+                    kl[s][t // BAR] = (o, cl, q, hi, lo)
             else:
                 for t, rate in rows_of(c, (2,)):
                     b = t // BAR
@@ -124,13 +115,16 @@ def to_mat(kl, fr):
     C = np.full((len(syms), nb), np.nan)
     Q = np.zeros((len(syms), nb))
     Fu = np.zeros((len(syms), nb))
+    Hi = np.full((len(syms), nb), np.nan)
+    Lo = np.full((len(syms), nb), np.nan)
     for i, s in enumerate(syms):
-        for b, (o, c, q) in kl[s].items():
+        for b, (o, c, q, hi, lo) in kl[s].items():
             O[i, b - b0], C[i, b - b0], Q[i, b - b0] = o, c, q
+            Hi[i, b - b0], Lo[i, b - b0] = hi, lo
         for b, r in fr.get(s, {}).items():
             if b0 <= b <= b1:
                 Fu[i, b - b0] = r
-    return syms, b0, O, C, Q, Fu
+    return syms, b0, O, C, Q, Fu, Hi, Lo
 
 
 def synth(n_sym=60, n_day=420):
@@ -146,14 +140,15 @@ def synth(n_sym=60, n_day=420):
             mom = 0.98 * mom + rng.gauss(0, 0.0008)
             o = p
             p *= math.exp(mom + rng.gauss(0, 0.016))
-            kl[s][b0 + b] = (o, p, 1e5 * (1 + i % 7))
+            w = abs(rng.gauss(0, 0.01))
+            kl[s][b0 + b] = (o, p, 1e5 * (1 + i % 7), max(o, p) * (1 + w), min(o, p) * (1 - w))
             if b % 2 == 0:
                 fr[s][b0 + b] = 0.0001
     return kl, fr
 
 
 class Lab:
-    def __init__(self, O, C, Q, Fu, b0):
+    def __init__(self, O, C, Q, Fu, b0, Hi=None, Lo=None):
         self.O, self.C, self.Fu, self.b0 = O, C, Fu, b0
         self.ns, self.nb = O.shape
         valid = ~np.isnan(C)
@@ -166,13 +161,16 @@ class Lab:
             m = np.isnan(ff[:, j])
             ff[m, j] = ff[m, j - 1]
         self.ff = ff
+        # 봉 안 최악가(없으면 종가): 롱=저가, 숏=고가
+        self.lo = np.where(np.isnan(Lo), ff, Lo) if Lo is not None else ff
+        self.hi = np.where(np.isnan(Hi), ff, Hi) if Hi is not None else ff
         lr = np.diff(np.log(ff), axis=1)
         lr = np.nan_to_num(lr)
         self.cl2 = np.concatenate([np.zeros((self.ns, 2)), np.cumsum(lr ** 2, axis=1)], axis=1)
         self.lr = np.concatenate([np.zeros((self.ns, 1)), lr], axis=1)   # lr[:, j] = log(ff[j]/ff[j-1])
 
     def run(self, N, K, F, H, start, skip=1, use_fund=True, excl=None, leg="both", cost=COST, seed=None, split=False,
-            wmode="eq", stop=None, btc=None, resume="week", sslip=0.0):
+            wmode="eq", stop=None, btc=None, resume="week", sslip=0.0, judge="close", exitx="close"):
         O, ff = self.O, self.ff
         S, Hb, Fb, kb = 7 * DB, H * DB, F * DB, skip * DB
         W = 14 * DB
@@ -237,13 +235,15 @@ class Lab:
                         for i, sg, w in pos:
                             c0 = (0.0 if ((i, sg) in prev and first) else cost)
                             f = -sg * (self.cf[i, j + 1] - self.cf[i, seg0]) if use_fund else 0.0
-                            v += w * (sg * (ff[i, j] / O[i, seg0] - 1) - c0 + f)
+                            px = ff[i, j] if judge == "close" else (self.lo[i, j] if sg > 0 else self.hi[i, j])
+                            v += w * (sg * (px / O[i, seg0] - 1) - c0 + f)
                         if v <= -stop:
                             stop_at = j
                             break
                 for i, sg, w in pos:
                     if stop_at is not None:
-                        ex = ff[i, stop_at]; fe = stop_at + 1
+                        ex = ff[i, stop_at] if exitx == "close" else (self.lo[i, stop_at] if sg > 0 else self.hi[i, stop_at])
+                        fe = stop_at + 1
                     else:
                         ex = O[i, end]
                         if np.isnan(ex):
@@ -297,12 +297,12 @@ def main():
         syms = list_symbols()
         src = f"선물 자료실 전 종목 {len(syms)}개(상장폐지 포함)"
         kl, fr = load(syms, month_list(MONTHS_BACK))
-    syms, b0, O, C, Q, Fu = to_mat(kl, fr)
-    lab = Lab(O, C, Q, Fu, b0)
+    syms, b0, O, C, Q, Fu, Hi, Lo = to_mat(kl, fr)
+    lab = Lab(O, C, Q, Fu, b0, Hi, Lo)
     btc = syms.index("BTCUSDT") if "BTCUSDT" in syms else 0
     ds = lambda b: datetime.fromtimestamp((b0 + b) * 4 * 3600, timezone.utc).strftime("%Y-%m-%d %H시")
     print(f"시세 출처: {src} · 4시간봉 받은 종목 {len(syms)}개 · {ds(0)} ~ {ds(lab.nb - 1)} · 받는 데 {time.time() - t0:.0f}초")
-    print(f"비용 기준: 바뀌는 종목 왕복 {COST * 100:.2f}% + 실제 펀딩비 · 손실 멈춤 때 정리 비용 편도 추가 · 시각 UTC · 7일 보유 · 상위100·14일(직전 1일 제외)")
+    print(f"판정: 종가=4시간봉 종가, 최악가=종목별 봉 안 불리한 값의 합(실제보다 일찍 멈추는 쪽) · 비용 기준: 바뀌는 종목 왕복 {COST * 100:.2f}% + 실제 펀딩비 · 손실 멈춤 때 정리 비용 편도 추가 · 시각 UTC · 7일 보유 · 상위100·14일(직전 1일 제외)")
     wd0 = datetime.fromtimestamp(b0 * 4 * 3600, timezone.utc)
     base = (((7 - wd0.weekday()) % 7) * DB - wd0.hour // 4) % (7 * DB)
     BASE = dict(N=100, F=14, H=7) if not SELFTEST else dict(N=40, F=14, H=7)
@@ -335,13 +335,12 @@ def main():
 
     SHAPES = {3: [[d, (d + 2) % 7, (d + 4) % 7] for d in range(7)], 7: [list(range(7))]}
     VARS = [("멈춤 없음(기준)", dict(wmode="eq"))]
-    for th in (0.06, 0.07, 0.08, 0.09, 0.10):
-        VARS.append((f"멈춤 -{th * 100:.0f}%", dict(wmode="eq", stop=th)))
-    for sl in (0.005, 0.01, 0.02):
-        VARS.append((f"멈춤 -8% + 정리 밀림 {sl * 100:.1f}%", dict(wmode="eq", stop=0.08, sslip=sl)))
-    for th in (0.06, 0.08, 0.10):
-        VARS.append((f"멈춤 -{th * 100:.0f}% 다음 날 재진입", dict(wmode="eq", stop=th, resume="day")))
-    VARS.append(("멈춤 -8% 다음 날 재진입 + 밀림 1.0%", dict(wmode="eq", stop=0.08, resume="day", sslip=0.01)))
+    for th in (0.07, 0.08, 0.09):
+        VARS.append((f"멈춤 -{th * 100:.0f}% 종가 판정·종가 정리(실험 16)", dict(wmode="eq", stop=th)))
+        VARS.append((f"멈춤 -{th * 100:.0f}% 최악가 판정·종가 정리", dict(wmode="eq", stop=th, judge="extreme")))
+        VARS.append((f"멈춤 -{th * 100:.0f}% 최악가 판정·최악가 정리", dict(wmode="eq", stop=th, judge="extreme", exitx="extreme")))
+    VARS.append(("멈춤 -8% 최악가 판정·최악가 정리 + 밀림 0.5%", dict(wmode="eq", stop=0.08, judge="extreme", exitx="extreme", sslip=0.005)))
+    VARS.append(("멈춤 -10% 최악가 판정·최악가 정리", dict(wmode="eq", stop=0.10, judge="extreme", exitx="extreme")))
     summary = []
 
     def agg(s):
