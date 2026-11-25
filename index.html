@@ -363,6 +363,7 @@ dialog.sheet::backdrop { background: rgb(5 12 20 / .55); }
           <div class="chips" id="engChips"></div>
           <div class="sub" id="skipTxt"></div>
           <details class="fold" id="paperFold"><summary><span>모의로 관찰 중인 포지션 <span class="num sub" id="paperN"></span></span></summary><div class="list" id="paperList"></div></details>
+          <details class="fold" id="trendFold" hidden><summary><span>추세 묶음 모의 <span class="num sub" id="trendN"></span></span></summary><div class="chips" id="trendChips"></div><div class="sub" id="trendTxt"></div><div class="list" id="trendList"></div></details>
           <details class="fold"><summary>지금 켜 둔 설정</summary><div class="chips" id="setChips"></div><div class="sub">바꾸려면 오른쪽 위 설정에서. 저장하면 10분 안에 적용됨.</div></details>
           <details class="fold"><summary>실시간 기록</summary><div class="logbox" id="logBox"></div></details>
           <details class="fold"><summary>점검 도구</summary>
@@ -920,6 +921,7 @@ function renderEngine(b) {
   const pl = $("paperList"); pl.textContent = "";
   for (const p of paper) { const li = el("div", "li"), l = el("span"); l.append(el("b", "", `${sideKo(p.side)} ${sym(p.symbol)}`), document.createTextNode(" "), el("span", "sub", String(p.desc || "").replace(/^(롱|숏) /, ""))); li.append(l, el("span", "r num " + cls(p.pnlPct || 0), pct(p.pnlPct))); pl.append(li); }
   if (!paper.length) pl.append(el("div", "empty", "모의 포지션 없음"));
+  renderTrend(b.trendPaper);
   const sc = $("setChips"); sc.textContent = "";
   for (const f of SETTINGS) { const e = (b.settings || {})[f.k]; if (!e) continue; const v = f.opts ? (f.opts.find((o) => o[0] === e.value) || [0, e.value])[1] : Number(e.value).toLocaleString(); sc.append(el("span", "", `${f.label}: ${v}`)); }
   $("logBox").textContent = (b.activity || []).slice().reverse().join("\n");
@@ -930,6 +932,26 @@ function renderEngine(b) {
   $("testBtn").disabled = !isLive || waiting || testOpen;
   $("testState").textContent = !isLive ? "실주문이 꺼져 있어 쓸 수 없음" : waiting ? "요청 보냄 · PC가 1분 안에 받아 주문함" : testOpen ? "테스트 포지션 보유 중 · 익절·손절·4시간 중 먼저 오는 때 자동 정리"
     : to.msg ? `마지막 테스트: ${to.msg}` : `주문 연결을 확인하는 용도. 거래대금 1위 종목에 숏 ${b.liveOrderUsdt || 20} USDT · 익절 +1% · 손절 -1% · 최대 4시간`;
+}
+// 추세 묶음 모의 (관찰 전용 · 주문 없음): 엔진이 매일 09:10(한국) 7묶음 중 하나를 교체하고 7일 뒤 성적을 기록
+function renderTrend(t) {
+  $("trendFold").hidden = !t;
+  if (!t) return;
+  const chips = $("trendChips"), list = $("trendList"); chips.textContent = ""; list.textContent = "";
+  const DAY = "월화수목금토일", since = (ms) => Date.now() - ms >= 2 * 86400000 ? Math.floor((Date.now() - ms) / 86400000) + "일 전" : ago(ms);
+  $("trendN").textContent = t.on ? (t.doneN ? `끝난 묶음 ${t.doneN}개` : `보유 ${(t.open || []).length}/7`) : "꺼짐";
+  if (!t.on) { $("trendTxt").textContent = "꺼져 있음. 설정 → 관찰에서 켜면 주문 없이 기록만 시작함(8주 이상 지켜본 뒤 판단)."; return; }
+  const chip = (x) => chips.append(el("span", "num", x));
+  chip(`상위 ${t.N}종목 · 위아래 ${t.K}개 · ${t.F}일 추세`);
+  chip(`보유 묶음 ${(t.open || []).length}/7`);
+  if (t.doneN) {
+    chip(`묶음당 평균 ${pct(t.avgPct)} (${t.doneN}개)`);
+    chip(`가격 ${pct(t.avgPrice)} · 펀딩 ${pct(t.avgFund)} · 비용 ${pct(t.avgCost)}`);
+  }
+  const weeks = t.since ? Math.floor((Date.now() - t.since) / (7 * 86400000)) : 0;
+  $("trendTxt").textContent = `모의만(실주문 없음) · 포지션당 7일 손익 · 기록 ${weeks}주째 · 8주 이상 쌓이면 실주문 여부를 제안함 · 2년 검증 주당 +1.3%이나 변동 ±6%로 큼`;
+  for (const o of t.open || []) { const li = el("div", "li"); li.append(el("span", "", `${DAY[o.d]}요일 묶음 · ${o.n}종목 · ${since(o.at)} 시작`), el("span", "r num " + cls(o.pct || 0), pct(o.pct))); list.append(li); }
+  for (const h of (t.recent || []).slice().reverse().slice(0, 3)) { const li = el("div", "li"); li.append(el("span", "sub", `${DAY[h.d]}요일 묶음 끝남 · ${since(h.at)}`), el("span", "r num " + cls(h.pct || 0), pct(h.pct))); list.append(li); }
 }
 let testAskedAt = 0;
 $("testBtn").addEventListener("click", () => {
@@ -1077,6 +1099,7 @@ const SETTINGS = [
   { g: "진입", k: "BINANCE_REENTRY_SKIP", label: "손절 직후 재진입 쉬기", hint: "켜면: 같은 종목·같은 방향이 손절된 뒤 6시간 안의 신호는 모의로 / 롱만: 롱 재진입만", type: "choice", opts: [["off", "꺼짐"], ["on", "켜기"], ["long", "롱만"]] },
   { g: "청산", k: "BINANCE_DEEP_CUT", label: "깊은 손실 조기 정리", hint: "켜면: 손절폭 4% 이상인 실주문이 -2.5%까지 빠지면 바로 정리", type: "choice", opts: [["off", "꺼짐"], ["on", "켜기"]] },
   { g: "청산", k: "BINANCE_STOP_BUFFER", label: "거래소 보호 손절 여유폭", hint: "규칙 손절가보다 몇 %p 바깥에 거래소 손절을 둘지 · 새로 들어가는 실주문부터", type: "choice", opts: [["0.5", "0.5%p"], ["0.3", "0.3%p"], ["0.2", "0.2%p"]] },
+  { g: "관찰", k: "BINANCE_TREND_PAPER", label: "추세 묶음 모의", hint: "켜면: 주문 없이 거래대금 상위 100종목 중 14일 추세 위 10개 롱·아래 10개 숏을 7묶음으로 나눠 매주 교체하며 기록만 함 · 엔진 카드에서 성적 확인", type: "choice", opts: [["off", "꺼짐"], ["on", "켜기"]] },
 ];
 let setDirty = false;
 const SRC_NAME = { app: "대시보드에서 정함", file: "설정 파일 값", default: "기본값" };
