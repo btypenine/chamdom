@@ -151,6 +151,13 @@
     "https://investinglive.com/cryptocurrency/weekend-bitcoin-fell-to-four-month-low-near-62-000-as-crypto-liquidations-top-2-billion/"
    ],
    "confirmed": false
+  },
+  {
+   "at": "2026-11-26T02:33:00+09:00",
+   "btcMove": "BTC 2시간 +2.02~2.16%(엔진 btcFlow), 엔진 국면 하락→횡보(24h -3.17%→-1.27%)",
+   "summary": "사실: 00:30~02:30 BTC 반등, 실주문 숏 QNT·UNI 손절(각 약 -4.8 USDT), 오늘 실주문 +9.99→+0.40 USDT. 실보유 숏 9·롱 1(순노출 -424.5 USDT). 원인: 이 시각 직접 원인 기사 미확인(검색 결과는 2025년 기사뿐). 맥락(추정): 11월 약세장 속 단기 반등.",
+   "sources": [],
+   "confirmed": false
   }
  ]
 }
